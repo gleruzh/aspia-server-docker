@@ -90,7 +90,7 @@ Publish every port one-to-one (host port = container port): the Relay announces 
 | 8070/tcp | Relay: clients and hosts |
 | 8063/tcp | Router: Relays. Used inside the container; publish it only for a Relay on another machine. |
 
-`EXTERNAL_IP` (or its new name, `ASPIA_RELAY_PUBLIC_ADDRESS`) is required: the public address the Relay announces. Without one of them the container exits with an error. With docker compose, put it into a `.env` file next to `docker-compose.yml`; see `.env.example` for every variable and the "Configuration" section below.
+`EXTERNAL_IP` (or its new name, `ASPIA_RELAY_PUBLIC_ADDRESS`) is required: the public address the Relay announces. Without one of them, `docker compose config`/`up` fails with a clear error, and a plain `docker run` container exits the same way. With docker compose, put it into a `.env` file next to `docker-compose.yml`; see `.env.example` for every variable and the "Configuration" section below.
 
 The Aspia log goes to `docker logs`; no log files are written.
 
@@ -98,7 +98,7 @@ The Aspia log goes to `docker logs`; no log files are written.
 
 Everything besides the address above is optional and has an upstream default. Copy `.env.example` to `.env` and uncomment what you need, or pass `-e VAR=value` to `docker run`.
 
-**Precedence: if a variable is set, its value is written to the configuration file on every start; if it is unset, the value already in the file is left alone.** This is why a value you set by hand in `router.conf` or `relay.conf` on the volume survives a restart, as long as you never set the matching variable. An invalid value (a bad port, address or list) makes the container print one message naming the variable and exit non-zero before starting anything.
+**Precedence: if a variable is set, its value is written to the configuration file on every start; if it is unset, the value already in the file is left alone.** This is why a value you set by hand in `router.conf` or `relay.conf` on the volume survives a restart, as long as you never set the matching variable. An empty value (`VAR=`) counts as unset too, for every variable, including the allow-lists: it does not clear an existing list. To clear an allow-list, edit `router.conf` directly, or set the variable to the list you actually want. An invalid value (a bad port, address or list) makes the container print one message naming the variable and exit non-zero before starting anything.
 
 | Variable | Configuration key | Default | Example |
 |---|---|---|---|
