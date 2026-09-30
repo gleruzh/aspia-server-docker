@@ -21,6 +21,12 @@
 #   7. database without configuration: refuse, change nothing; 7b. same for a lone relay.conf and
 #      for an invalid 2.x relay.json (checked before anything is written)
 #   8. healthcheck: a Relay that is running but not connected is not healthy
+#   9. ASPIA_ROUTER_*/ASPIA_RELAY_* variables land in the configuration; healthy on custom ports
+#  10. a variable removed: the hand edit in the file survives; setting it again overwrites it
+#  11. an invalid value: one clear error naming the variable, non-zero exit, nothing written
+#  12. ASPIA_RELAY_PUBLIC_ADDRESS=auto with no network: clear error, non-zero exit
+#  13. a 2.x migration start also applies a new Relay variable (one the upstream migration itself copies)
+#  14. PUID/PGID: both processes run as that uid/gid, and the files they write are owned by it
 # Lint (hadolint, shellcheck) is in tests/lint.sh.
 
 set -euo pipefail
@@ -204,18 +210,34 @@ scenario_build() {
 
 scenario_compose() {
     local images out
-    log "0c. docker-compose.yml: builds locally by default, ASPIA_IMAGE overrides, EXTERNAL_IP required"
+    log "0c. docker-compose.yml: builds locally by default, ASPIA_IMAGE overrides, ports from the same variable"
     images="$(EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE='' compose_config --images)"
     [[ "${images}" == "aspia-server:3.0.21" ]] || fail "default image is '${images}', expected aspia-server:3.0.21"
     EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE='' compose_config --format json \
         | grep -q '"build"' || fail "the compose service has no build section"
     images="$(EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE=registry.example/aspia-server:3.0.21 compose_config --images)"
     [[ "${images}" == registry.example/aspia-server:3.0.21 ]] || fail "ASPIA_IMAGE is not used: '${images}'"
+    ok "default image aspia-server:3.0.21 with a build section; ASPIA_IMAGE overrides it"
+
+    # EXTERNAL_IP/ASPIA_RELAY_PUBLIC_ADDRESS is required by the entrypoint (scenario 6), not by
+    # compose: "docker compose config" must still succeed without it, so that a user who sets only
+    # the new alias is not blocked by compose before the container ever runs.
     if out="$(unset EXTERNAL_IP; compose_config 2>&1)"; then
-        fail "docker compose config succeeded without EXTERNAL_IP"
+        ok "docker compose config succeeds without EXTERNAL_IP (the container enforces it instead)"
+    else
+        fail "docker compose config failed without EXTERNAL_IP: ${out}"
     fi
-    grep -q 'EXTERNAL_IP' <<<"${out}" || fail "the compose error does not name EXTERNAL_IP: ${out}"
-    ok "default image aspia-server:3.0.21 with a build section; ASPIA_IMAGE overrides it; EXTERNAL_IP is required"
+
+    # Every published port comes from the same variable on both sides (host and container).
+    out="$(EXTERNAL_IP="${IP_NEW}" ASPIA_RELAY_PEER_PORT=19070 compose_config --format json)"
+    if ! grep -q '"target": 19070' <<<"${out}" || ! grep -q '"published": "19070"' <<<"${out}"; then
+        fail "ASPIA_RELAY_PEER_PORT did not change both sides of the port mapping: ${out}"
+    fi
+    ok "ASPIA_RELAY_PEER_PORT changes both the published and the container port"
+
+    docker compose --env-file .env.example -f docker-compose.yml config >/dev/null \
+        || fail "docker compose config failed with .env.example"
+    ok "docker compose config succeeds with .env.example"
 }
 
 scenario_command() {
@@ -529,10 +551,11 @@ scenario_no_external_ip() {
         wait_exited "${name}" 60
         code="$(state .State.ExitCode "${name}")"
         [[ "${code}" != 0 ]] || fail "exit code 0 with EXTERNAL_IP ${variant}"
-        log_has "${name}" 'ERROR: EXTERNAL_IP is not set' || fail "no clear message about EXTERNAL_IP"
+        log_has "${name}" 'ASPIA_RELAY_PUBLIC_ADDRESS is not set.*EXTERNAL_IP is not set' \
+            || fail "no clear message about ASPIA_RELAY_PUBLIC_ADDRESS/EXTERNAL_IP"
         files="$(helper "${cfg}" "${db}" find /etc/aspia /var/lib/aspia -mindepth 1)"
         [[ -z "${files}" ]] || fail "files were created: ${files}"
-        ok "EXTERNAL_IP ${variant}: exit code ${code}, message: $(grep -m1 -o 'ERROR: EXTERNAL_IP is not set[^.]*' <<<"$(docker logs "${name}" 2>&1)")"
+        ok "EXTERNAL_IP ${variant}: exit code ${code}, message: $(grep -m1 -o 'ASPIA_RELAY_PUBLIC_ADDRESS is not set[^.]*' <<<"$(docker logs "${name}" 2>&1)")"
     done
     ok "no configuration or database was created"
 }
@@ -586,6 +609,175 @@ scenario_refused_relay_data() {
     refused_unchanged s7c "${cfg}" "${db}" "an invalid 2.x relay.json"
 }
 
+scenario_env_apply() {
+    local cfg db name router_conf relay_conf
+    log "9. ASPIA_ROUTER_*/ASPIA_RELAY_* variables land in the configuration; healthy on custom ports"
+    cfg="$(new_volume s9-config)"
+    db="$(new_volume s9-db)"
+    run_new s9 "${cfg}" "${db}" \
+        -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" \
+        -e ASPIA_ROUTER_CLIENT_PORT=19062 -e ASPIA_ROUTER_HOST_PORT=19061 -e ASPIA_ROUTER_LEGACY_PORT=19060 \
+        -e ASPIA_ROUTER_STUN_ENABLED=1 -e ASPIA_ROUTER_STUN_PORT=19065 \
+        -e ASPIA_ROUTER_CLIENT_ALLOWED_IPS=203.0.113.0/24 -e ASPIA_ROUTER_HOST_ALLOWED_IPS=203.0.113.0/24 \
+        -e ASPIA_ROUTER_RELAY_ALLOWED_IPS=127.0.0.1,172.18.0.0/16 \
+        -e ASPIA_RELAY_PEER_PORT=19070 -e ASPIA_RELAY_IDLE_TIMEOUT=10 -e ASPIA_RELAY_MAX_PEERS=50
+    name="${CURRENT_CONTAINER}"
+    # aspia_health reads every port from the config files, not from constants, so becoming healthy
+    # on these non-default ports is itself proof that the healthcheck follows the new variables.
+    wait_healthy "${name}"
+    router_conf="$(helper "${cfg}" "${db}" cat /etc/aspia/router.conf)"
+    relay_conf="$(helper "${cfg}" "${db}" cat /etc/aspia/relay.conf)"
+    [[ "$(ini_value "${router_conf}" client port)" == 19062 ]] || fail "client/port not applied"
+    [[ "$(ini_value "${router_conf}" host port)" == 19061 ]] || fail "host/port not applied"
+    [[ "$(ini_value "${router_conf}" host legacy_port)" == 19060 ]] || fail "host/legacy_port not applied"
+    [[ "$(ini_value "${router_conf}" stun port)" == 19065 ]] || fail "stun/port not applied"
+    [[ "$(ini_value "${router_conf}" stun enabled)" == 1 ]] || fail "stun/enabled not applied"
+    [[ "$(ini_value "${router_conf}" client white_list)" == "203.0.113.0/24" ]] || fail "client/white_list not applied"
+    [[ "$(ini_value "${router_conf}" host white_list)" == "203.0.113.0/24" ]] || fail "host/white_list not applied"
+    [[ "$(ini_value "${router_conf}" relay white_list)" == "127.0.0.1,172.18.0.0/16" ]] || fail "relay/white_list not applied"
+    [[ "$(ini_value "${relay_conf}" peer port)" == 19070 ]] || fail "peer/port not applied"
+    [[ "$(ini_value "${relay_conf}" peer idle_timeout)" == 10 ]] || fail "peer/idle_timeout not applied"
+    [[ "$(ini_value "${relay_conf}" peer max_count)" == 50 ]] || fail "peer/max_count not applied"
+    ok "every set variable landed in router.conf/relay.conf, and the container is healthy on non-default ports"
+}
+
+scenario_env_persistence() {
+    local cfg db name port
+    log "10. A hand-edited value survives while its variable is unset; setting the variable overwrites it"
+    cfg="$(new_volume s10-config)"
+    db="$(new_volume s10-db)"
+    run_new s10 "${cfg}" "${db}" -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}"
+    name="${CURRENT_CONTAINER}"
+    wait_healthy "${name}"
+    docker stop "${name}" >/dev/null
+
+    # Hand-edit client/port directly in the file, as a user editing router.conf on the volume would.
+    helper_rw "${cfg}" "${db}" sed -i 's/^port=8062$/port=19999/' /etc/aspia/router.conf
+    [[ "$(helper "${cfg}" "${db}" grep -c '^port=19999$' /etc/aspia/router.conf)" == 1 ]] \
+        || fail "test setup: the hand edit did not take"
+
+    # Restart with ASPIA_ROUTER_CLIENT_PORT still unset: the hand edit must survive.
+    docker start "${name}" >/dev/null
+    CURRENT_CONTAINER="${name}"
+    wait_healthy "${name}"
+    port="$(ini_value "$(helper "${cfg}" "${db}" cat /etc/aspia/router.conf)" client port)"
+    [[ "${port}" == 19999 ]] \
+        || fail "the hand-edited client/port was overwritten (now '${port}') although ASPIA_ROUTER_CLIENT_PORT is unset"
+    ok "ASPIA_ROUTER_CLIENT_PORT unset: the hand-edited client/port=19999 survived a restart"
+
+    docker stop "${name}" >/dev/null
+    run_new s10b "${cfg}" "${db}" -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e ASPIA_ROUTER_CLIENT_PORT=8062
+    name="${CURRENT_CONTAINER}"
+    wait_healthy "${name}"
+    port="$(ini_value "$(helper "${cfg}" "${db}" cat /etc/aspia/router.conf)" client port)"
+    [[ "${port}" == 8062 ]] \
+        || fail "ASPIA_ROUTER_CLIENT_PORT=8062 did not overwrite the earlier hand edit (still '${port}')"
+    ok "setting ASPIA_ROUTER_CLIENT_PORT overwrites the earlier hand edit, as documented"
+}
+
+# run_invalid_env <slug> <text expected in the error> <docker run argument...>: starts the image
+# with one bad ASPIA_ROUTER_*/ASPIA_RELAY_*/PUID/PGID value on fresh volumes and checks that it
+# exits non-zero, names the variable, and creates nothing.
+run_invalid_env() {
+    local slug="$1" expect="$2" cfg db name code
+    shift 2
+    cfg="$(new_volume "s11-${slug}-config")"
+    db="$(new_volume "s11-${slug}-db")"
+    run_new "s11-${slug}" "${cfg}" "${db}" "$@"
+    name="${CURRENT_CONTAINER}"
+    wait_exited "${name}" 60
+    code="$(state .State.ExitCode "${name}")"
+    [[ "${code}" != 0 ]] || fail "exit code 0 with ${expect}"
+    log_has "${name}" "${expect}" || fail "the error does not mention ${expect} (${slug})"
+    [[ -z "$(helper "${cfg}" "${db}" find /etc/aspia /var/lib/aspia -mindepth 1)" ]] \
+        || fail "files were created with ${expect}"
+    ok "${expect}: exit code ${code}, nothing written"
+}
+
+scenario_env_invalid() {
+    log "11. An invalid value: one clear error naming the variable, non-zero exit, nothing written"
+    run_invalid_env port "ASPIA_ROUTER_CLIENT_PORT='99999'" \
+        -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e ASPIA_ROUTER_CLIENT_PORT=99999
+    run_invalid_env bool "ASPIA_ROUTER_STUN_ENABLED='maybe'" \
+        -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e ASPIA_ROUTER_STUN_ENABLED=maybe
+    run_invalid_env list "ASPIA_ROUTER_CLIENT_ALLOWED_IPS='not-an-ip'" \
+        -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e ASPIA_ROUTER_CLIENT_ALLOWED_IPS=not-an-ip
+    run_invalid_env timeout "ASPIA_RELAY_IDLE_TIMEOUT='0'" \
+        -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e ASPIA_RELAY_IDLE_TIMEOUT=0
+    run_invalid_env maxpeers "ASPIA_RELAY_MAX_PEERS='abc'" \
+        -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e ASPIA_RELAY_MAX_PEERS=abc
+    run_invalid_env address "ASPIA_RELAY_PUBLIC_ADDRESS='bad_host!name'" \
+        -e "ASPIA_RELAY_PUBLIC_ADDRESS=bad_host!name"
+    run_invalid_env puid "PUID and PGID must both be set" \
+        -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e PUID=1000
+    run_invalid_env relaywhitelist "does not cover 127.0.0.1" \
+        -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e ASPIA_ROUTER_RELAY_ALLOWED_IPS=172.18.0.0/16
+}
+
+scenario_env_auto_no_network() {
+    local cfg db name code
+    log "12. ASPIA_RELAY_PUBLIC_ADDRESS=auto with no network: clear error, non-zero exit, nothing written"
+    cfg="$(new_volume s12-config)"
+    db="$(new_volume s12-db)"
+    run_new s12 "${cfg}" "${db}" -e ASPIA_RELAY_PUBLIC_ADDRESS=auto --network none
+    name="${CURRENT_CONTAINER}"
+    wait_exited "${name}" 60
+    code="$(state .State.ExitCode "${name}")"
+    [[ "${code}" != 0 ]] || fail "exit code 0 with ASPIA_RELAY_PUBLIC_ADDRESS=auto and no network"
+    log_has "${name}" 'ASPIA_RELAY_PUBLIC_ADDRESS=auto: could not detect' \
+        || fail "no clear message about the failed detection"
+    [[ -z "$(helper "${cfg}" "${db}" find /etc/aspia /var/lib/aspia -mindepth 1)" ]] || fail "files were created"
+    ok "auto with no network: exit code ${code}, nothing written"
+}
+
+scenario_env_migration() {
+    local cfg db name relay_conf value
+    log "13. A 2.x migration start also applies ASPIA_RELAY_MAX_PEERS (a field the upstream migration itself copies)"
+    cfg="$(new_volume s13-config)"
+    db="$(new_volume s13-db)"
+    CURRENT_CONTAINER="${RUN_ID}-s13-old"
+    docker run -d --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" --name "${CURRENT_CONTAINER}" \
+        -e "EXTERNAL_IP=${IP_OLD}" -v "${cfg}:/etc/aspia" -v "${db}:/var/lib/aspia" "${OLD_IMAGE}" >/dev/null
+    wait_exited "${CURRENT_CONTAINER}" 60   # 2.7.0 only creates its configs on the first start
+
+    run_new s13-new "${cfg}" "${db}" -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e ASPIA_RELAY_MAX_PEERS=42
+    name="${CURRENT_CONTAINER}"
+    wait_healthy "${name}"
+    relay_conf="$(helper "${cfg}" "${db}" cat /etc/aspia/relay.conf)"
+    value="$(ini_value "${relay_conf}" peer max_count)"
+    [[ "${value}" == 42 ]] \
+        || fail "ASPIA_RELAY_MAX_PEERS was not carried through the 2.x migration (peer/max_count = '${value}')"
+    ok "ASPIA_RELAY_MAX_PEERS=42 took effect on the migration start itself (written to relay.json first)"
+}
+
+scenario_puid_pgid() {
+    local cfg db name uid_lines
+    log "14. PUID/PGID: the Router and the Relay run as that uid/gid, and the files they write are owned by it"
+    cfg="$(new_volume s14-config)"
+    db="$(new_volume s14-db)"
+    run_new s14 "${cfg}" "${db}" -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e PUID=1000 -e PGID=1000
+    name="${CURRENT_CONTAINER}"
+    wait_healthy "${name}"
+
+    [[ "$(helper "${cfg}" "${db}" stat -c '%u:%g' /etc/aspia/router.conf)" == "1000:1000" ]] \
+        || fail "router.conf is not owned by 1000:1000"
+    [[ "$(helper "${cfg}" "${db}" stat -c '%u:%g' /var/lib/aspia/router.db3)" == "1000:1000" ]] \
+        || fail "router.db3 is not owned by 1000:1000"
+    ok "router.conf and router.db3 are owned by uid=1000 gid=1000"
+
+    # shellcheck disable=SC2016  # expanded by sh inside the container, not by this shell
+    uid_lines="$(docker exec "${name}" sh -c '
+        for p in /proc/[0-9]*; do
+            n=$(cat "$p/comm" 2>/dev/null)
+            case "$n" in
+                aspia_router|aspia_relay) echo "$n $(awk "/^Uid:/{print \$2}" "$p/status")" ;;
+            esac
+        done')"
+    [[ "$(grep -c ' 1000$' <<<"${uid_lines}")" == 2 ]] \
+        || fail "aspia_router and aspia_relay are not both running as uid 1000: ${uid_lines}"
+    ok "aspia_router and aspia_relay both run as uid 1000 (${uid_lines//$'\n'/; })"
+}
+
 # ---------------------------------------------------------------------------------------------
 
 scenario_build
@@ -601,5 +793,11 @@ scenario_upgrade
 scenario_no_external_ip
 scenario_orphan_database
 scenario_refused_relay_data
+scenario_env_apply
+scenario_env_persistence
+scenario_env_invalid
+scenario_env_auto_no_network
+scenario_env_migration
+scenario_puid_pgid
 
 log "All scenarios passed (image ${IMAGE})"
