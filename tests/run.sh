@@ -10,7 +10,8 @@
 # and is removed on exit, also when a scenario fails.
 #
 # Scenarios:
-#   0. build: a tampered checksum makes the build fail; 0b. a docker run command replaces the server
+#   0. build: a tampered checksum makes the build fail; 0b. a docker run command replaces the server,
+#      and the image runs the Aspia version in versions.env
 #   0c. docker-compose.yml: local build by default, ASPIA_IMAGE override, EXTERNAL_IP required
 #   1. clean start
 #   2. restart keeps keys and configuration; 2b. a changed EXTERNAL_IP is applied, with a copy
@@ -35,6 +36,8 @@ readonly IP_OLD=203.0.113.10   # EXTERNAL_IP given to 2.7.0
 readonly IP_NEW=203.0.113.11   # EXTERNAL_IP given to the new image
 readonly HEALTH_TIMEOUT=180    # seconds; generous because CI or emulation may be slow
 IMAGE="${ASPIA_TEST_IMAGE:-aspia-server:test}"
+ASPIA_VERSION="$(sed -n 's/^ASPIA_VERSION=//p' versions.env)"   # the single source of the version
+readonly ASPIA_VERSION
 
 # ---------------------------------------------------------------------------------------------
 # Output, cleanup
@@ -180,10 +183,10 @@ config_sums() {
 scenario_build() {
     log "0. Build: the image, and a build with a tampered checksum must fail"
     TAMPER_DIR="$(mktemp -d)"
-    cp Dockerfile aspia_start aspia_health aspia_common.sh checksums.sha256 .dockerignore "${TAMPER_DIR}/"
+    cp Dockerfile aspia_start aspia_health aspia_common.sh versions.env .dockerignore "${TAMPER_DIR}/"
     # Flip the first hex digit of the router checksum.
-    awk 'NR == 1 { c = substr($0, 1, 1); $0 = (c == "0" ? "1" : "0") substr($0, 2) } { print }' \
-        checksums.sha256 > "${TAMPER_DIR}/checksums.sha256"
+    awk 'BEGIN { FS = OFS = "=" } $1 == "ASPIA_ROUTER_SHA256" { c = substr($2, 1, 1); $2 = (c == "0" ? "1" : "0") substr($2, 2) } { print }' \
+        versions.env > "${TAMPER_DIR}/versions.env"
     if docker build --progress=plain --platform "${PLATFORM}" "${TAMPER_DIR}" > "${TAMPER_DIR}/build.log" 2>&1; then
         fail "the build succeeded with a wrong checksum"
     fi
@@ -206,16 +209,16 @@ scenario_compose() {
     local images out
     log "0c. docker-compose.yml: builds locally by default, ASPIA_IMAGE overrides, EXTERNAL_IP required"
     images="$(EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE='' compose_config --images)"
-    [[ "${images}" == "aspia-server:3.0.21" ]] || fail "default image is '${images}', expected aspia-server:3.0.21"
+    [[ "${images}" == "aspia-server:${ASPIA_VERSION}" ]] || fail "default image is '${images}', expected aspia-server:${ASPIA_VERSION}"
     EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE='' compose_config --format json \
         | grep -q '"build"' || fail "the compose service has no build section"
-    images="$(EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE=registry.example/aspia-server:3.0.21 compose_config --images)"
-    [[ "${images}" == registry.example/aspia-server:3.0.21 ]] || fail "ASPIA_IMAGE is not used: '${images}'"
+    images="$(EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE="registry.example/aspia-server:${ASPIA_VERSION}" compose_config --images)"
+    [[ "${images}" == "registry.example/aspia-server:${ASPIA_VERSION}" ]] || fail "ASPIA_IMAGE is not used: '${images}'"
     if out="$(unset EXTERNAL_IP; compose_config 2>&1)"; then
         fail "docker compose config succeeded without EXTERNAL_IP"
     fi
     grep -q 'EXTERNAL_IP' <<<"${out}" || fail "the compose error does not name EXTERNAL_IP: ${out}"
-    ok "default image aspia-server:3.0.21 with a build section; ASPIA_IMAGE overrides it; EXTERNAL_IP is required"
+    ok "default image aspia-server:${ASPIA_VERSION} with a build section; ASPIA_IMAGE overrides it; EXTERNAL_IP is required"
 }
 
 scenario_command() {
@@ -227,6 +230,7 @@ scenario_command() {
         || fail "the command exited non-zero: ${out}"
     [[ "$(head -n 1 <<<"${out}")" == tini ]] || fail "PID 1 is not tini: ${out}"
     grep -qE '^aspia_router [0-9]' <<<"${out}" || fail "the command did not run: ${out}"
+    grep -qF "aspia_router ${ASPIA_VERSION}." <<<"${out}" || fail "the image does not run Aspia ${ASPIA_VERSION} (versions.env): ${out}"
     ok "ran 'aspia_router --version' under tini: $(grep -E '^aspia_router' <<<"${out}")"
 }
 
