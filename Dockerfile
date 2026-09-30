@@ -82,4 +82,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --start-interval=2s 
 
 # tini reaps zombies and passes signals to aspia_start, which forwards them to both processes.
 # -s: also works when started with "docker run --init" (tini is then not PID 1).
-ENTRYPOINT ["/usr/bin/tini", "-s", "--", "/usr/bin/aspia_start"]
+# The server is the default command; a command given to "docker run <image> ..." runs instead
+# (for example "aspia_router --reset-otp admin" or "bash"), still under tini.
+ENTRYPOINT ["/usr/bin/tini", "-s", "--"]
+CMD ["/usr/bin/aspia_start"]

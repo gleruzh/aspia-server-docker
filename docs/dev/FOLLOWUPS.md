@@ -38,9 +38,6 @@ Each item names the PR that found it.
 
 Correctness points not fixed in PR 1, each small and open for discussion:
 
-- **Command override.** `docker run <image> bash` still runs `aspia_start`, because the ENTRYPOINT
-  ignores its arguments. Idea: `exec "$@"` when arguments are given, or split into ENTRYPOINT (tini)
-  and CMD (`aspia_start`).
 - **Router dies during start.** `wait_listening` returns early and the Relay is still started for a
   moment; the supervisor then stops it and the container exits non-zero, so the outcome is right,
   but the log shows a start summary. Idea: skip the remaining starts once a child has exited.

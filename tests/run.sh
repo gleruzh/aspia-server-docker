@@ -10,7 +10,7 @@
 # and is removed on exit, also when a scenario fails.
 #
 # Scenarios:
-#   0. build: a tampered checksum makes the build fail
+#   0. build: a tampered checksum makes the build fail; 0b. a docker run command replaces the server
 #   1. clean start
 #   2. restart keeps keys and configuration; 2b. a changed EXTERNAL_IP is applied, with a copy
 #   3. upgrade from paprikkafox/aspia-server:2.7.0
@@ -194,6 +194,18 @@ scenario_build() {
     docker build -q --platform "${PLATFORM}" -t "${HELPER_IMAGE}" \
         --build-arg "BASE_IMAGE=$(awk '/^FROM / { print $2; exit }' Dockerfile)" tests/helper >/dev/null
     ok "built ${HELPER_IMAGE}"
+}
+
+scenario_command() {
+    local out
+    log "0b. A command given to docker run runs instead of the server, under tini"
+    # No EXTERNAL_IP: if the server started instead, it would exit 1 with an error.
+    out="$(docker run --rm --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" "${IMAGE}" \
+        sh -c 'cat /proc/1/comm; aspia_router --version 2>/dev/null')" \
+        || fail "the command exited non-zero: ${out}"
+    [[ "$(head -n 1 <<<"${out}")" == tini ]] || fail "PID 1 is not tini: ${out}"
+    grep -qE '^aspia_router [0-9]' <<<"${out}" || fail "the command did not run: ${out}"
+    ok "ran 'aspia_router --version' under tini: $(grep -E '^aspia_router' <<<"${out}")"
 }
 
 S1_CFG="" S1_DB="" S1_NAME=""
@@ -525,6 +537,7 @@ scenario_orphan_database() {
 # ---------------------------------------------------------------------------------------------
 
 scenario_build
+scenario_command
 scenario_clean_start
 scenario_restart
 scenario_new_external_ip
