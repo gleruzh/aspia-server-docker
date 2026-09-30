@@ -52,6 +52,7 @@ ROUTER_STATE=""   # new | migrate | existing
 RELAY_STATE=""    # new | migrate | existing
 
 declare -A CHILDREN=()   # pid -> process name
+declare -A BACKED_UP=()  # file -> 1 once backup() has copied it in this start
 STOPPING=0
 EXIT_CODE=0
 
@@ -109,16 +110,22 @@ json_set() {
     replace_file "$1" "${tmp}"
 }
 
-# backup <file>...: copies each existing, non-empty file to <file>${BACKUP_SUFFIX}. Never overwrites:
-# an existing copy with that name was made earlier in this start (or in the same second) and
-# already holds the older content.
+# backup <file>...: copies each existing, non-empty file next to itself as <file>${BACKUP_SUFFIX},
+# once per start: the first copy holds the content from before this start changed anything. An
+# existing copy of that name (another start in the same second) is never overwritten; the new copy
+# gets a numbered name instead.
 backup() {
-    local file
+    local file dest n
     for file in "$@"; do
-        [[ -s "${file}" ]] || continue
-        [[ -e "${file}${BACKUP_SUFFIX}" ]] && continue
-        cp -a -- "${file}" "${file}${BACKUP_SUFFIX}"
-        log "Backup: ${file} -> ${file}${BACKUP_SUFFIX}"
+        [[ -s "${file}" && -z "${BACKED_UP[${file}]:-}" ]] || continue
+        dest="${file}${BACKUP_SUFFIX}"
+        for ((n = 1; ; n++)); do
+            [[ -e "${dest}" ]] || break
+            dest="${file}${BACKUP_SUFFIX}.${n}"
+        done
+        cp -a -- "${file}" "${dest}"
+        BACKED_UP[${file}]=1
+        log "Backup: ${file} -> ${dest}"
     done
 }
 
@@ -228,13 +235,16 @@ prepare_router() {
 }
 
 prepare_relay() {
-    local key current peer_address router_key
+    local key current peer_address router_key output
     key="$(read_key "${RELAY_PUB}")"
 
     case "${RELAY_STATE}" in
         new)
             log "Relay: no configuration found, creating a new one."
-            /usr/bin/aspia_relay --create-config >/dev/null 2>&1 || die "aspia_relay --create-config failed."
+            if ! output="$(/usr/bin/aspia_relay --create-config 2>&1)"; then
+                printf '%s\n' "${output}" >&2
+                die "aspia_relay --create-config failed."
+            fi
             [[ -s "${RELAY_CONF}" ]] || die "aspia_relay --create-config did not create ${RELAY_CONF}."
             ;;
         migrate)
@@ -250,13 +260,14 @@ prepare_relay() {
             IFS='|' read -r peer_address router_key <<<"${current}"
             if [[ -z "${router_key}" ]]; then
                 [[ -n "${key}" ]] || die "${RELAY_JSON} has no RouterPublicKey and ${RELAY_PUB} is missing."
-                log "Relay: RouterPublicKey in ${RELAY_JSON} is empty; filling it from the Router key."
             fi
             if [[ "${peer_address}" != "${EXTERNAL_IP}" || -z "${router_key}" ]]; then
                 # shellcheck disable=SC2016  # $address and $key are jq variables
                 json_set "${RELAY_JSON}" --arg address "${EXTERNAL_IP}" --arg key "${key}" \
                     '.PeerAddress = $address | if (.RouterPublicKey // "") == "" then .RouterPublicKey = $key else . end'
-                log "Relay: set PeerAddress=${EXTERNAL_IP} in ${RELAY_JSON} (was '${peer_address}')."
+                [[ "${peer_address}" == "${EXTERNAL_IP}" ]] \
+                    || log "Relay: set PeerAddress=${EXTERNAL_IP} in ${RELAY_JSON} (was '${peer_address}')."
+                [[ -n "${router_key}" ]] || log "Relay: set RouterPublicKey in ${RELAY_JSON} from the Router key."
             fi
             return
             ;;

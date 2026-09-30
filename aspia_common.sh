@@ -24,7 +24,7 @@ ini_get() {
             }
         ' "$1")"
     fi
-    printf '%s\n' "${value:-$4}"
+    printf '%s\n' "${value:-${4-}}"
 }
 
 # socket_state <tcp|udp> <state> <local|remote> <port>: succeeds if such a socket exists (IPv4 or
