@@ -244,8 +244,9 @@ scenario_clean_start() {
     S1_NAME="${name}"
     wait_healthy "${name}"
 
-    helper "${S1_CFG}" "${S1_DB}" test -s /etc/aspia/router.conf -a -s /etc/aspia/relay.conf \
-        -a -s /etc/aspia/host.pub -a -s /etc/aspia/relay.pub -a -s /var/lib/aspia/router.db3 \
+    # shellcheck disable=SC2016  # $f is expanded by sh inside the helper container
+    helper "${S1_CFG}" "${S1_DB}" sh -c 'for f in /etc/aspia/router.conf /etc/aspia/relay.conf /etc/aspia/host.pub \
+            /etc/aspia/relay.pub /var/lib/aspia/router.db3; do test -s "$f" || exit 1; done' \
         || fail "configs, keys or database missing"
     ok "router.conf, relay.conf, host.pub, relay.pub and router.db3 were created"
 
@@ -381,7 +382,7 @@ scenario_relay_not_connected() {
         's/^public_key=.*/public_key=0000000000000000000000000000000000000000000000000000000000000001/' /etc/aspia/relay.conf
     docker start "${S1_NAME}" >/dev/null
     CURRENT_CONTAINER="${S1_NAME}"
-    for ((i = 0; i < 60; i++)); do
+    for ((i = 0; i < HEALTH_TIMEOUT; i++)); do
         log_has "${S1_NAME}" 'ACCESS_DENIED' && break
         sleep 1
     done
@@ -496,13 +497,13 @@ scenario_upgrade() {
         -e "EXTERNAL_IP=${IP_OLD}" -v "${cfg}:/etc/aspia" -v "${db}:/var/lib/aspia" "${OLD_IMAGE}" >/dev/null
     # 2.7.0's Relay connects to the Router on 8060 (hex 1F7C): ESTABLISHED (01) with remote port 8060.
     # 2.7.0 starts its Relay before its Router, so the first connection may come after a retry.
-    for ((i = 0; i < 60; i++)); do
+    for ((i = 0; i < HEALTH_TIMEOUT; i++)); do
         [[ "$(state .State.Running "${name}")" == true ]] || fail "2.7.0 does not run on the restored backups"
         docker exec "${name}" cat /proc/net/tcp /proc/net/tcp6 \
             | awk '$4 == "01" && $3 ~ /:1F7C$/ { found = 1 } END { exit !found }' && break
         sleep 1
     done
-    ((i < 60)) || fail "the 2.7.0 Relay is not connected to the 2.7.0 Router 60 s after the rollback"
+    ((i < HEALTH_TIMEOUT)) || fail "the 2.7.0 Relay is not connected to the 2.7.0 Router ${HEALTH_TIMEOUT} s after the rollback"
     docker stop -t 3 "${name}" >/dev/null
     [[ "$(helper_rw "${cfg}" "${db}" sqlite3 /var/lib/aspia/router.db3 "select lower(hex(key)) from hosts")" == 00112233445566778899aabbccddeeff ]] \
         || fail "the fixture host is missing after the rollback"

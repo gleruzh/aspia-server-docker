@@ -32,7 +32,8 @@ fail() { echo "unhealthy: $*"; FAILED=1; }
 expect() {
     local what="$1" proto="$2" state="$3" side="$4" file="$5" section="$6" key="$7" port
     port="$(ini_get "${file}" "${section}" "${key}" "$8")"
-    if ! [[ "${port}" =~ ^[0-9]+$ ]] || ((port < 1 || port > 65535)); then
+    # 10#: decimal even with a leading zero (08060), as the Aspia binaries read it.
+    if ! [[ "${port}" =~ ^[0-9]+$ ]] || ((10#${port} < 1 || 10#${port} > 65535)); then
         fail "${file}: [${section}] ${key} is not a valid port: '${port}'"
     elif ! socket_state "${proto}" "${state}" "${side}" "${port}"; then
         fail "${what} (${port}/${proto}, [${section}] ${key} in ${file})"

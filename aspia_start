@@ -55,6 +55,7 @@ declare -A CHILDREN=()   # pid -> process name
 declare -A BACKED_UP=()  # file -> 1 once copied (or created) in this start; backup() skips it
 STOPPING=0
 EXIT_CODE=0
+STARTED_PID=""
 
 # Everything goes to stderr, like the Aspia log (ASPIA_LOG_TO_STDOUT writes to stderr), so that
 # docker logs keeps the entrypoint's lines and the processes' lines in one order.
@@ -311,13 +312,14 @@ prepare_relay() {
 # ---------------------------------------------------------------------------------------------
 # Phase 3: start and supervise.
 
-# start_process <name> <command...>
+# start_process <name> <command...>: starts the command in the background; its pid is in STARTED_PID.
 start_process() {
     local name="$1"
     shift
     "$@" &
-    CHILDREN[$!]="${name}"
-    log "Started ${name} (pid $!)."
+    STARTED_PID=$!
+    CHILDREN[${STARTED_PID}]="${name}"
+    log "Started ${name} (pid ${STARTED_PID})."
 }
 
 # wait_listening <name> <pid> <port>: waits until <port> is listening, <pid> exits, or a stop is requested.
@@ -338,12 +340,12 @@ wait_listening() {
 start_router() {
     start_process aspia_router /usr/bin/aspia_router
     # The Relay connects to this port; starting it earlier costs a 15 s reconnect delay.
-    wait_listening aspia_router "$!" "$(ini_get "${ROUTER_CONF}" relay port 8063)"
+    wait_listening aspia_router "${STARTED_PID}" "$(ini_get "${ROUTER_CONF}" relay port 8063)"
 }
 
 start_relay() {
     start_process aspia_relay /usr/bin/aspia_relay
-    wait_listening aspia_relay "$!" "$(ini_get "${RELAY_CONF}" peer port 8070)"
+    wait_listening aspia_relay "${STARTED_PID}" "$(ini_get "${RELAY_CONF}" peer port 8070)"
 }
 
 # on_signal <signal>: forwards the signal to every running child; the supervisor collects them.
@@ -399,7 +401,11 @@ print_summary() {
     key="$(read_key "${HOST_PUB}")"
     log "----------------------------------------------------------------------"
     log "External address (Relay):  ${EXTERNAL_IP}"
-    log "Public key for hosts:      ${key:-not found (${HOST_PUB} does not exist)}"
+    if [[ -z "${key}" ]]; then
+        [[ -e "${HOST_PUB}" ]] && key="not found (${HOST_PUB} holds no valid key)" \
+            || key="not found (${HOST_PUB} does not exist)"
+    fi
+    log "Public key for hosts:      ${key}"
     log "Ports (publish them unchanged, host port = container port):"
     log "  $(ini_get "${ROUTER_CONF}" host legacy_port 8060)/tcp  Router: hosts of Aspia 2.x"
     log "  $(ini_get "${ROUTER_CONF}" host port 8061)/tcp  Router: hosts"

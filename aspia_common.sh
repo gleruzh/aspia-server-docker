@@ -43,7 +43,8 @@ socket_state() {
     done
     ((${#files[@]})) || return 1
     [[ "$3" == "local" ]] && column=2 || column=3
-    awk -v state="$2" -v column="${column}" -v port="$(printf '%04X' "$4")" '
+    # 10#: a port written with a leading zero (08060) is decimal, as for the Aspia binaries.
+    awk -v state="$2" -v column="${column}" -v port="$(printf '%04X' "$((10#$4))")" '
         FNR > 1 && $4 == state { n = split($column, a, ":"); if (toupper(a[n]) == port) { found = 1; exit } }
         END { exit !found }
     ' "${files[@]}"
