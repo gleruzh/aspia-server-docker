@@ -1,0 +1,64 @@
+#!/bin/bash
+#
+# aspia_health: container healthcheck of the Aspia Server image.
+#
+# Healthy means:
+#   - the Router is listening on every port in router.conf: host/legacy_port, host/port,
+#     client/port, relay/port (TCP) and, when STUN is enabled, stun/port (UDP);
+#   - the Relay is listening on peer/port from relay.conf;
+#   - the Relay is connected to the Router: an ESTABLISHED TCP socket whose remote port is
+#     router/port from relay.conf.
+#
+# Only /proc/net/{tcp,tcp6,udp,udp6} are read. No connection is opened to the Router, so the
+# check neither fills the Router log nor counts against its connection limits.
+#
+# Based on server/aspia_health from SinitsaDA/aspia-server-docker (commit de15b99, GPL-3.0),
+# https://github.com/SinitsaDA/aspia-server-docker. Ported: reading socket state from
+# /proc/net/tcp* (now in aspia_common.sh). Changed: all Router ports are checked, Router ports
+# are read from router.conf, UDP STUN is checked.
+
+set -euo pipefail
+
+# shellcheck source=aspia_common.sh
+source /usr/lib/aspia-server/aspia_common.sh
+
+readonly ROUTER_CONF=/etc/aspia/router.conf
+readonly RELAY_CONF=/etc/aspia/relay.conf
+
+FAILED=0
+fail() { echo "unhealthy: $*"; FAILED=1; }
+
+# expect <what> <tcp|udp> <state> <local|remote> <file> <section> <key> <default port>
+expect() {
+    local what="$1" proto="$2" state="$3" side="$4" file="$5" section="$6" key="$7" port
+    port="$(ini_get "${file}" "${section}" "${key}" "$8")"
+    # 10#: decimal even with a leading zero (08060), as the Aspia binaries read it.
+    if ! [[ "${port}" =~ ^[0-9]+$ ]] || ((10#${port} < 1 || 10#${port} > 65535)); then
+        fail "${file}: [${section}] ${key} is not a valid port: '${port}'"
+    elif ! socket_state "${proto}" "${state}" "${side}" "${port}"; then
+        fail "${what} (${port}/${proto}, [${section}] ${key} in ${file})"
+    fi
+}
+
+check_router() {
+    [[ -s "${ROUTER_CONF}" ]] || { fail "${ROUTER_CONF} does not exist yet"; return; }
+    expect "the Router is not listening for 2.x hosts" tcp "${TCP_LISTEN}" local "${ROUTER_CONF}" host legacy_port 8060
+    expect "the Router is not listening for hosts" tcp "${TCP_LISTEN}" local "${ROUTER_CONF}" host port 8061
+    expect "the Router is not listening for clients" tcp "${TCP_LISTEN}" local "${ROUTER_CONF}" client port 8062
+    expect "the Router is not listening for relays" tcp "${TCP_LISTEN}" local "${ROUTER_CONF}" relay port 8063
+    if stun_enabled "${ROUTER_CONF}"; then
+        expect "the Router STUN server is not listening" udp "${UDP_BOUND}" local "${ROUTER_CONF}" stun port 8065
+    fi
+}
+
+check_relay() {
+    [[ -s "${RELAY_CONF}" ]] || { fail "${RELAY_CONF} does not exist yet"; return; }
+    expect "the Relay is not listening for peers" tcp "${TCP_LISTEN}" local "${RELAY_CONF}" peer port 8070
+    expect "the Relay is not connected to the Router" tcp "${TCP_ESTABLISHED}" remote "${RELAY_CONF}" router port 8063
+}
+
+check_router
+check_relay
+
+((FAILED == 0)) || exit 1
+echo "healthy"

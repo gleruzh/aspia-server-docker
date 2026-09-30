@@ -1,0 +1,6 @@
+# Only these files are needed to build the image.
+*
+!aspia_start
+!aspia_health
+!aspia_common.sh
+!checksums.sha256
