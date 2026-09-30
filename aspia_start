@@ -24,6 +24,9 @@
 
 set -euo pipefail
 
+# shellcheck source=aspia_common.sh
+source /usr/lib/aspia-server/aspia_common.sh
+
 readonly CONFIG_DIR=/etc/aspia
 readonly DATA_DIR=/var/lib/aspia
 readonly ROUTER_CONF="${CONFIG_DIR}/router.conf"
@@ -52,7 +55,9 @@ declare -A CHILDREN=()   # pid -> process name
 STOPPING=0
 EXIT_CODE=0
 
-log() { printf '[aspia_start] %s\n' "$*"; }
+# Everything goes to stderr, like the Aspia log (ASPIA_LOG_TO_STDOUT writes to stderr), so that
+# docker logs keeps the entrypoint's lines and the processes' lines in one order.
+log() { printf '[aspia_start] %s\n' "$*" >&2; }
 warn() { printf '[aspia_start] WARNING: %s\n' "$*" >&2; }
 die() {
     printf '[aspia_start] ERROR: %s\n' "$*" >&2
@@ -61,22 +66,6 @@ die() {
 
 # ---------------------------------------------------------------------------------------------
 # Helpers
-
-# ini_get <file> <section> <key> <default>: prints the value, or <default> if it is missing or empty.
-ini_get() {
-    local value=""
-    if [[ -r "$1" ]]; then
-        value="$(awk -v section="$2" -v key="$3" '
-            function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
-            { line = $0; sub(/\r$/, "", line) }
-            line ~ /^[ \t]*\[/ { in_section = (trim(line) == "[" section "]"); next }
-            in_section && (p = index(line, "=")) > 0 && trim(substr(line, 1, p - 1)) == key {
-                print trim(substr(line, p + 1)); exit
-            }
-        ' "$1")"
-    fi
-    printf '%s\n' "${value:-$4}"
-}
 
 # replace_file <file> <new content file>: atomically replaces <file>, keeping its mode and owner.
 replace_file() {
@@ -112,6 +101,14 @@ ini_set() {
     replace_file "$1" "${tmp}"
 }
 
+# json_set <file> <jq argument>... <filter>: atomically rewrites a JSON file with jq.
+json_set() {
+    local tmp
+    tmp="$(mktemp "$1.XXXXXX")"
+    jq "${@:2}" "$1" > "${tmp}" || { rm -f "${tmp}"; die "cannot update $1"; }
+    replace_file "$1" "${tmp}"
+}
+
 # backup <file>...: copies each existing, non-empty file to <file>${BACKUP_SUFFIX}. Never overwrites:
 # an existing copy with that name was made earlier in this start (or in the same second) and
 # already holds the older content.
@@ -133,36 +130,18 @@ read_key() {
     return 0
 }
 
-# The public key hosts are configured with: host.pub (3.x), or router.pub after a 2.x migration
-# (the migration writes the 2.x key into host/private_key and does not create host.pub).
-host_public_key() {
-    local key
-    key="$(read_key "${HOST_PUB}")"
-    [[ -n "${key}" ]] || key="$(read_key "${ROUTER_PUB}")"
-    printf '%s\n' "${key}"
-}
-
-# The public key the Relay authenticates the Router with: relay.pub (3.x), or router.pub after a
-# 2.x migration (the migration writes the 2.x key into relay/private_key as well).
-relay_router_public_key() {
-    local key
-    key="$(read_key "${RELAY_PUB}")"
-    [[ -n "${key}" ]] || key="$(read_key "${ROUTER_PUB}")"
-    printf '%s\n' "${key}"
-}
-
-# tcp_listening <port>: succeeds if some process in the container listens on <port> (IPv4 or IPv6).
-# Reads /proc only; no connection is opened.
-tcp_listening() {
-    local files=() file
-    for file in /proc/net/tcp /proc/net/tcp6; do
-        [[ -r "${file}" ]] && files+=("${file}")
+# adopt_legacy_key: a 2.x migration keeps the 2.x key pair for hosts and relays (it writes the 2.x
+# private key into both host/private_key and relay/private_key) but does not create host.pub or
+# relay.pub. Copy router.pub to the missing ones, so a migrated install has the same key files as
+# a new one. router.pub itself is left as it is.
+adopt_legacy_key() {
+    local file
+    [[ -n "$(read_key "${ROUTER_PUB}")" ]] || return 0
+    for file in "${HOST_PUB}" "${RELAY_PUB}"; do
+        [[ -e "${file}" ]] && continue
+        cp -a -- "${ROUTER_PUB}" "${file}"
+        log "Router: created ${file} from the Aspia 2.x key ${ROUTER_PUB}."
     done
-    ((${#files[@]})) || return 1
-    awk -v port="$(printf '%04X' "$1")" '
-        FNR > 1 && $4 == "0A" { n = split($2, a, ":"); if (toupper(a[n]) == port) { found = 1; exit } }
-        END { exit !found }
-    ' "${files[@]}"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -239,17 +218,18 @@ prepare_router() {
             log "Router: found Aspia 2.x data. aspia_router converts ${ROUTER_JSON} to ${ROUTER_CONF}" \
                 "and upgrades ${ROUTER_DB} in place when it starts. Copying the files it changes first."
             backup "${ROUTER_JSON}" "${ROUTER_JSON}.bak" "${ROUTER_CONF}" \
-                "${ROUTER_DB}" "${ROUTER_DB}-wal" "${ROUTER_DB}-shm"
+                "${ROUTER_DB}" "${ROUTER_DB}-journal" "${ROUTER_DB}-wal" "${ROUTER_DB}-shm"
             ;;
         existing)
             log "Router: using the existing configuration ${ROUTER_CONF}."
             ;;
     esac
+    adopt_legacy_key
 }
 
 prepare_relay() {
-    local key current tmp
-    key="$(relay_router_public_key)"
+    local key current peer_address router_key
+    key="$(read_key "${RELAY_PUB}")"
 
     case "${RELAY_STATE}" in
         new)
@@ -261,24 +241,22 @@ prepare_relay() {
             log "Relay: found Aspia 2.x configuration. aspia_relay converts ${RELAY_JSON} to ${RELAY_CONF}" \
                 "when it starts. Copying the files it changes first."
             backup "${RELAY_JSON}" "${RELAY_JSON}.bak" "${RELAY_CONF}"
-            # relay.json is the only place to put EXTERNAL_IP before the migration runs.
-            current="$(jq -r '.PeerAddress // "" | tostring' "${RELAY_JSON}")" \
+            # relay.json is the only place to put EXTERNAL_IP before the migration runs. The
+            # RouterPublicKey is filled only when it is empty. The file is rewritten once, and
+            # only if a value changes.
+            # "|" separates the two values: unlike whitespace, it keeps an empty first field.
+            current="$(jq -r '[.PeerAddress, .RouterPublicKey] | map(. // "" | tostring) | join("|")' "${RELAY_JSON}")" \
                 || die "${RELAY_JSON} is not valid JSON. The backup copy is next to it."
-            if [[ "${current}" != "${EXTERNAL_IP}" ]]; then
-                tmp="$(mktemp "${RELAY_JSON}.XXXXXX")"
-                jq --arg address "${EXTERNAL_IP}" '.PeerAddress = $address' "${RELAY_JSON}" > "${tmp}" \
-                    || { rm -f "${tmp}"; die "cannot update ${RELAY_JSON}"; }
-                replace_file "${RELAY_JSON}" "${tmp}"
-                log "Relay: set PeerAddress=${EXTERNAL_IP} in ${RELAY_JSON} (was '${current}')."
+            IFS='|' read -r peer_address router_key <<<"${current}"
+            if [[ -z "${router_key}" ]]; then
+                [[ -n "${key}" ]] || die "${RELAY_JSON} has no RouterPublicKey and ${RELAY_PUB} is missing."
+                log "Relay: RouterPublicKey in ${RELAY_JSON} is empty; filling it from the Router key."
             fi
-            current="$(jq -r '.RouterPublicKey // "" | tostring' "${RELAY_JSON}")"
-            if [[ -z "${current}" ]]; then
-                [[ -n "${key}" ]] || die "${RELAY_JSON} has no RouterPublicKey and ${ROUTER_PUB} is missing."
-                tmp="$(mktemp "${RELAY_JSON}.XXXXXX")"
-                jq --arg key "${key}" '.RouterPublicKey = $key' "${RELAY_JSON}" > "${tmp}" \
-                    || { rm -f "${tmp}"; die "cannot update ${RELAY_JSON}"; }
-                replace_file "${RELAY_JSON}" "${tmp}"
-                log "Relay: set RouterPublicKey in ${RELAY_JSON} from the Router key."
+            if [[ "${peer_address}" != "${EXTERNAL_IP}" || -z "${router_key}" ]]; then
+                # shellcheck disable=SC2016  # $address and $key are jq variables
+                json_set "${RELAY_JSON}" --arg address "${EXTERNAL_IP}" --arg key "${key}" \
+                    '.PeerAddress = $address | if (.RouterPublicKey // "") == "" then .RouterPublicKey = $key else . end'
+                log "Relay: set PeerAddress=${EXTERNAL_IP} in ${RELAY_JSON} (was '${peer_address}')."
             fi
             return
             ;;
@@ -298,7 +276,7 @@ prepare_relay() {
     # router/public_key is filled only when it is empty; a key set by hand is left alone.
     current="$(ini_get "${RELAY_CONF}" router public_key "")"
     if [[ -z "${current}" ]]; then
-        [[ -n "${key}" ]] || die "${RELAY_CONF} has no [router] public_key, and neither ${RELAY_PUB} nor ${ROUTER_PUB} exists."
+        [[ -n "${key}" ]] || die "${RELAY_CONF} has no [router] public_key, and ${RELAY_PUB} does not exist."
         [[ "${RELAY_STATE}" == existing ]] && backup "${RELAY_CONF}"
         ini_set "${RELAY_CONF}" router public_key "${key}"
         log "Relay: set [router] public_key from the Router key."
@@ -327,7 +305,7 @@ wait_listening() {
     for ((i = 0; i < LISTEN_TIMEOUT_SECONDS * 5; i++)); do
         ((STOPPING)) && return 0
         kill -0 "${pid}" 2>/dev/null || return 0   # the supervisor reports the exit
-        if tcp_listening "${port}"; then
+        if socket_state tcp "${TCP_LISTEN}" local "${port}"; then
             log "${name} is listening on ${port}/tcp."
             return 0
         fi
@@ -388,15 +366,8 @@ supervise() {
             child_exited "${pid}" "${rc}"
             continue
         fi
-        # wait was interrupted by a trapped signal (rc > 128), or returned without a pid: find
-        # children that are gone and collect their exit codes.
-        for pid in "${!CHILDREN[@]}"; do
-            if ! kill -0 "${pid}" 2>/dev/null; then
-                rc=0
-                wait "${pid}" || rc=$?
-                child_exited "${pid}" "${rc}"
-            fi
-        done
+        # No pid: wait was interrupted by a trapped signal. The next wait -n returns any child
+        # that exited in the meantime.
     done
     log "All processes have exited; exit code ${EXIT_CODE}."
     exit "${EXIT_CODE}"
@@ -404,10 +375,10 @@ supervise() {
 
 print_summary() {
     local stun key
-    key="$(host_public_key)"
+    key="$(read_key "${HOST_PUB}")"
     log "----------------------------------------------------------------------"
     log "External address (Relay):  ${EXTERNAL_IP}"
-    log "Public key for hosts:      ${key:-not found (neither ${HOST_PUB} nor ${ROUTER_PUB} exists)}"
+    log "Public key for hosts:      ${key:-not found (${HOST_PUB} does not exist)}"
     log "Ports (publish them unchanged, host port = container port):"
     log "  $(ini_get "${ROUTER_CONF}" host legacy_port 8060)/tcp  Router: hosts of Aspia 2.x"
     log "  $(ini_get "${ROUTER_CONF}" host port 8061)/tcp  Router: hosts"

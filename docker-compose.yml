@@ -13,11 +13,11 @@ services:
     # Publish every port one-to-one (host port = container port). The Relay tells clients and
     # hosts its own port (8070), so a different host port would break relayed connections.
     ports:
-      - 8060:8060         # Router: hosts of Aspia 2.x
-      - 8061:8061         # Router: hosts of Aspia 3.x
-      - 8062:8062         # Router: clients (address book and Router management)
-      - 8065:8065/udp     # Router: built-in STUN server
-      - 8070:8070         # Relay: clients and hosts
+      - "8060:8060"       # Router: hosts of Aspia 2.x
+      - "8061:8061"       # Router: hosts of Aspia 3.x
+      - "8062:8062"       # Router: clients (address book and Router management)
+      - "8065:8065/udp"   # Router: built-in STUN server
+      - "8070:8070"       # Relay: clients and hosts
       # 8063 is the Router port for Relays. The Relay in this container reaches it internally;
       # publish it only for a Relay running on another machine.
     restart: unless-stopped

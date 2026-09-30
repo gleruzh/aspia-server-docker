@@ -34,6 +34,26 @@ Each item names the PR that found it.
 - **README.** The Russian half only points to the English "Ports" and "Upgrading from 2.x" sections
   (PR 6 translates). The Docker Hub link in the README describes the old image.
 
+## From the PR 1 review (codex, agy and four cleanup reviewers)
+
+Correctness points not fixed in PR 1, each small and open for discussion:
+
+- **Command override.** `docker run <image> bash` still runs `aspia_start`, because the ENTRYPOINT
+  ignores its arguments. Idea: `exec "$@"` when arguments are given, or split into ENTRYPOINT (tini)
+  and CMD (`aspia_start`).
+- **Router dies during start.** `wait_listening` returns early and the Relay is still started for a
+  moment; the supervisor then stops it and the container exits non-zero, so the outcome is right,
+  but the log shows a start summary. Idea: skip the remaining starts once a child has exited.
+- **Stop during start-up.** A SIGTERM that arrives before the processes start ends the container with
+  exit code 0 rather than 143. The stop test accepts both.
+- **Relay config without Router config.** A `relay.conf` left alone (no `router.conf`, no database)
+  leads to a new Router with new keys and a Relay whose hand-set key no longer matches; the
+  container warns and is unhealthy. Idea: refuse to start, as for an orphan database.
+- **`HEALTHCHECK --start-interval`** needs Docker Engine 25 or later; older engines use the normal
+  interval during the start period. Say so in the README requirements (PR 6).
+- **Test speed.** The three image builds in `tests/run.sh` run one after another, and several helper
+  containers read one file each. Parallel builds or batched reads would save time in CI.
+
 ## Roadmap
 
 - **linux/arm64 images.** Blocked upstream; today the image is linux/amd64 only and must not be

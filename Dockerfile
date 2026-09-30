@@ -68,6 +68,7 @@ RUN --mount=type=bind,from=fetch,source=/pkg,target=/tmp/pkg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --chmod=0755 aspia_start aspia_health /usr/bin/
+COPY --chmod=0644 aspia_common.sh /usr/lib/aspia-server/aspia_common.sh
 
 # Configuration and keys; database.
 VOLUME ["/etc/aspia", "/var/lib/aspia"]

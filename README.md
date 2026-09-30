@@ -102,7 +102,7 @@ What happens to your data on the first start:
 
 - Before anything is changed, the container copies `router.json`, `relay.json` and `router.db3` to `<file>.pre-3.0.21-<UTC time>` next to the originals. Nothing is deleted.
 - Aspia 3.x converts its configuration itself: `router.json` becomes `router.conf`, `relay.json` becomes `relay.conf`, and the old files are renamed to `*.json.bak`. The database `router.db3` is upgraded in place; Aspia 2.7.0 may not be able to read it afterwards.
-- Users and hosts are kept. The Router keeps its 2.x key, so hosts configured with the key from `router.pub` keep working. The key is printed in the log as "Public key for hosts".
+- Users and hosts are kept. The Router keeps its 2.x key, so hosts configured with the key from `router.pub` keep working. The key is printed in the log as "Public key for hosts". The container copies `router.pub` to `host.pub` and `relay.pub`, the 3.x names of the key files; `router.pub` is kept.
 - Not carried over: `AdminWhiteList` (3.x has no equivalent) and the Relay statistics settings.
 - `EXTERNAL_IP` is written into the Relay configuration on every start.
 

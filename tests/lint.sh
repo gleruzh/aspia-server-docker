@@ -11,7 +11,7 @@ readonly HADOLINT=hadolint/hadolint:v2.14.0@sha256:27086352fd5e1907ea2b934eb1023
 readonly SHELLCHECK=koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
 
 readonly DOCKERFILES=(Dockerfile tests/helper/Dockerfile)
-readonly SCRIPTS=(aspia_start aspia_health tests/run.sh tests/lint.sh tests/helper/x25519_pub)
+readonly SCRIPTS=(aspia_start aspia_health aspia_common.sh tests/run.sh tests/lint.sh tests/helper/x25519_pub)
 
 status=0
 for file in "${DOCKERFILES[@]}"; do

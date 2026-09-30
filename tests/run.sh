@@ -174,7 +174,7 @@ config_sums() {
 scenario_build() {
     log "0. Build: the image, and a build with a tampered checksum must fail"
     TAMPER_DIR="$(mktemp -d)"
-    cp Dockerfile aspia_start aspia_health checksums.sha256 .dockerignore "${TAMPER_DIR}/"
+    cp Dockerfile aspia_start aspia_health aspia_common.sh checksums.sha256 .dockerignore "${TAMPER_DIR}/"
     # Flip the first hex digit of the router checksum.
     awk 'NR == 1 { c = substr($0, 1, 1); $0 = (c == "0" ? "1" : "0") substr($0, 2) } { print }' \
         checksums.sha256 > "${TAMPER_DIR}/checksums.sha256"
@@ -190,14 +190,16 @@ scenario_build() {
         docker build -q --platform "${PLATFORM}" -t "${IMAGE}" . >/dev/null
         ok "built ${IMAGE}"
     fi
-    docker build -q --platform "${PLATFORM}" -t "${HELPER_IMAGE}" tests/helper >/dev/null
+    # The helper uses the product's base image, taken from the Dockerfile so that one edit updates both.
+    docker build -q --platform "${PLATFORM}" -t "${HELPER_IMAGE}" \
+        --build-arg "BASE_IMAGE=$(awk '/^FROM / { print $2; exit }' Dockerfile)" tests/helper >/dev/null
     ok "built ${HELPER_IMAGE}"
 }
 
 S1_CFG="" S1_DB="" S1_NAME=""
 
 scenario_clean_start() {
-    local name logs host_pub relay_pub relay_conf router_conf ports port net
+    local name logs host_pub relay_pub relay_conf router_conf ports port net unreachable
     log "1. Clean start on empty volumes"
     S1_CFG="$(new_volume s1-config)"
     S1_DB="$(new_volume s1-db)"
@@ -242,10 +244,10 @@ scenario_clean_start() {
     ok "listening TCP ports: ${ports}(an extra random port is Docker's embedded DNS on a user network)"
     grep -qw 8065 <<<"$(listening_ports "${name}" udp)" || fail "nothing listens on 8065/udp"
     ok "listening UDP port: 8065"
-    for port in 8060 8061 8062 8070; do
-        docker run --rm --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" --network "${net}" "${HELPER_IMAGE}" \
-            timeout 5 bash -c "exec 3<>/dev/tcp/aspia/${port}" || fail "cannot connect to ${port}/tcp from another container"
-    done
+    # One helper container tries every port and prints the ones it could not reach.
+    unreachable="$(docker run --rm --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" --network "${net}" "${HELPER_IMAGE}" \
+        bash -c 'for p in 8060 8061 8062 8070; do timeout 5 bash -c "exec 3<>/dev/tcp/aspia/$p" 2>/dev/null || echo "$p"; done')"
+    [[ -z "${unreachable}" ]] || fail "cannot connect from another container to: ${unreachable//$'\n'/ }"
     ok "8060, 8061, 8062 and 8070 accept TCP connections from another container"
 }
 
@@ -407,6 +409,9 @@ scenario_upgrade() {
     [[ "$(helper "${cfg}" "${db}" x25519_pub "$(ini_value "${router_conf}" host private_key)")" == "$(lower "${old_pub}")" ]] \
         || fail "the public key of host/private_key is not the 2.7.0 router.pub"
     ok "host/private_key is the 2.7.0 key: hosts configured with the 2.7.0 key keep working"
+    [[ "$(helper "${cfg}" "${db}" cat /etc/aspia/host.pub /etc/aspia/relay.pub | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" \
+        == "$(lower "${old_pub}${old_pub}")" ]] || fail "host.pub and relay.pub were not created from the 2.7.0 router.pub"
+    ok "host.pub and relay.pub hold the 2.7.0 key, as on a new install"
     grep -q 'Connection to the router is established' <<<"${logs}" || fail "the migrated Relay did not connect to the Router"
     ok "the migrated Relay connected to the migrated Router"
 
