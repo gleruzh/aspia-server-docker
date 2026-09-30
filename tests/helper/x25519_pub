@@ -1,0 +1,15 @@
+#!/bin/bash
+# Prints the X25519 public key (64 lowercase hex chars) for a raw private key given as 64 hex chars.
+# Used by the tests to prove that a private key in router.conf matches a published public key,
+# without trusting the .pub files that sit next to it.
+set -euo pipefail
+
+key="${1,,}"
+[[ "${key}" =~ ^[0-9a-f]{64}$ ]] || { echo "usage: x25519_pub <64 hex chars>" >&2; exit 2; }
+
+# PKCS#8 DER prefix for an X25519 private key (RFC 8410), followed by the 32 raw key bytes.
+der_hex="302e020100300506032b656e04220420${key}"
+printf '%s' "${der_hex}" | sed 's/../\\x&/g' | xargs -0 printf '%b' \
+    | openssl pkey -inform DER -pubout -outform DER \
+    | od -An -v -tx1 | tr -d ' \n' | tail -c 64
+echo
