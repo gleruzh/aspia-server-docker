@@ -11,6 +11,7 @@
 #
 # Scenarios:
 #   0. build: a tampered checksum makes the build fail; 0b. a docker run command replaces the server
+#   0c. docker-compose.yml: local build by default, ASPIA_IMAGE override, EXTERNAL_IP required
 #   1. clean start
 #   2. restart keeps keys and configuration; 2b. a changed EXTERNAL_IP is applied, with a copy
 #   3. upgrade from paprikkafox/aspia-server:2.7.0
@@ -194,6 +195,22 @@ scenario_build() {
     docker build -q --platform "${PLATFORM}" -t "${HELPER_IMAGE}" \
         --build-arg "BASE_IMAGE=$(awk '/^FROM / { print $2; exit }' Dockerfile)" tests/helper >/dev/null
     ok "built ${HELPER_IMAGE}"
+}
+
+scenario_compose() {
+    local images out
+    log "0c. docker-compose.yml: builds locally by default, ASPIA_IMAGE overrides, EXTERNAL_IP required"
+    images="$(EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE='' docker compose -f docker-compose.yml config --images)"
+    [[ "${images}" == "aspia-server:3.0.21" ]] || fail "default image is '${images}', expected aspia-server:3.0.21"
+    EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE='' docker compose -f docker-compose.yml config --format json \
+        | grep -q '"build"' || fail "the compose service has no build section"
+    images="$(EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE=registry.example/aspia-server:3.0.21 docker compose -f docker-compose.yml config --images)"
+    [[ "${images}" == registry.example/aspia-server:3.0.21 ]] || fail "ASPIA_IMAGE is not used: '${images}'"
+    if out="$(env -u EXTERNAL_IP docker compose -f docker-compose.yml config 2>&1)"; then
+        fail "docker compose config succeeded without EXTERNAL_IP"
+    fi
+    grep -q 'EXTERNAL_IP' <<<"${out}" || fail "the compose error does not name EXTERNAL_IP: ${out}"
+    ok "default image aspia-server:3.0.21 with a build section; ASPIA_IMAGE overrides it; EXTERNAL_IP is required"
 }
 
 scenario_command() {
@@ -537,6 +554,7 @@ scenario_orphan_database() {
 
 scenario_build
 scenario_command
+scenario_compose
 scenario_clean_start
 scenario_restart
 scenario_new_external_ip

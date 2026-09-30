@@ -96,7 +96,15 @@ The Aspia log goes to `docker logs`; no log files are written.
 
 ### Upgrading from 2.x
 
-Change the image to `paprikkafox/aspia-server:3.0.21` (or use the new `docker-compose.yml`, keeping your `./data` directory and `EXTERNAL_IP`), then `docker compose pull` and `docker compose up -d`. Keep the volume paths: `./data/config` -> `/etc/aspia`, `./data/database` -> `/var/lib/aspia`.
+Stop the old container, put this repository's `docker-compose.yml` next to your `./data` directory, set `EXTERNAL_IP` in `.env`, and start it. Keep the volume paths: `./data/config` -> `/etc/aspia`, `./data/database` -> `/var/lib/aspia`.
+
+The compose file builds the image from this repository by default:
+
+```shell
+docker compose up -d --build
+```
+
+To run a published image instead, set `ASPIA_IMAGE` in `.env`, pinned to a version or a digest (for example `ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.0.21`), then run `docker compose pull` and `docker compose up -d`, without `--build`: with `--build`, compose would build locally and give the result the published name.
 
 What happens to your data on the first start:
 

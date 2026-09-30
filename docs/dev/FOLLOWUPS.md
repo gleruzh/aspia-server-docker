@@ -25,8 +25,11 @@ Each item names the PR that found it.
 - **Non-root.** Both processes run as root, as in 2.7.0. The addendum (13.4) shows that the Router and
   Relay run as `nobody` with the right ownership; changing ownership of an existing 2.x volume and
   running the migration as non-root is not tested.
-- **Published image.** `docker-compose.yml` references `paprikkafox/aspia-server:3.0.21`, which does
-  not exist until PR 2 publishes it. PR 2 decides the registries and should document pinning by digest.
+- **Published image.** `docker-compose.yml` builds locally by default (`image: ${ASPIA_IMAGE:-aspia-server:3.0.21}`
+  plus `build: .`), because nothing is published yet and no owner name may be hard-coded. PR 2 publishes the
+  image, documents the `ASPIA_IMAGE` value for each registry and pinning by digest, and keeps the default tag
+  in sync with the version file. Note: if `ASPIA_IMAGE` names a registry image that cannot be pulled (a typo,
+  no access), `docker compose up` falls back to building locally under that name (compose v5.5.1).
 - **Backup copies accumulate.** Every change of `EXTERNAL_IP` leaves a `relay.conf.pre-*` copy. Harmless
   and small, but nothing prunes them.
 - **Build downloads.** `ADD <url>` re-checks the release assets on every build. A local package cache
