@@ -54,6 +54,9 @@ an error: the run logs "Docker Hub skipped" or "Quay.io skipped" and continues.
 
 - **Actions in a fork.** GitHub does not run workflows in a new fork until someone opens the
   **Actions** tab and enables them. Scheduled workflows do not run before that either.
+- **Default branch.** Manual runs (`workflow_dispatch`) and schedules work only for workflow files
+  that exist on the default branch; a manual run can then use the file from another branch
+  (`--ref`). Until these workflows are merged, only `ci.yml` runs (on pull requests).
 - **Pull requests from Actions.** For the bump pull request with `GITHUB_TOKEN`, enable
   **Settings > Actions > General > Workflow permissions > Allow GitHub Actions to create and
   approve pull requests** (or set `UPSTREAM_WATCH_TOKEN`). The workflows declare their own
@@ -153,11 +156,14 @@ the configuration format before, so a person reads the changelog and merges.
 
 Two GitHub limitations, and how they are handled:
 
-- **A pull request opened with `GITHUB_TOKEN` starts no workflows**, so `ci.yml` does not run on the
-  bump pull request. The workflow therefore builds and tests in its own job and puts the result into
-  the pull request description (the full log is an artifact of the run). To get `ci.yml` as well,
-  set `UPSTREAM_WATCH_TOKEN`, or close and reopen the pull request (a person's action starts CI).
-  Merging it is a person's push to `main`, so `publish.yml` runs normally.
+- **A pull request opened with `GITHUB_TOKEN` does not start workflows on its own**, so `ci.yml`
+  does not simply run on the bump pull request. GitHub's current documentation says such a run is
+  created but waits until someone with write access selects **Approve workflows to run** in the
+  merge box; before that change it was not created at all. Either way, the workflow builds and tests
+  in its own job and puts the result into the pull request description (the full log is an artifact
+  of the run). To get `ci.yml` as well: approve the run if the banner is shown, close and reopen the
+  pull request (a person's action starts CI), or set `UPSTREAM_WATCH_TOKEN`. Merging it is a
+  person's push to `main`, so `publish.yml` runs normally.
 - **Scheduled workflows are disabled after 60 days without activity in the repository** (GitHub
   emails the owner before), and in a fork they do not run until Actions is enabled. Merged bump
   pull requests count as activity. If it happens, re-enable the workflows in the Actions tab or with

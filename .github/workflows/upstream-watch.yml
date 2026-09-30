@@ -6,13 +6,15 @@
 # the failure log.
 #
 # GitHub limitations and how they are handled (details in docs/ci.md):
-# - A pull request opened with GITHUB_TOKEN triggers no workflows, so ci.yml would not run on it.
-#   The tests therefore run in this job and their result goes into the pull request description.
-#   With the optional secret UPSTREAM_WATCH_TOKEN (a fine-grained token with contents and
-#   pull-requests write access) the branch and pull request are created with that token instead,
-#   and ci.yml runs on the pull request as usual.
+# - A pull request opened with GITHUB_TOKEN does not start other workflows on its own: GitHub holds
+#   its ci.yml run until someone with write access selects "Approve workflows to run" (older GitHub
+#   behaviour: no run at all). The tests therefore run in this job and their result goes into the
+#   pull request description. With the optional secret UPSTREAM_WATCH_TOKEN (a fine-grained token
+#   with contents and pull-requests write access) the branch and pull request are created with that
+#   token instead, and ci.yml runs on the pull request as usual.
 # - GitHub disables scheduled workflows after 60 days without repository activity, and they do not
-#   run in a fork until Actions is enabled there. A manual run (workflow_dispatch) always works.
+#   run in a fork until Actions is enabled there. A manual run (workflow_dispatch) always works once
+#   this file is on the default branch.
 name: Upstream watch
 
 on:
@@ -105,7 +107,8 @@ jobs:
             echo "relay=${relay}"
           } >> "${GITHUB_OUTPUT}"
 
-      # The tests run here because ci.yml does not run on a pull request opened with GITHUB_TOKEN.
+      # The tests run here because ci.yml does not start on its own for a pull request opened with
+      # GITHUB_TOKEN.
       - name: Build the image and run tests/run.sh
         if: steps.check.outputs.update == 'true'
         id: test
@@ -175,8 +178,8 @@ jobs:
             echo
             echo "The tests ran in the workflow run above, on this branch."
             if [[ "${OWN_TOKEN}" != true ]]; then
-              echo "This pull request was opened with GITHUB_TOKEN, so GitHub does not start ci.yml for it."
-              echo "To run CI here as well, close and reopen the pull request, or set the UPSTREAM_WATCH_TOKEN secret (docs/ci.md)."
+              echo "This pull request was opened with GITHUB_TOKEN, so GitHub does not start ci.yml for it on its own."
+              echo "To run CI here as well, select \"Approve workflows to run\" in the merge box (if shown), close and reopen the pull request, or set the UPSTREAM_WATCH_TOKEN secret (docs/ci.md)."
             fi
             echo
             echo "Before merging: read the upstream changelog (https://aspia.org/changelog) for changes to the configuration format, ports or migration."
