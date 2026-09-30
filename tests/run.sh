@@ -18,7 +18,8 @@
 #   4. docker stop is fast and clean
 #   5. a crashed process stops the container with a non-zero exit code
 #   6. EXTERNAL_IP unset, empty or blank
-#   7. database without configuration: refuse, change nothing
+#   7. database without configuration: refuse, change nothing; 7b. same for a lone relay.conf and
+#      for an invalid 2.x relay.json (checked before anything is written)
 #   8. healthcheck: a Relay that is running but not connected is not healthy
 # Lint (hadolint, shellcheck) is in tests/lint.sh.
 
@@ -165,6 +166,10 @@ send_signal() {
     docker exec "$1" bash -c 'kill -s "$1" "$2"' _ "$2" "$3" || true
 }
 
+# compose_config <docker compose config options...>: reads docker-compose.yml only from the
+# environment given, never from a .env file in the checkout.
+compose_config() { docker compose --env-file /dev/null -f docker-compose.yml config "$@"; }
+
 config_sums() {
     helper "$1" "$2" sha256sum /etc/aspia/router.conf /etc/aspia/relay.conf /etc/aspia/host.pub /etc/aspia/relay.pub
 }
@@ -200,13 +205,13 @@ scenario_build() {
 scenario_compose() {
     local images out
     log "0c. docker-compose.yml: builds locally by default, ASPIA_IMAGE overrides, EXTERNAL_IP required"
-    images="$(EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE='' docker compose -f docker-compose.yml config --images)"
+    images="$(EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE='' compose_config --images)"
     [[ "${images}" == "aspia-server:3.0.21" ]] || fail "default image is '${images}', expected aspia-server:3.0.21"
-    EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE='' docker compose -f docker-compose.yml config --format json \
+    EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE='' compose_config --format json \
         | grep -q '"build"' || fail "the compose service has no build section"
-    images="$(EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE=registry.example/aspia-server:3.0.21 docker compose -f docker-compose.yml config --images)"
+    images="$(EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE=registry.example/aspia-server:3.0.21 compose_config --images)"
     [[ "${images}" == registry.example/aspia-server:3.0.21 ]] || fail "ASPIA_IMAGE is not used: '${images}'"
-    if out="$(env -u EXTERNAL_IP docker compose -f docker-compose.yml config 2>&1)"; then
+    if out="$(unset EXTERNAL_IP; compose_config 2>&1)"; then
         fail "docker compose config succeeded without EXTERNAL_IP"
     fi
     grep -q 'EXTERNAL_IP' <<<"${out}" || fail "the compose error does not name EXTERNAL_IP: ${out}"
@@ -550,6 +555,36 @@ scenario_orphan_database() {
     ok "exit code ${code}; database untouched; no new keys or configs"
 }
 
+# refused_unchanged <name> <config volume> <database volume> <what>: starts the image on volumes that
+# must be refused, and checks that it exits non-zero with a clear message and changes no file.
+refused_unchanged() {
+    local cfg="$2" db="$3" before name code
+    before="$(helper "${cfg}" "${db}" sh -c 'cd / && find etc/aspia var/lib/aspia -mindepth 1 -exec sha256sum {} + 2>/dev/null | sort')"
+    run_new "$1" "${cfg}" "${db}" -e "EXTERNAL_IP=${IP_NEW}"
+    name="${CURRENT_CONTAINER}"
+    wait_exited "${name}" 60
+    code="$(state .State.ExitCode "${name}")"
+    [[ "${code}" != 0 ]] || fail "exit code 0 with $4"
+    log_has "${name}" 'Nothing was changed' || fail "no clear message for $4"
+    [[ "$(helper "${cfg}" "${db}" sh -c 'cd / && find etc/aspia var/lib/aspia -mindepth 1 -exec sha256sum {} + 2>/dev/null | sort')" \
+        == "${before}" ]] || fail "files were created or changed with $4"
+    ok "$4: exit code ${code}, no file created or changed"
+}
+
+scenario_refused_relay_data() {
+    local cfg db
+    log "7b. Relay data that must not be used or changed: a lone relay.conf, a broken 2.x relay.json"
+    cfg="$(new_volume s7b-config)"
+    db="$(new_volume s7b-db)"
+    helper_rw "${cfg}" "${db}" sh -c 'printf "[router]\npublic_key=%064d\n" 1 > /etc/aspia/relay.conf'
+    refused_unchanged s7b "${cfg}" "${db}" "a relay.conf but no Router data"
+
+    cfg="$(new_volume s7c-config)"
+    db="$(new_volume s7c-db)"
+    helper_rw "${cfg}" "${db}" sh -c 'echo "{}" > /etc/aspia/router.json && : > /var/lib/aspia/router.db3 && echo "{ not json" > /etc/aspia/relay.json'
+    refused_unchanged s7c "${cfg}" "${db}" "an invalid 2.x relay.json"
+}
+
 # ---------------------------------------------------------------------------------------------
 
 scenario_build
@@ -564,5 +599,6 @@ scenario_relay_not_connected
 scenario_upgrade
 scenario_no_external_ip
 scenario_orphan_database
+scenario_refused_relay_data
 
 log "All scenarios passed (image ${IMAGE})"

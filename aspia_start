@@ -166,7 +166,10 @@ validate_router() {
             "Mount the database volume at ${DATA_DIR} (./data/database in docker-compose.yml). Nothing was changed."
         ROUTER_STATE=existing
     else
-        for file in "${ROUTER_CONF}" "${HOST_PUB}" "${RELAY_PUB}" "${ROUTER_PUB}" "${ROUTER_DB}"; do
+        # A Relay configuration left over (for example with the wrong volume mounted) counts too:
+        # a new Router would get new keys, and that Relay's Router key would no longer match.
+        for file in "${ROUTER_CONF}" "${HOST_PUB}" "${RELAY_PUB}" "${ROUTER_PUB}" "${ROUTER_DB}" \
+            "${RELAY_CONF}" "${RELAY_JSON}"; do
             [[ -e "${file}" ]] && found+=("${file}")
         done
         if ((${#found[@]})); then
@@ -196,6 +199,14 @@ validate_relay() {
         RELAY_STATE=existing
     elif [[ -f "${RELAY_JSON}" ]]; then
         RELAY_STATE=migrate   # the Relay migrates relay.json only when relay.conf is missing or empty
+        # prepare_relay edits relay.json; check it here, while nothing has been written yet.
+        jq -e 'type == "object"' "${RELAY_JSON}" >/dev/null 2>&1 \
+            || die "${RELAY_JSON} is not valid JSON. Fix or restore it. Nothing was changed."
+        if [[ -z "$(jq -r '.RouterPublicKey // ""' "${RELAY_JSON}")" && -z "$(read_key "${RELAY_PUB}")" \
+            && -z "$(read_key "${ROUTER_PUB}")" ]]; then
+            die "${RELAY_JSON} has no RouterPublicKey, and neither ${RELAY_PUB} nor ${ROUTER_PUB} holds a key." \
+                "Nothing was changed."
+        fi
     else
         RELAY_STATE=new
     fi

@@ -29,7 +29,10 @@ Each item names the PR that found it.
   plus `build: .`), because nothing is published yet and no owner name may be hard-coded. PR 2 publishes the
   image, documents the `ASPIA_IMAGE` value for each registry and pinning by digest, and keeps the default tag
   in sync with the version file. Note: if `ASPIA_IMAGE` names a registry image that cannot be pulled (a typo,
-  no access), `docker compose up` falls back to building locally under that name (compose v5.5.1).
+  no access), `docker compose up` falls back to building locally under that name (compose v5.5.1), and
+  `--build` with `ASPIA_IMAGE` set builds locally under the published name. Both come from `image:` and
+  `build:` in one service; when pulling becomes the everyday path, consider a separate compose file for
+  building, so pulling and building cannot mix.
 - **Backup copies accumulate.** Every change of `EXTERNAL_IP` leaves a `relay.conf.pre-*` copy. Harmless
   and small, but nothing prunes them.
 - **Build downloads.** `ADD <url>` re-checks the release assets on every build. A local package cache
@@ -46,9 +49,6 @@ Correctness points not fixed in PR 1, each small and open for discussion:
   but the log shows a start summary. Idea: skip the remaining starts once a child has exited.
 - **Stop during start-up.** A SIGTERM that arrives before the processes start ends the container with
   exit code 0 rather than 143. The stop test accepts both.
-- **Relay config without Router config.** A `relay.conf` left alone (no `router.conf`, no database)
-  leads to a new Router with new keys and a Relay whose hand-set key no longer matches; the
-  container warns and is unhealthy. Idea: refuse to start, as for an orphan database.
 - **`HEALTHCHECK --start-interval`** needs Docker Engine 25 or later; older engines use the normal
   interval during the start period. Say so in the README requirements (PR 6).
 - **Test speed.** The three image builds in `tests/run.sh` run one after another, and several helper
