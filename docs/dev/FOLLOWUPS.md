@@ -26,17 +26,23 @@ Each item names the PR that found it.
   Relay run as `nobody` with the right ownership; changing ownership of an existing 2.x volume and
   running the migration as non-root is not tested.
 - **Published image.** `docker-compose.yml` builds locally by default (`image: ${ASPIA_IMAGE:-aspia-server:3.0.21}`
-  plus `build: .`), because nothing is published yet and no owner name may be hard-coded. PR 2 publishes the
-  image, documents the `ASPIA_IMAGE` value for each registry and pinning by digest, and keeps the default tag
-  in sync with the version file. Note: if `ASPIA_IMAGE` names a registry image that cannot be pulled (a typo,
-  no access), `docker compose up` falls back to building locally under that name (compose v5.5.1), and
-  `--build` with `ASPIA_IMAGE` set builds locally under the published name. Both come from `image:` and
-  `build:` in one service; when pulling becomes the everyday path, consider a separate compose file for
-  building, so pulling and building cannot mix.
+  plus `build: .`), because no owner name may be hard-coded. Done in PR 2: the image is published
+  (`ghcr.io/<owner>/aspia-server`, optionally Docker Hub and Quay.io), README and docs/ci.md show the
+  `ASPIA_IMAGE` value and pinning by digest, and `scripts/versions.sh` keeps the default tag in sync with
+  `versions.env` (checked in CI). Still open: if `ASPIA_IMAGE` names a registry image that cannot be pulled
+  (a typo, no access), `docker compose up` falls back to building locally under that name (compose v5.5.1),
+  and `--build` with `ASPIA_IMAGE` set builds locally under the published name. Both come from `image:` and
+  `build:` in one service. PR 2 left the file as it is: a pull-by-default compose file needs a default
+  image name, which would be an owner name, and PR 3 is changing the same file. Decide in PR 6, together
+  with the README rewrite: either a separate `compose.build.yaml` for building, or keep one file and
+  document the fallback.
 - **Backup copies accumulate.** Every change of `EXTERNAL_IP` leaves a `relay.conf.pre-*` copy. Harmless
   and small, but nothing prunes them.
 - **Build downloads.** `ADD <url>` re-checks the release assets on every build. A local package cache
-  (or a `--build-context`) would make repeated CI builds faster.
+  (or a `--build-context`) would make repeated CI builds faster. PR 2: not changed. `publish.yml` builds
+  with `no-cache` on purpose (the weekly rebuild must fetch current Debian packages), and `ci.yml` builds
+  once per run, so a cache would save little; `tests/run.sh` still builds twice more (the tampered-checksum
+  build and the helper image).
 - **README.** The Russian half only points to the English "Ports" and "Upgrading from 2.x" sections
   (PR 6 translates). The Docker Hub link in the README describes the old image.
 
@@ -52,7 +58,32 @@ Correctness points not fixed in PR 1, each small and open for discussion:
 - **`HEALTHCHECK --start-interval`** needs Docker Engine 25 or later; older engines use the normal
   interval during the start period. Say so in the README requirements (PR 6).
 - **Test speed.** The three image builds in `tests/run.sh` run one after another, and several helper
-  containers read one file each. Parallel builds or batched reads would save time in CI.
+  containers read one file each. Parallel builds or batched reads would save time in CI. PR 2: CI and
+  publish build the product image first and pass it as `ASPIA_TEST_IMAGE`, so `tests/run.sh` builds only
+  the tampered context and the helper. The rest is still open; measure on the first real CI runs.
+
+## From PR 2 (CI and publishing)
+
+- **Badges.** README uses relative badge links (`../../actions/workflows/ci.yml/badge.svg`), so no owner
+  name is hard-coded. GitHub resolves them against the repository; this was not verified before the first
+  push. If they do not render, the fallback is absolute URLs, which are fork-specific:
+  `https://github.com/gleruzh/aspia-server-docker/actions/workflows/ci.yml/badge.svg` and
+  `https://github.com/gleruzh/aspia-server-docker/actions/workflows/publish.yml/badge.svg` (and the
+  paprikkafox equivalents if this is offered upstream). On Docker Hub the description sync turns relative
+  links into absolute ones (`enable-url-completion`); check that the badges render there too.
+- **Tool images are not tracked by Dependabot.** hadolint, shellcheck and actionlint (`tests/lint.sh`) and
+  Trivy (`ci.yml`) are pinned by tag and digest, but Dependabot's docker ecosystem reads only Dockerfiles
+  and compose files. Update them by hand, or move them into a small Dockerfile that Dependabot watches.
+- **Base packages between Debian point releases.** The base image is pinned by digest, so the weekly
+  rebuild picks up new versions only of the packages the Dockerfile installs (jq, tini, libdbus-1-3 and
+  their dependencies); fixes to packages already in `debian:trixie-slim` arrive when Dependabot bumps the
+  digest. An `apt-get upgrade` in the Dockerfile would pick them up weekly too, at the cost of a less
+  reproducible build. Out of scope for PR 2 (no Dockerfile changes beyond the version).
+- **Untested digests in GHCR.** When `tests/run.sh` fails in `publish.yml`, the digest that was pushed
+  for testing stays in GHCR untagged. Harmless, but a cleanup job (for example
+  `actions/delete-package-versions` for untagged versions) could remove them.
+- **Manual publish from a branch** moves `latest`, `X` and `X.Y` too. Fine for the maintainer, but an
+  input that limits a manual run to the version tag would make workflow tests from branches safer.
 
 ## Roadmap
 

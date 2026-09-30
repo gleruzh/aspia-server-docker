@@ -1,6 +1,8 @@
 # Сервер Aspia (Relay + Router)
 ### Текущая версия (Current version) - 3.0.21
 
+[![CI](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml) [![Publish](../../actions/workflows/publish.yml/badge.svg)](../../actions/workflows/publish.yml)
+
 https://hub.docker.com/r/paprikkafox/aspia-server
 
 Данный контейнер предназначен для быстрого развертывания сервера удаленного доступа с открытым исходным кодом (aspia.org)
@@ -76,6 +78,21 @@ docker build -t username/aspia-server:3.0.21 .
 **3.0.21** - version tag
 
 Deployment from an image is described here - https://hub.docker.com/r/paprikkafox/aspia-server
+
+### Published image
+
+GitHub Actions builds the image (linux/amd64), runs the tests against it, and publishes it to `ghcr.io/<owner>/aspia-server`, where `<owner>` is the GitHub account of the repository you use. Docker Hub and Quay.io get the same image when the maintainer has enabled them ([docs/ci.md](docs/ci.md)).
+
+Pin an exact version, or a digest for an image that never changes (the digest of each release is in the summary of its publish run):
+
+```shell
+docker pull ghcr.io/<owner>/aspia-server:3.0.21
+docker pull ghcr.io/<owner>/aspia-server@sha256:<digest>
+```
+
+With docker compose, put the same reference into `.env`: `ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.0.21` or `ASPIA_IMAGE=ghcr.io/<owner>/aspia-server@sha256:<digest>`.
+
+The version tag is rebuilt every week to pick up Debian security updates, so its digest changes; every weekly rebuild also gets its own tag `3.0.21-YYYYMMDD`, which never moves. The tags `latest`, `<major>` and `<major>.<minor>` exist only for convenience: they change under you on the next pull, so do not use them on a server. The image is signed with cosign; [docs/ci.md](docs/ci.md) shows how to verify it.
 
 ### Ports
 
