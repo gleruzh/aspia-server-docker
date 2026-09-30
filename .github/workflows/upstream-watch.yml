@@ -1,0 +1,216 @@
+# Upstream watch: when dchapyshev/aspia publishes a newer stable release with both x86_64 server
+# packages, update versions.env and every pinned image tag, build the image, run tests/run.sh, and
+# open a pull request "chore: bump Aspia to X.Y.Z" against the branch this workflow runs on.
+# Nothing is merged automatically: a new Aspia version has changed the configuration format before,
+# so a person reviews and merges. When the tests fail the pull request is opened as a draft with
+# the failure log.
+#
+# GitHub limitations and how they are handled (details in docs/ci.md):
+# - A pull request opened with GITHUB_TOKEN triggers no workflows, so ci.yml would not run on it.
+#   The tests therefore run in this job and their result goes into the pull request description.
+#   With the optional secret UPSTREAM_WATCH_TOKEN (a fine-grained token with contents and
+#   pull-requests write access) the branch and pull request are created with that token instead,
+#   and ci.yml runs on the pull request as usual.
+# - GitHub disables scheduled workflows after 60 days without repository activity, and they do not
+#   run in a fork until Actions is enabled there. A manual run (workflow_dispatch) always works.
+name: Upstream watch
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Open a pull request even if an earlier one for this version was closed without merging.
+        required: false
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: upstream-watch-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  watch:
+    name: Check for a new Aspia release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: write        # push the aspia-bump/X.Y.Z branch
+      pull-requests: write   # open the pull request
+    env:
+      BASE: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compare the latest stable release with versions.env
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          current="$(scripts/versions.sh get ASPIA_VERSION)"
+          latest="$(scripts/aspia-release.sh latest)"
+          echo "versions.env on ${BASE}: ${current}; latest stable release of dchapyshev/aspia: ${latest}"
+          # update=true is written only at the end; without it the later steps are skipped.
+          echo "current=${current}" >> "${GITHUB_OUTPUT}"
+          if [[ "${latest}" == "${current}" || "$(printf '%s\n' "${latest}" "${current}" | sort -V | tail -n 1)" != "${latest}" ]]; then
+            echo "Up to date."
+            exit 0
+          fi
+          if ! scripts/aspia-release.sh has-debs "${latest}"; then
+            echo "::notice::Aspia ${latest} is released but does not have both x86_64 .deb packages yet; nothing to do."
+            exit 0
+          fi
+          branch="aspia-bump/${latest}"
+          open="$(gh pr list --repo "${GITHUB_REPOSITORY}" --head "${branch}" --base "${BASE}" --state open --json url --jq '.[0].url // ""')"
+          if [[ -n "${open}" ]]; then
+            echo "::notice::A pull request for Aspia ${latest} is already open: ${open}. Nothing to do."
+            exit 0
+          fi
+          closed="$(gh pr list --repo "${GITHUB_REPOSITORY}" --head "${branch}" --base "${BASE}" --state closed --json url,mergedAt --jq '[.[] | select(.mergedAt == null)][0].url // ""')"
+          if [[ -n "${closed}" && "${FORCE}" != true ]]; then
+            echo "::notice::A pull request for Aspia ${latest} was closed without merging: ${closed}. Not reopening it every 6 hours; run this workflow manually with force to open a new one."
+            exit 0
+          fi
+          {
+            echo "update=true"
+            echo "version=${latest}"
+            echo "branch=${branch}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Download the packages, update versions.env and pinned tags
+        if: steps.check.outputs.update == 'true'
+        id: bump
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          read -r router relay < <(scripts/aspia-release.sh fetch "${VERSION}" "${RUNNER_TEMP}/debs")
+          echo "sha256 aspia-router-${VERSION}-x86_64.deb ${router}"
+          echo "sha256 aspia-relay-${VERSION}-x86_64.deb ${relay}"
+          rm -rf "${RUNNER_TEMP}/debs"
+          scripts/versions.sh bump "${VERSION}" "${router}" "${relay}"
+          git diff --stat
+          {
+            echo "router=${router}"
+            echo "relay=${relay}"
+          } >> "${GITHUB_OUTPUT}"
+
+      # The tests run here because ci.yml does not run on a pull request opened with GITHUB_TOKEN.
+      - name: Build the image and run tests/run.sh
+        if: steps.check.outputs.update == 'true'
+        id: test
+        run: |
+          set +e
+          tests/run.sh 2>&1 | tee "${RUNNER_TEMP}/tests.log"
+          status="${PIPESTATUS[0]}"
+          set -e
+          echo "status=${status}" >> "${GITHUB_OUTPUT}"
+          if [[ "${status}" == 0 ]]; then echo "tests/run.sh passed"; else echo "::warning::tests/run.sh failed (exit ${status}); the pull request will be a draft."; fi
+
+      - name: Keep the test log
+        if: steps.check.outputs.update == 'true' && !cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tests-aspia-${{ steps.check.outputs.version }}
+          path: ${{ runner.temp }}/tests.log
+          retention-days: 30
+
+      - name: Push the branch and open the pull request
+        if: steps.check.outputs.update == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_WATCH_TOKEN || github.token }}
+          VERSION: ${{ steps.check.outputs.version }}
+          CURRENT: ${{ steps.check.outputs.current }}
+          BRANCH: ${{ steps.check.outputs.branch }}
+          ROUTER: ${{ steps.bump.outputs.router }}
+          RELAY: ${{ steps.bump.outputs.relay }}
+          STATUS: ${{ steps.test.outputs.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          OWN_TOKEN: ${{ secrets.UPSTREAM_WATCH_TOKEN != '' }}
+        run: |
+          title="chore: bump Aspia to ${VERSION}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "${BRANCH}"
+          mapfile -t files < <(scripts/versions.sh files)
+          git add versions.env "${files[@]}"
+          git commit -q -m "${title}" -m "Release: https://github.com/dchapyshev/aspia/releases/tag/v${VERSION}"
+          gh auth setup-git
+          git push --force origin "HEAD:refs/heads/${BRANCH}"
+
+          body="${RUNNER_TEMP}/body.md"
+          {
+            echo "Aspia ${CURRENT} -> ${VERSION}: https://github.com/dchapyshev/aspia/releases/tag/v${VERSION}"
+            echo
+            echo "Opened by the upstream-watch workflow: ${RUN_URL}"
+            echo
+            echo "| Package | sha256 (computed, equals the GitHub API digest) |"
+            echo "|---|---|"
+            echo "| aspia-router-${VERSION}-x86_64.deb | \`${ROUTER}\` |"
+            echo "| aspia-relay-${VERSION}-x86_64.deb | \`${RELAY}\` |"
+            echo
+            echo "Changed files:"
+            echo
+            echo '```'
+            git diff --stat HEAD~1 HEAD
+            echo '```'
+            echo
+            if [[ "${STATUS}" == 0 ]]; then
+              echo "## tests/run.sh: passed"
+            else
+              echo "## tests/run.sh: FAILED (exit ${STATUS})"
+              echo
+              echo "This pull request is a draft because the tests failed on the new version. Read the log below and the upstream changelog before doing anything else."
+            fi
+            echo
+            echo "The tests ran in the workflow run above, on this branch."
+            if [[ "${OWN_TOKEN}" != true ]]; then
+              echo "This pull request was opened with GITHUB_TOKEN, so GitHub does not start ci.yml for it."
+              echo "To run CI here as well, close and reopen the pull request, or set the UPSTREAM_WATCH_TOKEN secret (docs/ci.md)."
+            fi
+            echo
+            echo "Before merging: read the upstream changelog (https://aspia.org/changelog) for changes to the configuration format, ports or migration."
+            echo "Nothing is merged automatically. After the merge, publish.yml builds, tests and publishes ${VERSION}."
+            echo
+            echo "<details><summary>tests/run.sh summary</summary>"
+            echo
+            echo '```'
+            grep -E '^(===|  ok|  FAIL)' "${RUNNER_TEMP}/tests.log" | tail -c 20000 || true
+            echo '```'
+            echo "</details>"
+            if [[ "${STATUS}" != 0 ]]; then
+              echo
+              echo "<details open><summary>Failure log (last lines)</summary>"
+              echo
+              echo '```'
+              tail -n 150 "${RUNNER_TEMP}/tests.log" | tail -c 30000
+              echo '```'
+              echo "</details>"
+            fi
+          } > "${body}"
+
+          draft=()
+          [[ "${STATUS}" == 0 ]] || draft=(--draft)
+          if ! gh pr create --repo "${GITHUB_REPOSITORY}" --base "${BASE}" --head "${BRANCH}" \
+              --title "${title}" --body-file "${body}" "${draft[@]}"; then
+            echo "::error::The branch ${BRANCH} was pushed, but the pull request could not be opened. If GitHub says Actions may not create pull requests, enable Settings > Actions > General > Allow GitHub Actions to create and approve pull requests, or set the UPSTREAM_WATCH_TOKEN secret (docs/ci.md)."
+            exit 1
+          fi
+
+      - name: Fail the run when the tests failed
+        if: steps.check.outputs.update == 'true' && steps.test.outputs.status != '0'
+        env:
+          STATUS: ${{ steps.test.outputs.status }}
+        run: |
+          echo "::error::tests/run.sh failed on the new Aspia version (exit ${STATUS}); a draft pull request with the log was opened."
+          exit 1
