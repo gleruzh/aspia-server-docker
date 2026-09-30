@@ -337,3 +337,23 @@ publish-to-main behaviour.
 - Relay as non-root; changing ownership of an existing root-owned 2.x volume.
 - Whether the Router applies per-address brute-force protection, and its thresholds (relevant to rootless Podman source-address rewriting).
 - Whether a Client can trigger `--install-update` remotely on a Router.
+
+## 14. Verified while implementing PR 1
+
+Same legend. "Image" is the PR 1 image (`docker build --platform linux/amd64 -t aspia-server:test .`);
+"probe" is `aspia-probe:3.0.21` from section 0; "tests" is `tests/run.sh`.
+
+| Fact | Verified by |
+|---|---|
+| `aspia_relay --create-config` creates only `relay.conf` (0600, the content in section 4) and prints `Configuration successfully created.`, nothing secret. On a **non-empty** `relay.conf` it prints `Settings file already exists. Continuation is impossible.` and exits 1; on an **empty** `relay.conf` it succeeds. It does not fill `router/public_key`. | [run] probe: `aspia_relay --create-config` three times (clean, again, after `: > relay.conf`) |
+| A public key can be derived from a `private_key` in `router.conf` with OpenSSL: DER prefix `302e020100300506032b656e04220420` + the 32 key bytes, then `openssl pkey -inform DER -pubout -outform DER`, last 32 bytes. The result equals `host.pub` / `relay.pub` of a fresh `--create-config`. The tests use this to prove key continuity without trusting `.pub` files. | [run] `tests/helper/x25519_pub <host/private_key>` = `host.pub`, `<relay/private_key>` = `relay.pub` |
+| A Router port cannot be disabled with `0`: `host/port`, `host/legacy_port` and `stun/port` equal to 0 are rejected (`Invalid port specified in configuration file`, `Invalid legacy port ...`, `Invalid stun port ...`). STUN is switched off only by `stun/enabled`. So a healthy Router always listens on all four TCP ports. | [src] `router/workers/host_worker.cc:147-158`, `router/workers/stun_worker.cc:54-70` |
+| With `ASPIA_LOG_TO_FILE=0` in the build environment, the package `postinst` (`--install`) writes no log file and `/var/log/aspia` does not exist in the image. (Without it, see the correction in the separate addendum: one log file per package is left in the layer.) | [run] image: `find / -xdev -path '/var/log/aspia*'` finds nothing |
+| Both binaries log the signal as `Signal received:  "SIGTERM"  ( 15 )` (two spaces after the colon). Match it with `Signal received: +"SIGTERM"`. | [run] tests, scenario 4 |
+| After 3.x has run, `router.db3` is in WAL mode and `-wal`/`-shm` stay after shutdown. `sqlite3` cannot open it from a **read-only** mount (`unable to open database file (14)`); read it through a writable mount while the Router is stopped. | [run] tests, scenario 3 |
+| Setting `PeerAddress` in `relay.json` (with `jq`) **before** the first 3.x start is carried into `relay.conf` `peer/public_address` by the Relay's migration. The migrated Relay connects. | [run] tests, scenario 3 (2.7.0 with `EXTERNAL_IP=203.0.113.10`, 3.0.21 with `203.0.113.11`) |
+| Rollback works: after the migration, copying the pre-migration `router.json`, `relay.json` and `router.db3` back, and deleting `router.conf`, `relay.conf`, `router.db3-wal` and `router.db3-shm`, lets `paprikkafox/aspia-server:2.7.0` start again; its Relay connects to 8060 and the fixture host is in the database. | [run] tests, scenario 3 (end) |
+| The 2.7.0 → 3.0.21 upgrade also works with the compose bind mounts `./data/config` and `./data/database` (Docker Desktop, macOS): 2.7.0 via the old compose file, then the new compose file and `up -d`; healthy, same key, backups next to the originals. | [run] once by hand, with a temporary local tag `paprikkafox/aspia-server:3.0.21` for the test image, removed afterwards |
+| On a user-defined Docker network, a container has an extra LISTEN socket on a random high port (Docker's embedded DNS). Tests that list listening ports must not require an exact set. | [run] tests, scenario 1 |
+| Debian trixie ships `tini` 0.19.0-3+b8 (`/usr/bin/tini`, depends only on libc6). Started under `docker run --init` (so not PID 1) it warns `Tini is not running as PID 1 and isn't registered as a child subreaper`; with `tini -s` the warning is gone and stop/health behave the same. | [run] `apt-cache policy tini`; image with and without `-s`, `docker run --init` |
+| `wait -n -p VAR` (bash 5.2 in trixie) **unsets** `VAR` when a trapped signal interrupts the wait. Under `set -u`, reading it needs `${VAR:-}`. | [run] first version of `aspia_start` failed on `docker stop` with `pid: unbound variable` |
