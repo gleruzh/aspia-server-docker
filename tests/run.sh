@@ -101,6 +101,9 @@ state() { docker inspect -f "{{$1}}" "$2"; }
 # would fail under pipefail when grep exits early.
 log_has() { grep -qE -- "$2" <<<"$(docker logs "$1" 2>&1)"; }
 
+# sigterm_lines <container>: how many times an Aspia process logged a received SIGTERM.
+sigterm_lines() { grep -cE 'Signal received: +"SIGTERM"' <<<"$(docker logs "$1" 2>&1)" || true; }
+
 # wait_healthy <container>: fails if the container stops or is not healthy within HEALTH_TIMEOUT.
 wait_healthy() {
     local i status
@@ -295,9 +298,10 @@ scenario_new_external_ip() {
 }
 
 scenario_stop() {
-    local start elapsed code n
+    local start elapsed code n before
     log "4. docker stop: under 10 s, exit code 0 or 143"
     CURRENT_CONTAINER="${S1_NAME}"
+    before="$(sigterm_lines "${S1_NAME}")"
     start="$(date +%s)"
     docker stop "${S1_NAME}" >/dev/null
     elapsed=$(($(date +%s) - start))
@@ -305,10 +309,10 @@ scenario_stop() {
     ((elapsed < 10)) || fail "docker stop took ${elapsed} s"
     [[ "${code}" == 0 || "${code}" == 143 ]] || fail "exit code ${code} after docker stop"
     ok "stopped in ${elapsed} s (whole seconds), exit code ${code}"
-    # Log lines after the entrypoint forwarded the signal: both Aspia processes must report it.
-    n="$(docker logs "${S1_NAME}" 2>&1 \
-        | awk '/Received SIGTERM/ { tail = "" } { tail = tail $0 "\n" } END { printf "%s", tail }' \
-        | grep -cE 'Signal received: +"SIGTERM"' || true)"
+    # Both Aspia processes must report the forwarded signal. They log to stderr and aspia_start to
+    # stdout, and docker logs does not keep the order across the two streams, so count the new
+    # lines rather than looking for them after the entrypoint's own message.
+    n=$(($(sigterm_lines "${S1_NAME}") - before))
     [[ "${n}" == 2 ]] || fail "expected both processes to log SIGTERM, found ${n}"
     ok "both Aspia processes logged the forwarded SIGTERM and exited"
 }
