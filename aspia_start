@@ -308,8 +308,10 @@ require_count() {
 }
 
 # require_allowed_ips <VAR>: a comma-separated list of IPs or CIDR subnets (router.conf white_list
-# keys, notes section 4). An empty value is not the same as unset: ASPIA_..._ALLOWED_IPS='' is a
-# deliberate "allow all", like an empty white_list; only a missing variable leaves the file alone.
+# keys, notes section 4). Same rule as every other variable: an empty value ("VAR=") is treated the
+# same as unset, so the file is left alone -- it does NOT clear an existing list (an empty
+# white_list in router.conf itself still means "allow all"; to actually clear one, edit the file,
+# or set the variable to the list you want).
 require_allowed_ips() {
     local name="$1" value="${!1:-}" entry
     [[ -z "${value}" ]] && return 0
@@ -355,10 +357,15 @@ detect_public_address() {
 
 # ---------------------------------------------------------------------------------------------
 # Phase 0: run as PUID:PGID instead of root, if requested. A no-op when neither is set.
+#
+# Split in two so that ownership is never touched before every validate_* has passed ("nothing was
+# changed" must stay true when a start is refused): validate_puid_pgid only checks the variables
+# (called from the validate phase, like every other require_*); drop_privileges does the chown and
+# the re-exec, called only once every validate_* has succeeded. validate_puid_pgid is skipped after
+# the re-exec (_ASPIA_PRIVDROP_DONE): by then EUID is the target uid, not 0, so its own "must start
+# as root" check would otherwise misfire on a value that was already valid.
 
-# maybe_drop_privileges: chowns the two volumes to PUID:PGID and re-execs this script as that
-# user. Guarded by _ASPIA_PRIVDROP_DONE (not EUID, so that PUID=0/PGID=0 does not loop forever).
-maybe_drop_privileges() {
+validate_puid_pgid() {
     [[ -n "${_ASPIA_PRIVDROP_DONE:-}" ]] && return 0
     local puid="${PUID:-}" pgid="${PGID:-}"
     [[ -z "${puid}" && -z "${pgid}" ]] && return 0   # default: stay root, exactly like before PR 3
@@ -373,10 +380,24 @@ maybe_drop_privileges() {
     fi
     ((EUID == 0)) \
         || die "PUID/PGID require the container to start as root; do not combine them with 'docker run --user'."
+}
+
+# drop_privileges <args...>: chowns the two volumes to PUID:PGID and re-execs this script as that
+# user, passing on the resolved Relay address (so "auto" is not queried twice). Guarded by
+# _ASPIA_PRIVDROP_DONE (not EUID, so that PUID=0/PGID=0 does not loop forever). Only called from
+# main() after every validate_* has already passed.
+drop_privileges() {
+    [[ -n "${_ASPIA_PRIVDROP_DONE:-}" ]] && return 0
+    local puid="${PUID:-}" pgid="${PGID:-}"
+    [[ -z "${puid}" && -z "${pgid}" ]] && return 0
 
     chown -R "${puid}:${pgid}" "${CONFIG_DIR}" "${DATA_DIR}"
     log "PUID/PGID set: running the Router and the Relay as uid=${puid} gid=${pgid}."
     export _ASPIA_PRIVDROP_DONE=1
+    # Both names, already resolved: "auto" is not queried twice, and validate_relay does not log a
+    # spurious "set to different values" the second time around when only one of them was given.
+    export ASPIA_RELAY_PUBLIC_ADDRESS="${PEER_PUBLIC_ADDRESS}"
+    export EXTERNAL_IP="${PEER_PUBLIC_ADDRESS}"
     exec setpriv --reuid="${puid}" --regid="${pgid}" --clear-groups --no-new-privs -- "$0" "$@"
 }
 
@@ -412,6 +433,9 @@ validate_router() {
         [[ -f "${ROUTER_DB}" ]] || die "Found the Aspia 2.x configuration ${ROUTER_JSON}, but not the database ${ROUTER_DB}." \
             "Mount the database volume at ${DATA_DIR} (./data/database in docker-compose.yml). Nothing was changed."
         ROUTER_STATE=migrate
+        # preseed_router_migration edits router.json; check it here, while nothing has been written yet.
+        jq -e 'type == "object"' "${ROUTER_JSON}" >/dev/null 2>&1 \
+            || die "${ROUTER_JSON} is not valid JSON. Fix or restore it. Nothing was changed."
     elif [[ -s "${ROUTER_CONF}" ]]; then
         [[ -f "${ROUTER_DB}" ]] || die "Found ${ROUTER_CONF}, but not the database ${ROUTER_DB}." \
             "Mount the database volume at ${DATA_DIR} (./data/database in docker-compose.yml). Nothing was changed."
@@ -494,9 +518,7 @@ validate_relay() {
 # exists; apply_router_settings then applies them as usual.
 # shellcheck disable=SC2016  # the $-prefixed names below are jq variables, not shell ones
 preseed_router_migration() {
-    jq -e 'type == "object"' "${ROUTER_JSON}" >/dev/null 2>&1 \
-        || die "${ROUTER_JSON} is not valid JSON. Fix or restore it. The backup copy is next to it."
-
+    # router.json was already validated as JSON in validate_router, before anything was written.
     local -a args=() filters=()
     if [[ -n "${ASPIA_ROUTER_LEGACY_PORT:-}" ]]; then
         args+=(--arg port "${ASPIA_ROUTER_LEGACY_PORT}")
@@ -802,13 +824,17 @@ main() {
     trap 'on_signal INT' INT
 
     mkdir -p "${CONFIG_DIR}" "${DATA_DIR}"
-    maybe_drop_privileges "$@"
+
+    # Every validate_* below only reads. Ownership is changed (drop_privileges) only once all of
+    # them have passed, so a refused start never touches the volumes, PUID/PGID included.
+    validate_puid_pgid
+    for service in "${SERVICES[@]}"; do "validate_${service}"; done
+    drop_privileges "$@"
 
     router_version="$(/usr/bin/aspia_router --version 2>/dev/null)" || router_version="aspia_router: unknown version"
     relay_version="$(/usr/bin/aspia_relay --version 2>/dev/null)" || relay_version="aspia_relay: unknown version"
     log "Aspia Server image ${ASPIA_VERSION:-unknown}: ${router_version}, ${relay_version}."
 
-    for service in "${SERVICES[@]}"; do "validate_${service}"; done
     for service in "${SERVICES[@]}"; do
         ((STOPPING)) || "prepare_${service}"
     done

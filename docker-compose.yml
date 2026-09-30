@@ -9,13 +9,13 @@ services:
     container_name: aspia-server
     hostname: aspia-server
     environment:
-      # Required (or set ASPIA_RELAY_PUBLIC_ADDRESS instead): the public address of this server,
-      # announced by the Relay to clients and hosts. 'auto' detects it at startup. Not marked
-      # ":?" here on purpose, so that setting only ASPIA_RELAY_PUBLIC_ADDRESS below still works;
-      # the container itself refuses to start if neither is set. See .env.example and README.md
-      # for the full list of variables below (every one is optional: unset = the file is left
-      # alone, so a hand edit of router.conf/relay.conf survives).
-      - EXTERNAL_IP=${EXTERNAL_IP:-}
+      # Required: the public address of this server, announced by the Relay to clients and hosts.
+      # 'auto' detects it at startup. Set EXTERNAL_IP or ASPIA_RELAY_PUBLIC_ADDRESS (its new name,
+      # an exact alias); "docker compose config" fails with a clear error if neither is set. See
+      # .env.example and README.md for the full list of variables below (every other one is
+      # optional: unset = the file is left alone, so a hand edit of router.conf/relay.conf
+      # survives).
+      - EXTERNAL_IP=${EXTERNAL_IP:-${ASPIA_RELAY_PUBLIC_ADDRESS:?Set EXTERNAL_IP or ASPIA_RELAY_PUBLIC_ADDRESS to the public address of this server (or auto), e.g. in .env next to docker-compose.yml}}
       - ASPIA_RELAY_PUBLIC_ADDRESS=${ASPIA_RELAY_PUBLIC_ADDRESS:-}
       - ASPIA_RELAY_PEER_PORT
       - ASPIA_RELAY_IDLE_TIMEOUT
