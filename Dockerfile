@@ -52,14 +52,19 @@ ENV ASPIA_VERSION=${ASPIA_VERSION} \
 
 # The packages are bind-mounted from the fetch stage, so they never become part of a layer.
 # apt resolves their dependencies (libdbus-1-3). tini is PID 1, jq edits the 2.x relay.json
-# before upstream's migration. The package postinst runs "--install", a no-op while no
-# configuration exists; no user data is mounted during the build.
+# before upstream's migration. curl and ca-certificates are only for ASPIA_RELAY_PUBLIC_ADDRESS
+# (EXTERNAL_IP)=auto (aspia_start queries a public "what is my IP" endpoint over HTTPS); curl was
+# removed from this image in PR 1 and is reintroduced for this one feature (PR 3). The package
+# postinst runs "--install", a no-op while no configuration exists; no user data is mounted during
+# the build.
 # Package versions are not pinned: the base image is pinned by digest, and Debian stable
 # only receives security fixes.
 # hadolint ignore=DL3008
 RUN --mount=type=bind,from=fetch,source=/pkg,target=/tmp/pkg \
     apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
         jq \
         tini \
         "/tmp/pkg/aspia-router-${ASPIA_VERSION}-x86_64.deb" \
@@ -68,6 +73,10 @@ RUN --mount=type=bind,from=fetch,source=/pkg,target=/tmp/pkg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --chmod=0755 aspia_start aspia_health /usr/bin/
+# The directory is created first and separately: "COPY --chmod=0644" would otherwise apply that
+# same mode to the new directory too (a buildkit quirk), leaving it without an execute bit and
+# unreadable by anyone but root -- invisible until PR 3's PUID/PGID made a non-root user read it.
+RUN mkdir -m 0755 /usr/lib/aspia-server
 COPY --chmod=0644 aspia_common.sh /usr/lib/aspia-server/aspia_common.sh
 
 # Configuration and keys; database.
