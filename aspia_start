@@ -1,49 +1,449 @@
 #!/bin/bash
+#
+# aspia_start: entrypoint of the Aspia Server image (Aspia Router and Aspia Relay in one container).
+#
+#   1. Check the settings and the data on the volumes. Nothing is changed if a check fails.
+#   2. Prepare the configuration:
+#        - empty volumes:  create it with the binaries' own --create-config;
+#        - 2.x data:       copy every file the upstream migration changes, then let the binaries
+#                          migrate on start (router.json/relay.json -> router.conf/relay.conf);
+#        - 3.x data:       leave it alone.
+#      Then write EXTERNAL_IP (and the Router public key, if the Relay has none) into the Relay
+#      configuration. A file is only rewritten if a value actually changes.
+#   3. Start the processes, forward SIGTERM/SIGINT to them, and exit non-zero if one of them dies.
+#
+# Based on server/aspia_start from SinitsaDA/aspia-server-docker (commit de15b99, GPL-3.0),
+# https://github.com/SinitsaDA/aspia-server-docker. Ported: leaving the 2.x migration to the
+# binaries, filling relay.conf router/public_key from the Router key, the awk INI editing, and
+# the wait -n supervision with signal forwarding. Changed: EXTERNAL_IP is required, backups
+# before migration, no renaming of existing data, no sleep before starting the Relay, no
+# EXTERNAL_IP=auto, and the configuration files are rewritten atomically.
 
-TIMESTAMP="$(date +%Y-%m-%d_%H-%M)"
+# SC2329: validate_*, prepare_* and start_* are called by name through SERVICES, on_signal by trap.
+# shellcheck disable=SC2329
 
-if [[ -f /var/lib/aspia/router.db3 ]] && [[ -f /etc/aspia/router.pub ]] && [[ -f /etc/aspia/router.json ]] && [[ -f /etc/aspia/relay.json ]]; then
-    PUBLIC_KEY="$(cat /etc/aspia/router.pub)"
+set -euo pipefail
 
-    echo "All files in place, trying to start Aspia Server..."
+readonly CONFIG_DIR=/etc/aspia
+readonly DATA_DIR=/var/lib/aspia
+readonly ROUTER_CONF="${CONFIG_DIR}/router.conf"
+readonly RELAY_CONF="${CONFIG_DIR}/relay.conf"
+readonly HOST_PUB="${CONFIG_DIR}/host.pub"      # 3.x: the key hosts are configured with
+readonly RELAY_PUB="${CONFIG_DIR}/relay.pub"    # 3.x: the key relays authenticate the Router with
+readonly ROUTER_DB="${DATA_DIR}/router.db3"
+readonly ROUTER_JSON="${CONFIG_DIR}/router.json" # 2.x
+readonly RELAY_JSON="${CONFIG_DIR}/relay.json"   # 2.x
+readonly ROUTER_PUB="${CONFIG_DIR}/router.pub"   # 2.x: one key for hosts and relays; still valid after migration
 
-    echo "Setting External IP from environment variable - ${EXTERNAL_IP}"
-    jq --arg EXTERNAL_IP "${EXTERNAL_IP}" '.PeerAddress = $EXTERNAL_IP' /etc/aspia/relay.json|sponge /etc/aspia/relay.json
+# How long to wait for a started process to open its port before moving on.
+readonly LISTEN_TIMEOUT_SECONDS=60
 
-    echo "Setting Router public key in Aspia Relay from 'router.pub' file..."
-    echo "Aspia Router public key is - ${PUBLIC_KEY}"
-    jq --arg PUBLIC_KEY "${PUBLIC_KEY}" '.RouterPublicKey = $PUBLIC_KEY' /etc/aspia/relay.json|sponge /etc/aspia/relay.json
+# The processes this container runs, in start order. This is the only place that decides it:
+# every phase below runs validate_<name>, prepare_<name> and start_<name> for each entry.
+readonly SERVICES=(router relay)
 
-    echo "Ready to start!"
+BACKUP_SUFFIX=".pre-${ASPIA_VERSION:-3.x}-$(date -u +%Y%m%dT%H%M%SZ)"
+readonly BACKUP_SUFFIX
 
-    for cmd in "$@"; do {
-      echo "Process \"$cmd\" started";
-      $cmd & pid=$!
-      PID_LIST+=" $pid";
-    } done
-    trap "kill $PID_LIST" SIGINT
+ROUTER_STATE=""   # new | migrate | existing
+RELAY_STATE=""    # new | migrate | existing
 
-    echo "Parallel processes have started";
-    wait $PID_LIST
-    echo "All processes has been killed";
+declare -A CHILDREN=()   # pid -> process name
+STOPPING=0
+EXIT_CODE=0
 
-  else
+log() { printf '[aspia_start] %s\n' "$*"; }
+warn() { printf '[aspia_start] WARNING: %s\n' "$*" >&2; }
+die() {
+    printf '[aspia_start] ERROR: %s\n' "$*" >&2
+    exit 1
+}
 
-    echo "Configuration files corrupt - cannot start Aspia Server! Trying to create new..."
+# ---------------------------------------------------------------------------------------------
+# Helpers
 
-    echo "Backuping the old ones..."
+# ini_get <file> <section> <key> <default>: prints the value, or <default> if it is missing or empty.
+ini_get() {
+    local value=""
+    if [[ -r "$1" ]]; then
+        value="$(awk -v section="$2" -v key="$3" '
+            function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+            { line = $0; sub(/\r$/, "", line) }
+            line ~ /^[ \t]*\[/ { in_section = (trim(line) == "[" section "]"); next }
+            in_section && (p = index(line, "=")) > 0 && trim(substr(line, 1, p - 1)) == key {
+                print trim(substr(line, p + 1)); exit
+            }
+        ' "$1")"
+    fi
+    printf '%s\n' "${value:-$4}"
+}
 
-    mv /var/lib/aspia/router.db3 /var/lib/aspia/router.db3_r &>/dev/null
-    mv /etc/aspia/router.pub /etc/aspia/router.pub_r &>/dev/null
-    mv /etc/aspia/router.json /etc/aspia/router.json_r &>/dev/null
-    mv /etc/aspia/relay.json /etc/aspia/relay.json_r &>/dev/null
+# replace_file <file> <new content file>: atomically replaces <file>, keeping its mode and owner.
+replace_file() {
+    chmod --reference="$1" "$2"
+    chown --reference="$1" "$2"
+    mv -f "$2" "$1"
+}
 
-    echo "Generating basic config for Aspia Router"
-    /usr/bin/aspia_router --create-config
+# ini_set <file> <section> <key> <value>: sets one key; the rest of the file is kept as it is.
+# The caller validates <value> (no newlines, no backslashes).
+ini_set() {
+    local tmp
+    tmp="$(mktemp "$1.XXXXXX")"
+    awk -v section="$2" -v key="$3" -v value="$4" '
+        function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+        { line = $0; sub(/\r$/, "", line) }
+        line ~ /^[ \t]*\[/ {
+            if (in_section && !done) { print key "=" value; done = 1 }
+            in_section = (trim(line) == "[" section "]")
+            print; next
+        }
+        in_section && !done && (p = index(line, "=")) > 0 && trim(substr(line, 1, p - 1)) == key {
+            print key "=" value; done = 1; next
+        }
+        { print }
+        END {
+            if (!done) {
+                if (!in_section) { print ""; print "[" section "]" }
+                print key "=" value
+            }
+        }
+    ' "$1" > "${tmp}" || { rm -f "${tmp}"; die "cannot update $1"; }
+    replace_file "$1" "${tmp}"
+}
 
-    echo "Generating basic config for Aspia Relay"
-    /usr/bin/aspia_relay --create-config
+# backup <file>...: copies each existing, non-empty file to <file>${BACKUP_SUFFIX}. Never overwrites:
+# an existing copy with that name was made earlier in this start (or in the same second) and
+# already holds the older content.
+backup() {
+    local file
+    for file in "$@"; do
+        [[ -s "${file}" ]] || continue
+        [[ -e "${file}${BACKUP_SUFFIX}" ]] && continue
+        cp -a -- "${file}" "${file}${BACKUP_SUFFIX}"
+        log "Backup: ${file} -> ${file}${BACKUP_SUFFIX}"
+    done
+}
 
+# read_key <file>: prints the key in <file> if it is 64 hex characters, otherwise nothing.
+read_key() {
+    local key=""
+    [[ -s "$1" ]] && key="$(tr -d '[:space:]' < "$1")"
+    [[ "${key}" =~ ^[0-9A-Fa-f]{64}$ ]] && printf '%s\n' "${key}"
+    return 0
+}
 
-fi
+# The public key hosts are configured with: host.pub (3.x), or router.pub after a 2.x migration
+# (the migration writes the 2.x key into host/private_key and does not create host.pub).
+host_public_key() {
+    local key
+    key="$(read_key "${HOST_PUB}")"
+    [[ -n "${key}" ]] || key="$(read_key "${ROUTER_PUB}")"
+    printf '%s\n' "${key}"
+}
 
+# The public key the Relay authenticates the Router with: relay.pub (3.x), or router.pub after a
+# 2.x migration (the migration writes the 2.x key into relay/private_key as well).
+relay_router_public_key() {
+    local key
+    key="$(read_key "${RELAY_PUB}")"
+    [[ -n "${key}" ]] || key="$(read_key "${ROUTER_PUB}")"
+    printf '%s\n' "${key}"
+}
+
+# tcp_listening <port>: succeeds if some process in the container listens on <port> (IPv4 or IPv6).
+# Reads /proc only; no connection is opened.
+tcp_listening() {
+    local files=() file
+    for file in /proc/net/tcp /proc/net/tcp6; do
+        [[ -r "${file}" ]] && files+=("${file}")
+    done
+    ((${#files[@]})) || return 1
+    awk -v port="$(printf '%04X' "$1")" '
+        FNR > 1 && $4 == "0A" { n = split($2, a, ":"); if (toupper(a[n]) == port) { found = 1; exit } }
+        END { exit !found }
+    ' "${files[@]}"
+}
+
+# ---------------------------------------------------------------------------------------------
+# Phase 1: validate. Runs before anything is written to the volumes.
+
+validate_router() {
+    local file found=()
+
+    if [[ -f "${ROUTER_JSON}" ]]; then
+        [[ -f "${ROUTER_DB}" ]] || die "Found the Aspia 2.x configuration ${ROUTER_JSON}, but not the database ${ROUTER_DB}." \
+            "Mount the database volume at ${DATA_DIR} (./data/database in docker-compose.yml). Nothing was changed."
+        ROUTER_STATE=migrate
+    elif [[ -s "${ROUTER_CONF}" ]]; then
+        [[ -f "${ROUTER_DB}" ]] || die "Found ${ROUTER_CONF}, but not the database ${ROUTER_DB}." \
+            "Mount the database volume at ${DATA_DIR} (./data/database in docker-compose.yml). Nothing was changed."
+        ROUTER_STATE=existing
+    else
+        for file in "${ROUTER_CONF}" "${HOST_PUB}" "${RELAY_PUB}" "${ROUTER_PUB}" "${ROUTER_DB}"; do
+            [[ -e "${file}" ]] && found+=("${file}")
+        done
+        if ((${#found[@]})); then
+            die "No Router configuration (${ROUTER_CONF}, or ${ROUTER_JSON} from Aspia 2.x), but these files exist: ${found[*]}." \
+                "Creating a new configuration would create new keys, and every host would have to be reconfigured." \
+                "Check that both volumes are mounted: configuration at ${CONFIG_DIR}, database at ${DATA_DIR}." \
+                "To really start from scratch, move these files away yourself. Nothing was changed."
+        fi
+        ROUTER_STATE=new
+    fi
+}
+
+validate_relay() {
+    # With an empty [peer] public_address the Relay runs but never registers with the Router.
+    if [[ -z "${EXTERNAL_IP:-}" || "${EXTERNAL_IP}" =~ ^[[:space:]]*$ ]]; then
+        die "EXTERNAL_IP is not set. Set it to the public address of this server, the one clients and hosts use" \
+            "to reach the Relay, e.g. 'docker run -e EXTERNAL_IP=203.0.113.10 ...' or EXTERNAL_IP=203.0.113.10" \
+            "in the .env file next to docker-compose.yml. Nothing was changed."
+    fi
+    # Only a basic check that keeps the INI file well-formed: IPv4/IPv6 literals and host names
+    # pass. The Router applies the full rules and ignores a Relay whose address it rejects.
+    if ! [[ "${EXTERNAL_IP}" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+        die "EXTERNAL_IP='${EXTERNAL_IP}' is not an IP address or host name. Nothing was changed."
+    fi
+
+    if [[ -s "${RELAY_CONF}" ]]; then
+        RELAY_STATE=existing
+    elif [[ -f "${RELAY_JSON}" ]]; then
+        RELAY_STATE=migrate   # the Relay migrates relay.json only when relay.conf is missing or empty
+    else
+        RELAY_STATE=new
+    fi
+}
+
+# ---------------------------------------------------------------------------------------------
+# Phase 2: prepare the configuration.
+
+prepare_router() {
+    local output file
+    case "${ROUTER_STATE}" in
+        new)
+            log "Router: no configuration found, creating a new one."
+            # The output contains the default password; it is not copied to the log.
+            if ! output="$(/usr/bin/aspia_router --create-config 2>&1)"; then
+                printf '%s\n' "${output}" | grep -vi 'password' >&2 || true
+                die "aspia_router --create-config failed."
+            fi
+            for file in "${ROUTER_CONF}" "${HOST_PUB}" "${RELAY_PUB}" "${ROUTER_DB}"; do
+                [[ -s "${file}" ]] || die "aspia_router --create-config did not create ${file}."
+            done
+            log "Router: created ${ROUTER_CONF}, ${HOST_PUB}, ${RELAY_PUB} and ${ROUTER_DB}."
+            log "Router: created the administrator account 'admin' with the upstream default password." \
+                "Change the password in the Aspia Client right after the first login."
+            ;;
+        migrate)
+            log "Router: found Aspia 2.x data. aspia_router converts ${ROUTER_JSON} to ${ROUTER_CONF}" \
+                "and upgrades ${ROUTER_DB} in place when it starts. Copying the files it changes first."
+            backup "${ROUTER_JSON}" "${ROUTER_JSON}.bak" "${ROUTER_CONF}" \
+                "${ROUTER_DB}" "${ROUTER_DB}-wal" "${ROUTER_DB}-shm"
+            ;;
+        existing)
+            log "Router: using the existing configuration ${ROUTER_CONF}."
+            ;;
+    esac
+}
+
+prepare_relay() {
+    local key current tmp
+    key="$(relay_router_public_key)"
+
+    case "${RELAY_STATE}" in
+        new)
+            log "Relay: no configuration found, creating a new one."
+            /usr/bin/aspia_relay --create-config >/dev/null 2>&1 || die "aspia_relay --create-config failed."
+            [[ -s "${RELAY_CONF}" ]] || die "aspia_relay --create-config did not create ${RELAY_CONF}."
+            ;;
+        migrate)
+            log "Relay: found Aspia 2.x configuration. aspia_relay converts ${RELAY_JSON} to ${RELAY_CONF}" \
+                "when it starts. Copying the files it changes first."
+            backup "${RELAY_JSON}" "${RELAY_JSON}.bak" "${RELAY_CONF}"
+            # relay.json is the only place to put EXTERNAL_IP before the migration runs.
+            current="$(jq -r '.PeerAddress // "" | tostring' "${RELAY_JSON}")" \
+                || die "${RELAY_JSON} is not valid JSON. The backup copy is next to it."
+            if [[ "${current}" != "${EXTERNAL_IP}" ]]; then
+                tmp="$(mktemp "${RELAY_JSON}.XXXXXX")"
+                jq --arg address "${EXTERNAL_IP}" '.PeerAddress = $address' "${RELAY_JSON}" > "${tmp}" \
+                    || { rm -f "${tmp}"; die "cannot update ${RELAY_JSON}"; }
+                replace_file "${RELAY_JSON}" "${tmp}"
+                log "Relay: set PeerAddress=${EXTERNAL_IP} in ${RELAY_JSON} (was '${current}')."
+            fi
+            current="$(jq -r '.RouterPublicKey // "" | tostring' "${RELAY_JSON}")"
+            if [[ -z "${current}" ]]; then
+                [[ -n "${key}" ]] || die "${RELAY_JSON} has no RouterPublicKey and ${ROUTER_PUB} is missing."
+                tmp="$(mktemp "${RELAY_JSON}.XXXXXX")"
+                jq --arg key "${key}" '.RouterPublicKey = $key' "${RELAY_JSON}" > "${tmp}" \
+                    || { rm -f "${tmp}"; die "cannot update ${RELAY_JSON}"; }
+                replace_file "${RELAY_JSON}" "${tmp}"
+                log "Relay: set RouterPublicKey in ${RELAY_JSON} from the Router key."
+            fi
+            return
+            ;;
+        existing)
+            log "Relay: using the existing configuration ${RELAY_CONF}."
+            ;;
+    esac
+
+    # relay.conf exists here. peer/public_address follows EXTERNAL_IP on every start.
+    current="$(ini_get "${RELAY_CONF}" peer public_address "")"
+    if [[ "${current}" != "${EXTERNAL_IP}" ]]; then
+        [[ "${RELAY_STATE}" == existing ]] && backup "${RELAY_CONF}"
+        ini_set "${RELAY_CONF}" peer public_address "${EXTERNAL_IP}"
+        log "Relay: set [peer] public_address=${EXTERNAL_IP} (was '${current}')."
+    fi
+
+    # router/public_key is filled only when it is empty; a key set by hand is left alone.
+    current="$(ini_get "${RELAY_CONF}" router public_key "")"
+    if [[ -z "${current}" ]]; then
+        [[ -n "${key}" ]] || die "${RELAY_CONF} has no [router] public_key, and neither ${RELAY_PUB} nor ${ROUTER_PUB} exists."
+        [[ "${RELAY_STATE}" == existing ]] && backup "${RELAY_CONF}"
+        ini_set "${RELAY_CONF}" router public_key "${key}"
+        log "Relay: set [router] public_key from the Router key."
+    elif [[ -n "${key}" && "${current,,}" != "${key,,}" ]]; then
+        warn "[router] public_key in ${RELAY_CONF} differs from the Router key. Left as it is;" \
+            "the Relay will not connect to this container's Router unless that is intended."
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------------------------
+# Phase 3: start and supervise.
+
+# start_process <name> <command...>
+start_process() {
+    local name="$1"
+    shift
+    "$@" &
+    CHILDREN[$!]="${name}"
+    log "Started ${name} (pid $!)."
+}
+
+# wait_listening <name> <pid> <port>: waits until <port> is listening, <pid> exits, or a stop is requested.
+wait_listening() {
+    local name="$1" pid="$2" port="$3" i
+    for ((i = 0; i < LISTEN_TIMEOUT_SECONDS * 5; i++)); do
+        ((STOPPING)) && return 0
+        kill -0 "${pid}" 2>/dev/null || return 0   # the supervisor reports the exit
+        if tcp_listening "${port}"; then
+            log "${name} is listening on ${port}/tcp."
+            return 0
+        fi
+        sleep 0.2
+    done
+    warn "${name} is not listening on ${port}/tcp after ${LISTEN_TIMEOUT_SECONDS} s; see its log above."
+}
+
+start_router() {
+    start_process aspia_router /usr/bin/aspia_router
+    # The Relay connects to this port; starting it earlier costs a 15 s reconnect delay.
+    wait_listening aspia_router "$!" "$(ini_get "${ROUTER_CONF}" relay port 8063)"
+}
+
+start_relay() {
+    start_process aspia_relay /usr/bin/aspia_relay
+    wait_listening aspia_relay "$!" "$(ini_get "${RELAY_CONF}" peer port 8070)"
+}
+
+# on_signal <signal>: forwards the signal to every running child; the supervisor collects them.
+on_signal() {
+    local pid
+    if ((!STOPPING)); then
+        log "Received SIG$1, stopping ${CHILDREN[*]:-}."
+    fi
+    STOPPING=1
+    for pid in "${!CHILDREN[@]}"; do
+        kill -s "$1" "${pid}" 2>/dev/null || true
+    done
+}
+
+# child_exited <pid> <exit code>
+child_exited() {
+    local name="${CHILDREN[$1]}" pid
+    unset "CHILDREN[$1]"
+    if ((STOPPING)); then
+        log "${name} stopped (exit code $2)."
+        if ((EXIT_CODE == 0)); then EXIT_CODE="$2"; fi
+        return 0
+    fi
+    # Nobody asked it to stop: stop the rest and exit non-zero so the restart policy applies.
+    EXIT_CODE="$2"
+    if ((EXIT_CODE == 0)); then EXIT_CODE=1; fi
+    log "${name} exited unexpectedly (exit code $2). Stopping the other processes."
+    STOPPING=1
+    for pid in "${!CHILDREN[@]}"; do
+        kill -s TERM "${pid}" 2>/dev/null || true
+    done
+}
+
+supervise() {
+    local pid rc
+    while ((${#CHILDREN[@]})); do
+        pid=""
+        rc=0
+        wait -n -p pid "${!CHILDREN[@]}" || rc=$?
+        if [[ -n "${pid:-}" ]]; then   # wait -n -p unsets pid when a signal interrupts it
+            child_exited "${pid}" "${rc}"
+            continue
+        fi
+        # wait was interrupted by a trapped signal (rc > 128), or returned without a pid: find
+        # children that are gone and collect their exit codes.
+        for pid in "${!CHILDREN[@]}"; do
+            if ! kill -0 "${pid}" 2>/dev/null; then
+                rc=0
+                wait "${pid}" || rc=$?
+                child_exited "${pid}" "${rc}"
+            fi
+        done
+    done
+    log "All processes have exited; exit code ${EXIT_CODE}."
+    exit "${EXIT_CODE}"
+}
+
+print_summary() {
+    local stun key
+    key="$(host_public_key)"
+    log "----------------------------------------------------------------------"
+    log "External address (Relay):  ${EXTERNAL_IP}"
+    log "Public key for hosts:      ${key:-not found (neither ${HOST_PUB} nor ${ROUTER_PUB} exists)}"
+    log "Ports (publish them unchanged, host port = container port):"
+    log "  $(ini_get "${ROUTER_CONF}" host legacy_port 8060)/tcp  Router: hosts of Aspia 2.x"
+    log "  $(ini_get "${ROUTER_CONF}" host port 8061)/tcp  Router: hosts"
+    log "  $(ini_get "${ROUTER_CONF}" client port 8062)/tcp  Router: clients"
+    stun="$(ini_get "${ROUTER_CONF}" stun enabled 1)"
+    if [[ "${stun,,}" != "0" && "${stun,,}" != "false" ]]; then
+        log "  $(ini_get "${ROUTER_CONF}" stun port 8065)/udp  Router: STUN"
+    fi
+    log "  $(ini_get "${RELAY_CONF}" peer port 8070)/tcp  Relay: clients and hosts"
+    log "  $(ini_get "${ROUTER_CONF}" relay port 8063)/tcp  Router: relays (used inside the container)"
+    log "----------------------------------------------------------------------"
+}
+
+main() {
+    local service router_version relay_version
+
+    # Installed first: a stop request never interrupts a step that writes to the volumes
+    # (bash runs the trap after the current command); later steps are then skipped.
+    trap 'on_signal TERM' TERM
+    trap 'on_signal INT' INT
+
+    mkdir -p "${CONFIG_DIR}" "${DATA_DIR}"
+
+    router_version="$(/usr/bin/aspia_router --version 2>/dev/null)" || router_version="aspia_router: unknown version"
+    relay_version="$(/usr/bin/aspia_relay --version 2>/dev/null)" || relay_version="aspia_relay: unknown version"
+    log "Aspia Server image ${ASPIA_VERSION:-unknown}: ${router_version}, ${relay_version}."
+
+    for service in "${SERVICES[@]}"; do "validate_${service}"; done
+    for service in "${SERVICES[@]}"; do
+        ((STOPPING)) || "prepare_${service}"
+    done
+    for service in "${SERVICES[@]}"; do
+        ((STOPPING)) || "start_${service}"
+    done
+    ((STOPPING)) || print_summary
+    supervise
+}
+
+main "$@"

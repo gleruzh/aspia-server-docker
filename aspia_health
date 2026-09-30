@@ -1,0 +1,95 @@
+#!/bin/bash
+#
+# aspia_health: container healthcheck of the Aspia Server image.
+#
+# Healthy means:
+#   - the Router is listening on every port in router.conf: host/legacy_port, host/port,
+#     client/port, relay/port (TCP) and, when STUN is enabled, stun/port (UDP);
+#   - the Relay is listening on peer/port from relay.conf;
+#   - the Relay is connected to the Router: an ESTABLISHED TCP socket whose remote port is
+#     router/port from relay.conf.
+#
+# Only /proc/net/{tcp,tcp6,udp,udp6} are read. No connection is opened to the Router, so the
+# check neither fills the Router log nor counts against its connection limits.
+#
+# Based on server/aspia_health from SinitsaDA/aspia-server-docker (commit de15b99, GPL-3.0),
+# https://github.com/SinitsaDA/aspia-server-docker. Ported: reading socket state from
+# /proc/net/tcp*, ini_get. Changed: all Router ports are checked, Router ports are read from
+# router.conf, UDP STUN is checked, CRLF and spaces in the INI files are tolerated.
+
+set -euo pipefail
+
+readonly ROUTER_CONF=/etc/aspia/router.conf
+readonly RELAY_CONF=/etc/aspia/relay.conf
+
+# Socket states in /proc/net/*: TCP_ESTABLISHED=01, TCP_LISTEN=0A; a bound UDP socket is 07.
+readonly TCP_ESTABLISHED=01 TCP_LISTEN=0A UDP_BOUND=07
+
+# ini_get <file> <section> <key> <default>: prints the value, or <default> if it is missing or empty.
+ini_get() {
+    local value=""
+    if [[ -r "$1" ]]; then
+        value="$(awk -v section="$2" -v key="$3" '
+            function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+            { line = $0; sub(/\r$/, "", line) }
+            line ~ /^[ \t]*\[/ { in_section = (trim(line) == "[" section "]"); next }
+            in_section && (p = index(line, "=")) > 0 && trim(substr(line, 1, p - 1)) == key {
+                print trim(substr(line, p + 1)); exit
+            }
+        ' "$1")"
+    fi
+    printf '%s\n' "${value:-$4}"
+}
+
+# socket_state <tcp|udp> <state> <local|remote> <port>: succeeds if such a socket exists (IPv4 or IPv6).
+socket_state() {
+    local files=() file column
+    for file in "/proc/net/$1" "/proc/net/${1}6"; do
+        [[ -r "${file}" ]] && files+=("${file}")
+    done
+    ((${#files[@]})) || return 1
+    [[ "$3" == "local" ]] && column=2 || column=3
+    awk -v state="$2" -v column="${column}" -v port="$(printf '%04X' "$4")" '
+        FNR > 1 && $4 == state { n = split($column, a, ":"); if (toupper(a[n]) == port) { found = 1; exit } }
+        END { exit !found }
+    ' "${files[@]}"
+}
+
+FAILED=0
+fail() { echo "unhealthy: $*"; FAILED=1; }
+
+# expect <what> <tcp|udp> <state> <local|remote> <file> <section> <key> <default port>
+expect() {
+    local what="$1" proto="$2" state="$3" side="$4" file="$5" section="$6" key="$7" port
+    port="$(ini_get "${file}" "${section}" "${key}" "$8")"
+    if ! [[ "${port}" =~ ^[0-9]+$ ]] || ((port < 1 || port > 65535)); then
+        fail "${file}: [${section}] ${key} is not a valid port: '${port}'"
+    elif ! socket_state "${proto}" "${state}" "${side}" "${port}"; then
+        fail "${what} (${port}/${proto}, [${section}] ${key} in ${file})"
+    fi
+}
+
+check_router() {
+    local stun
+    [[ -s "${ROUTER_CONF}" ]] || { fail "${ROUTER_CONF} does not exist yet"; return; }
+    expect "the Router is not listening for 2.x hosts" tcp "${TCP_LISTEN}" local "${ROUTER_CONF}" host legacy_port 8060
+    expect "the Router is not listening for hosts" tcp "${TCP_LISTEN}" local "${ROUTER_CONF}" host port 8061
+    expect "the Router is not listening for clients" tcp "${TCP_LISTEN}" local "${ROUTER_CONF}" client port 8062
+    expect "the Router is not listening for relays" tcp "${TCP_LISTEN}" local "${ROUTER_CONF}" relay port 8063
+    stun="$(ini_get "${ROUTER_CONF}" stun enabled 1)"
+    if [[ "${stun,,}" != "0" && "${stun,,}" != "false" ]]; then
+        expect "the Router STUN server is not listening" udp "${UDP_BOUND}" local "${ROUTER_CONF}" stun port 8065
+    fi
+}
+
+check_relay() {
+    [[ -s "${RELAY_CONF}" ]] || { fail "${RELAY_CONF} does not exist yet"; return; }
+    expect "the Relay is not listening for peers" tcp "${TCP_LISTEN}" local "${RELAY_CONF}" peer port 8070
+    expect "the Relay is not connected to the Router" tcp "${TCP_ESTABLISHED}" remote "${RELAY_CONF}" router port 8063
+}
+
+check_router
+check_relay
+
+((FAILED == 0)) || exit 1
+echo "healthy"
