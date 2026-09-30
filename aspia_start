@@ -52,7 +52,7 @@ ROUTER_STATE=""   # new | migrate | existing
 RELAY_STATE=""    # new | migrate | existing
 
 declare -A CHILDREN=()   # pid -> process name
-declare -A BACKED_UP=()  # file -> 1 once backup() has copied it in this start
+declare -A BACKED_UP=()  # file -> 1 once copied (or created) in this start; backup() skips it
 STOPPING=0
 EXIT_CODE=0
 
@@ -246,6 +246,7 @@ prepare_relay() {
                 die "aspia_relay --create-config failed."
             fi
             [[ -s "${RELAY_CONF}" ]] || die "aspia_relay --create-config did not create ${RELAY_CONF}."
+            BACKED_UP[${RELAY_CONF}]=1   # created in this start: nothing of the user's to copy
             ;;
         migrate)
             log "Relay: found Aspia 2.x configuration. aspia_relay converts ${RELAY_JSON} to ${RELAY_CONF}" \
@@ -254,13 +255,11 @@ prepare_relay() {
             # relay.json is the only place to put EXTERNAL_IP before the migration runs. The
             # RouterPublicKey is filled only when it is empty. The file is rewritten once, and
             # only if a value changes.
-            # "|" separates the two values: unlike whitespace, it keeps an empty first field.
-            current="$(jq -r '[.PeerAddress, .RouterPublicKey] | map(. // "" | tostring) | join("|")' "${RELAY_JSON}")" \
+            peer_address="$(jq -r '.PeerAddress // ""' "${RELAY_JSON}")" \
                 || die "${RELAY_JSON} is not valid JSON. The backup copy is next to it."
-            IFS='|' read -r peer_address router_key <<<"${current}"
-            if [[ -z "${router_key}" ]]; then
-                [[ -n "${key}" ]] || die "${RELAY_JSON} has no RouterPublicKey and ${RELAY_PUB} is missing."
-            fi
+            router_key="$(jq -r '.RouterPublicKey // ""' "${RELAY_JSON}")"
+            [[ -n "${router_key}" || -n "${key}" ]] \
+                || die "${RELAY_JSON} has no RouterPublicKey and ${RELAY_PUB} is missing."
             if [[ "${peer_address}" != "${EXTERNAL_IP}" || -z "${router_key}" ]]; then
                 # shellcheck disable=SC2016  # $address and $key are jq variables
                 json_set "${RELAY_JSON}" --arg address "${EXTERNAL_IP}" --arg key "${key}" \
@@ -279,7 +278,7 @@ prepare_relay() {
     # relay.conf exists here. peer/public_address follows EXTERNAL_IP on every start.
     current="$(ini_get "${RELAY_CONF}" peer public_address "")"
     if [[ "${current}" != "${EXTERNAL_IP}" ]]; then
-        [[ "${RELAY_STATE}" == existing ]] && backup "${RELAY_CONF}"
+        backup "${RELAY_CONF}"
         ini_set "${RELAY_CONF}" peer public_address "${EXTERNAL_IP}"
         log "Relay: set [peer] public_address=${EXTERNAL_IP} (was '${current}')."
     fi
@@ -288,7 +287,7 @@ prepare_relay() {
     current="$(ini_get "${RELAY_CONF}" router public_key "")"
     if [[ -z "${current}" ]]; then
         [[ -n "${key}" ]] || die "${RELAY_CONF} has no [router] public_key, and ${RELAY_PUB} does not exist."
-        [[ "${RELAY_STATE}" == existing ]] && backup "${RELAY_CONF}"
+        backup "${RELAY_CONF}"
         ini_set "${RELAY_CONF}" router public_key "${key}"
         log "Relay: set [router] public_key from the Router key."
     elif [[ -n "${key}" && "${current,,}" != "${key,,}" ]]; then
@@ -385,7 +384,7 @@ supervise() {
 }
 
 print_summary() {
-    local stun key
+    local key
     key="$(read_key "${HOST_PUB}")"
     log "----------------------------------------------------------------------"
     log "External address (Relay):  ${EXTERNAL_IP}"
@@ -394,8 +393,7 @@ print_summary() {
     log "  $(ini_get "${ROUTER_CONF}" host legacy_port 8060)/tcp  Router: hosts of Aspia 2.x"
     log "  $(ini_get "${ROUTER_CONF}" host port 8061)/tcp  Router: hosts"
     log "  $(ini_get "${ROUTER_CONF}" client port 8062)/tcp  Router: clients"
-    stun="$(ini_get "${ROUTER_CONF}" stun enabled 1)"
-    if [[ "${stun,,}" != "0" && "${stun,,}" != "false" ]]; then
+    if stun_enabled "${ROUTER_CONF}"; then
         log "  $(ini_get "${ROUTER_CONF}" stun port 8065)/udp  Router: STUN"
     fi
     log "  $(ini_get "${RELAY_CONF}" peer port 8070)/tcp  Relay: clients and hosts"

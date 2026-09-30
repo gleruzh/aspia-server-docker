@@ -27,6 +27,13 @@ ini_get() {
     printf '%s\n' "${value:-${4-}}"
 }
 
+# stun_enabled <router.conf>: succeeds unless [stun] enabled is 0 or false (the Router's default is on).
+stun_enabled() {
+    local value
+    value="$(ini_get "$1" stun enabled 1)"
+    [[ "${value,,}" != "0" && "${value,,}" != "false" ]]
+}
+
 # socket_state <tcp|udp> <state> <local|remote> <port>: succeeds if such a socket exists (IPv4 or
 # IPv6). Reads /proc only; no connection is opened.
 socket_state() {

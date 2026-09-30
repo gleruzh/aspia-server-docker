@@ -323,9 +323,8 @@ scenario_stop() {
     ((elapsed < 10)) || fail "docker stop took ${elapsed} s"
     [[ "${code}" == 0 || "${code}" == 143 ]] || fail "exit code ${code} after docker stop"
     ok "stopped in ${elapsed} s (whole seconds), exit code ${code}"
-    # Both Aspia processes must report the forwarded signal. They log to stderr and aspia_start to
-    # stdout, and docker logs does not keep the order across the two streams, so count the new
-    # lines rather than looking for them after the entrypoint's own message.
+    # Both Aspia processes must report the forwarded signal. Counting the new lines checks exactly
+    # that, independent of the order in which the lines reach docker logs.
     n=$(($(sigterm_lines "${S1_NAME}") - before))
     [[ "${n}" == 2 ]] || fail "expected both processes to log SIGTERM, found ${n}"
     ok "both Aspia processes logged the forwarded SIGTERM and exited"
