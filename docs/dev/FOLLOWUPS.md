@@ -5,26 +5,34 @@ Each item names the PR that found it.
 
 ## From PR 1 (image 3.0.21)
 
-- **Path overrides.** `aspia_start` and `aspia_health` use the fixed paths `/etc/aspia/router.conf`,
-  `/etc/aspia/relay.conf` and `/var/lib/aspia/router.db3`. The binaries also honour
-  `ASPIA_ROUTER_CONFIG_FILE`, `ASPIA_RELAY_CONFIG_FILE` and `ASPIA_ROUTER_DB_FILE`. If a user sets
-  one of them, the entrypoint checks and edits the wrong file. Either honour them in both scripts, or
-  refuse to start when they are set.
+- **Path overrides** (partly resolved in PR 3). `aspia_start` and `aspia_health` use the fixed paths
+  `/etc/aspia/router.conf`, `/etc/aspia/relay.conf` and `/var/lib/aspia/router.db3`. The binaries also
+  honour `ASPIA_ROUTER_CONFIG_FILE`, `ASPIA_RELAY_CONFIG_FILE` and `ASPIA_ROUTER_DB_FILE`. PR 3 makes
+  `aspia_start` refuse to start with a clear error when one of these is set, rather than silently
+  checking or editing the wrong file (the "refuse" option from this item). Actually honouring them
+  (making every path in both scripts follow the variable) is still open.
 - **Backups on later upgrades.** The database is copied only before the 2.x migration. A future 3.x
   release that changes the schema again would upgrade `router.db3` in place with no copy. Idea: store
   the image version that last ran next to the database and copy `router.db3` whenever it changes.
-- **`EXTERNAL_IP` validation** (PR 3). PR 1 rejects only empty or blank values and characters outside
-  `[A-Za-z0-9._:-]`. The Router accepts an IP literal or a host name of at most 64 characters and
-  silently ignores a Relay whose address it rejects (notes section 13.1).
+- **`EXTERNAL_IP` validation** -- resolved in PR 3: `ASPIA_RELAY_PUBLIC_ADDRESS` (`EXTERNAL_IP`'s new
+  name) is validated as an IP literal or a host name of at most 64 characters, matching the Router's
+  own `isValidHostName`/`isValidIpAddress` (notes section 13.1). The Router can still silently ignore a
+  syntactically valid address it dislikes for other reasons (an IP that is not actually reachable, for
+  example); that is unchanged and is not detectable without a real end-to-end connection.
 - **Healthcheck blind spots.** An ESTABLISHED socket to the Router does not prove that the Router
   accepted the Relay: an invalid `public_address`, or a sixth Relay over the limit of five, is visible
   only in the Router log. A log-based check would need the Router log in a file or a pipe the check
   can read.
 - **Role-aware healthcheck** (PR 5). `aspia_health` always checks Router and Relay. `aspia_start`
   keeps its process list in `SERVICES`; the healthcheck will need the same decision.
-- **Non-root.** Both processes run as root, as in 2.7.0. Notes section 13.4 shows that the Router and
-  Relay run as `nobody` with the right ownership; changing ownership of an existing 2.x volume and
-  running the migration as non-root is not tested.
+- **Non-root** -- resolved in PR 3 for the single-container image: `PUID`/`PGID` chown
+  `/etc/aspia`/`/var/lib/aspia` and run both processes as that uid/gid (notes section 13.4 confirmed
+  both binaries work this way). Not tested: `PUID`/`PGID` on a volume that already holds a large,
+  long-lived deployment (only fresh and small test volumes were used), and combining `PUID`/`PGID`
+  with the 2.x migration on a volume that was previously owned by root end-to-end in production
+  (the migration renames files in `/etc/aspia`, which needs it to be writable by the target user; the
+  entrypoint chowns before the migration runs, but this has only been exercised by `tests/run.sh`,
+  not against a real historical 2.x volume).
 - **Published image.** `docker-compose.yml` builds locally by default (`image: ${ASPIA_IMAGE:-aspia-server:3.0.21}`
   plus `build: .`), because nothing is published yet and no owner name may be hard-coded. PR 2 publishes the
   image, documents the `ASPIA_IMAGE` value for each registry and pinning by digest, and keeps the default tag
@@ -39,6 +47,40 @@ Each item names the PR that found it.
   (or a `--build-context`) would make repeated CI builds faster.
 - **README.** The Russian half only points to the English "Ports" and "Upgrading from 2.x" sections
   (PR 6 translates). The Docker Hub link in the README describes the old image.
+
+## From PR 3 (environment configuration)
+
+Candidates from the PR 3 task that were deliberately left out, with the reason:
+
+- **Initial administrator password variable.** Not added. Notes section 13.5: `createConfig()`
+  hardcodes `admin`/`admin`; there is no CLI option, no config key, and no environment variable for
+  it. The only way to change it is over the network, through an authenticated Client, using Aspia's
+  own SRP variant (`base/crypto/srp_math.cc`) -- not something `sqlite3`/`jq` can drive. The image can
+  only print the default and tell the user to change it (already done in `aspia_start`).
+- **`*/listen_interface` variables.** Not added. Not in the PR's candidate list, and notes section
+  13.7 shows why it does not fit the "validate at startup, then fail clearly" principle: a bad value
+  (a hostname, a bogus literal, a valid IP not present on the container) does not stop the process --
+  it silently disables just that one listener while the container keeps running and stays "healthy"
+  by every other check. Format validation alone (IP literal only, no hostnames) would not catch the
+  "valid IP not on this container" case, so it would give a false sense of safety. Left as a
+  file-only setting.
+- **`router.conf` `[relay] port` (8063) as a variable.** Not added. It is the port between the
+  co-located Router and Relay inside this single container; `docker-compose.yml` does not publish it
+  today and there is no host-side reason to change it. Exposing it would also require always keeping
+  `relay.conf`'s `[router] port` in sync (unlike every other variable in this PR, which only ever
+  writes to the file its own name suggests), for no real benefit in this PR's single-container model.
+  PR 5 (relay-standalone) needs the Relay's Router address *and* port to be configurable together
+  when the Relay runs on a different host, and should add both then.
+- **Secret values from files (`*_FILE`).** Not added. None of the settings this PR exposes are secret
+  (ports, addresses, allow-lists, timeouts, limits, log level); the only real secrets (the Router's
+  and the Relay's private keys, the seed key) are generated by the binaries themselves and never
+  accepted from the user, so there is nothing to point a `*_FILE` variable at.
+- **Router administrator allow-list.** Not added: notes section 4 states there is no such key in
+  3.x (2.x's `AdminWhiteList` has no successor and is dropped, not migrated).
+- **Fully honouring `ASPIA_ROUTER_CONFIG_FILE`/`ASPIA_ROUTER_DB_FILE`/`ASPIA_RELAY_CONFIG_FILE`.**
+  PR 3 only refuses to start when one of these binary-native variables is set (see the "Path
+  overrides" item above); making every path in `aspia_start`/`aspia_health` actually follow them is
+  a larger, self-contained change left for later.
 
 ## From the PR 1 review (codex, agy and four cleanup reviewers)
 
