@@ -8,6 +8,7 @@ Structure
 - README.md - English, the canonical version. A language switcher at the top: English | Русский | ...
 - Translations live in docs/README.<language code>.md.
 - Sections: what this is and what it is not (unofficial packaging; Aspia is written by Dmitry Chapyshev; the original image is by paprikkafox); requirements (x86_64); quick start with compose; first login, the public key for hosts, changing the password; ports as a table "port, service, purpose, expose publicly or not"; environment variables; updating; upgrading from 2.x; backup and restore; running a Relay on a separate host; Podman (link to podman/); building locally; troubleshooting as a table "symptom, what to do"; licence and credits.
+- Credits and thanks: Dmitry Chapyshev (dchapyshev) for Aspia itself; Dmitry Fox (paprikkafox) for the original aspia-server Docker image; SinitsaDA for SinitsaDA/aspia-server-docker (GPL-3.0), whose 3.x server image, 2.x migration handling and connection-free healthcheck this project's 3.x image was ported from. Link each to their GitHub profile or repository. Add a short, plain statement that the work on this repository was done with the help of Claude (Anthropic's AI assistant, via Claude Code). Do not attribute the work to Claude alone, and add no marketing wording.
 - Remove the section on installing Docker and link to the official instructions instead: it goes stale faster than anything else.
 
 Rules
