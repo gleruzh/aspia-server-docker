@@ -18,8 +18,8 @@
 #   4. docker stop is fast and clean
 #   5. a crashed process stops the container with a non-zero exit code
 #   6. EXTERNAL_IP unset, empty or blank
-#   7. database without configuration: refuse, change nothing; 7b. same for a lone relay.conf and
-#      for an invalid 2.x relay.json (checked before anything is written)
+#   7. database without configuration: refuse, change nothing; 7b. same for a lone relay.conf, an
+#      invalid 2.x relay.json and an invalid 2.x router.json (checked before anything is written)
 #   8. healthcheck: a Relay that is running but not connected is not healthy
 #   9. ASPIA_ROUTER_*/ASPIA_RELAY_* variables land in the configuration; healthy on custom ports
 #  10. a variable removed: the hand edit in the file survives; setting it again overwrites it
@@ -27,6 +27,8 @@
 #  12. ASPIA_RELAY_PUBLIC_ADDRESS=auto with no network: clear error, non-zero exit
 #  13. a 2.x migration start also applies a new Relay variable (one the upstream migration itself copies)
 #  14. PUID/PGID: both processes run as that uid/gid, and the files they write are owned by it
+#  15. an allow-list variable set to an empty value does not clear an existing list
+#  16. PUID/PGID with an invalid variable: refused, and no file's ownership was changed
 # Lint (hadolint, shellcheck) is in tests/lint.sh.
 
 set -euo pipefail
@@ -219,14 +221,19 @@ scenario_compose() {
     [[ "${images}" == registry.example/aspia-server:3.0.21 ]] || fail "ASPIA_IMAGE is not used: '${images}'"
     ok "default image aspia-server:3.0.21 with a build section; ASPIA_IMAGE overrides it"
 
-    # EXTERNAL_IP/ASPIA_RELAY_PUBLIC_ADDRESS is required by the entrypoint (scenario 6), not by
-    # compose: "docker compose config" must still succeed without it, so that a user who sets only
-    # the new alias is not blocked by compose before the container ever runs.
-    if out="$(unset EXTERNAL_IP; compose_config 2>&1)"; then
-        ok "docker compose config succeeds without EXTERNAL_IP (the container enforces it instead)"
-    else
-        fail "docker compose config failed without EXTERNAL_IP: ${out}"
+    # Neither variable set: compose itself refuses (a nested default), naming both variables.
+    if out="$(unset EXTERNAL_IP ASPIA_RELAY_PUBLIC_ADDRESS; compose_config 2>&1)"; then
+        fail "docker compose config succeeded with neither EXTERNAL_IP nor ASPIA_RELAY_PUBLIC_ADDRESS set"
     fi
+    grep -q 'EXTERNAL_IP' <<<"${out}" || fail "the compose error does not name EXTERNAL_IP: ${out}"
+    grep -q 'ASPIA_RELAY_PUBLIC_ADDRESS' <<<"${out}" || fail "the compose error does not name ASPIA_RELAY_PUBLIC_ADDRESS: ${out}"
+    ok "docker compose config fails when neither EXTERNAL_IP nor ASPIA_RELAY_PUBLIC_ADDRESS is set"
+
+    # Only the new alias set: EXTERNAL_IP takes its value (a nested default, not a second ":?").
+    out="$(unset EXTERNAL_IP; ASPIA_RELAY_PUBLIC_ADDRESS="${IP_NEW}" compose_config --format json)"
+    grep -q "\"EXTERNAL_IP\": \"${IP_NEW}\"" <<<"${out}" \
+        || fail "EXTERNAL_IP did not take the value of ASPIA_RELAY_PUBLIC_ADDRESS: ${out}"
+    ok "docker compose config succeeds with only ASPIA_RELAY_PUBLIC_ADDRESS set; EXTERNAL_IP gets its value"
 
     # Every published port comes from the same variable on both sides (host and container).
     out="$(EXTERNAL_IP="${IP_NEW}" ASPIA_RELAY_PEER_PORT=19070 compose_config --format json)"
@@ -597,7 +604,8 @@ refused_unchanged() {
 
 scenario_refused_relay_data() {
     local cfg db
-    log "7b. Relay data that must not be used or changed: a lone relay.conf, a broken 2.x relay.json"
+    log "7b. Data that must not be used or changed, checked before anything is written: a lone" \
+        "relay.conf, an invalid 2.x relay.json, an invalid 2.x router.json"
     cfg="$(new_volume s7b-config)"
     db="$(new_volume s7b-db)"
     helper_rw "${cfg}" "${db}" sh -c 'printf "[router]\npublic_key=%064d\n" 1 > /etc/aspia/relay.conf'
@@ -607,6 +615,11 @@ scenario_refused_relay_data() {
     db="$(new_volume s7c-db)"
     helper_rw "${cfg}" "${db}" sh -c 'echo "{}" > /etc/aspia/router.json && : > /var/lib/aspia/router.db3 && echo "{ not json" > /etc/aspia/relay.json'
     refused_unchanged s7c "${cfg}" "${db}" "an invalid 2.x relay.json"
+
+    cfg="$(new_volume s7d-config)"
+    db="$(new_volume s7d-db)"
+    helper_rw "${cfg}" "${db}" sh -c ': > /var/lib/aspia/router.db3 && echo "{ not json" > /etc/aspia/router.json'
+    refused_unchanged s7d "${cfg}" "${db}" "an invalid 2.x router.json"
 }
 
 scenario_env_apply() {
@@ -778,6 +791,55 @@ scenario_puid_pgid() {
     ok "aspia_router and aspia_relay both run as uid 1000 (${uid_lines//$'\n'/; })"
 }
 
+scenario_env_empty_allowlist() {
+    local cfg db name list
+    log "15. An allow-list variable set to an empty value does not clear an existing list"
+    cfg="$(new_volume s15-config)"
+    db="$(new_volume s15-db)"
+    run_new s15 "${cfg}" "${db}" -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e ASPIA_ROUTER_CLIENT_ALLOWED_IPS=203.0.113.0/24
+    name="${CURRENT_CONTAINER}"
+    wait_healthy "${name}"
+    list="$(ini_value "$(helper "${cfg}" "${db}" cat /etc/aspia/router.conf)" client white_list)"
+    [[ "${list}" == "203.0.113.0/24" ]] || fail "test setup: the allow-list was not applied (got '${list}')"
+    docker stop "${name}" >/dev/null
+
+    # ASPIA_ROUTER_CLIENT_ALLOWED_IPS='' (as docker-compose.yml renders an unset variable with a
+    # bare "${VAR}" default of "") must be treated the same as leaving the variable unset.
+    run_new s15b "${cfg}" "${db}" -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e ASPIA_ROUTER_CLIENT_ALLOWED_IPS=
+    name="${CURRENT_CONTAINER}"
+    wait_healthy "${name}"
+    list="$(ini_value "$(helper "${cfg}" "${db}" cat /etc/aspia/router.conf)" client white_list)"
+    [[ "${list}" == "203.0.113.0/24" ]] \
+        || fail "ASPIA_ROUTER_CLIENT_ALLOWED_IPS='' cleared the existing allow-list (now '${list}')"
+    ok "ASPIA_ROUTER_CLIENT_ALLOWED_IPS='' (empty) left the existing client/white_list unchanged"
+}
+
+scenario_puid_pgid_refused() {
+    local cfg db name code before after
+    log "16. PUID/PGID with an invalid variable: refused, and no file's ownership was changed"
+    cfg="$(new_volume s16-config)"
+    db="$(new_volume s16-db)"
+    # Existing root-owned data from a normal start (no PUID/PGID).
+    run_new s16-seed "${cfg}" "${db}" -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}"
+    name="${CURRENT_CONTAINER}"
+    wait_healthy "${name}"
+    docker stop "${name}" >/dev/null
+
+    before="$(helper "${cfg}" "${db}" sh -c 'cd / && find etc/aspia var/lib/aspia -mindepth 1 -exec stat -c "%u:%g %n" {} + | sort')"
+
+    run_new s16 "${cfg}" "${db}" -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e PUID=1000 -e PGID=1000 \
+        -e ASPIA_ROUTER_CLIENT_PORT=99999
+    name="${CURRENT_CONTAINER}"
+    wait_exited "${name}" 60
+    code="$(state .State.ExitCode "${name}")"
+    [[ "${code}" != 0 ]] || fail "exit code 0 with PUID/PGID and an invalid ASPIA_ROUTER_CLIENT_PORT"
+
+    after="$(helper "${cfg}" "${db}" sh -c 'cd / && find etc/aspia var/lib/aspia -mindepth 1 -exec stat -c "%u:%g %n" {} + | sort')"
+    [[ "${before}" == "${after}" ]] \
+        || fail "ownership changed although the start was refused:"$'\n'"${before}"$'\n'"${after}"
+    ok "PUID/PGID + an invalid variable: exit code ${code}, no file's ownership changed"
+}
+
 # ---------------------------------------------------------------------------------------------
 
 scenario_build
@@ -799,5 +861,7 @@ scenario_env_invalid
 scenario_env_auto_no_network
 scenario_env_migration
 scenario_puid_pgid
+scenario_env_empty_allowlist
+scenario_puid_pgid_refused
 
 log "All scenarios passed (image ${IMAGE})"
