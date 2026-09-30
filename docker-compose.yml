@@ -1,14 +1,23 @@
 services:
   aspia-server:
-    image: paprikkafox/aspia-server:latest
+    image: paprikkafox/aspia-server:3.0.21
     container_name: aspia-server
     hostname: aspia-server
     environment:
-      - EXTERNAL_IP=88.22.11.33
+      # Required: the public address of this server, announced by the Relay to clients and hosts.
+      # Set it in a .env file next to this file (EXTERNAL_IP=203.0.113.10) or in the shell.
+      - EXTERNAL_IP=${EXTERNAL_IP:?Set EXTERNAL_IP to the public IP address of this server, e.g. in .env next to docker-compose.yml}
     volumes:
-      - ./data/database:/var/lib/aspia:rw
       - ./data/config:/etc/aspia:rw
+      - ./data/database:/var/lib/aspia:rw
+    # Publish every port one-to-one (host port = container port). The Relay tells clients and
+    # hosts its own port (8070), so a different host port would break relayed connections.
     ports:
-      - 8070:8070
-      - 8060:8060
-    restart: always
+      - 8060:8060         # Router: hosts of Aspia 2.x
+      - 8061:8061         # Router: hosts of Aspia 3.x
+      - 8062:8062         # Router: clients (address book and Router management)
+      - 8065:8065/udp     # Router: built-in STUN server
+      - 8070:8070         # Relay: clients and hosts
+      # 8063 is the Router port for Relays. The Relay in this container reaches it internally;
+      # publish it only for a Relay running on another machine.
+    restart: unless-stopped
