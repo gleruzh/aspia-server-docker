@@ -52,9 +52,6 @@ jobs:
       tags: ${{ steps.plan.outputs.tags }}
       dated_tag: ${{ steps.plan.outputs.dated_tag }}
       created: ${{ steps.plan.outputs.created }}
-      ghcr_image: ${{ steps.plan.outputs.ghcr_image }}
-      dockerhub_image: ${{ steps.plan.outputs.dockerhub_image }}
-      quay_image: ${{ steps.plan.outputs.quay_image }}
       dockerhub: ${{ steps.plan.outputs.dockerhub }}
       quay: ${{ steps.plan.outputs.quay }}
     steps:
@@ -67,10 +64,6 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_DATED_TAG: ${{ inputs.dated_tag }}
-          OWNER: ${{ github.repository_owner }}
-          GHCR_IMAGE: ${{ vars.GHCR_IMAGE }}
-          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
-          QUAY_IMAGE: ${{ vars.QUAY_IMAGE }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
@@ -89,18 +82,11 @@ jobs:
           if [[ "${GITHUB_EVENT_NAME}" == schedule || "${INPUT_DATED_TAG}" == true ]]; then
             dated_tag="${version}-$(date -u +%Y%m%d)"
           fi
-
-          # Image names: repository variables, defaulting to <owner>/aspia-server (lowercase, as
-          # registries require).
-          default_image="$(tr '[:upper:]' '[:lower:]' <<<"${OWNER}")/aspia-server"
           {
             echo "version=${version}"
             echo "tags=${version} ${minor} ${major} latest"
             echo "dated_tag=${dated_tag}"
             echo "created=${created}"
-            echo "ghcr_image=ghcr.io/${GHCR_IMAGE:-${default_image}}"
-            echo "dockerhub_image=docker.io/${DOCKERHUB_IMAGE:-${default_image}}"
-            echo "quay_image=quay.io/${QUAY_IMAGE:-${default_image}}"
           } >> "${GITHUB_OUTPUT}"
 
           # Optional registries are enabled by their secrets. Missing secrets are not an error.
@@ -138,13 +124,20 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
       TAGS: ${{ needs.prepare.outputs.tags }}
       DATED_TAG: ${{ needs.prepare.outputs.dated_tag }}
-      GHCR_IMAGE: ${{ needs.prepare.outputs.ghcr_image }}
-      DOCKERHUB_IMAGE: ${{ needs.prepare.outputs.dockerhub_image }}
-      QUAY_IMAGE: ${{ needs.prepare.outputs.quay_image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # Computed here, not passed from the prepare job: GitHub drops a job output that contains a
+      # secret's value, and <owner>/aspia-server usually contains DOCKERHUB_USERNAME.
+      - name: Image names
+        env:
+          OWNER: ${{ github.repository_owner }}
+          VAR_GHCR_IMAGE: ${{ vars.GHCR_IMAGE }}
+          VAR_DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
+          VAR_QUAY_IMAGE: ${{ vars.QUAY_IMAGE }}
+        run: scripts/image-names.sh | tee -a "${GITHUB_ENV}"
 
       # use: false keeps "docker build" in tests/run.sh on the default builder, which loads images
       # into the local image store; a docker-container builder would leave them in its cache only.
@@ -187,11 +180,11 @@ jobs:
             index:org.opencontainers.image.licenses=GPL-3.0-only
           provenance: mode=max
           sbom: true
-          outputs: type=image,name=${{ needs.prepare.outputs.ghcr_image }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
 
       - name: tests/run.sh against the pushed digest
         env:
-          ASPIA_TEST_IMAGE: ${{ needs.prepare.outputs.ghcr_image }}@${{ steps.build.outputs.digest }}
+          ASPIA_TEST_IMAGE: ${{ env.GHCR_IMAGE }}@${{ steps.build.outputs.digest }}
         run: tests/run.sh
 
       # imagetools create copies the index as it is, so every tag and every registry gets the digest
@@ -288,7 +281,7 @@ jobs:
       - name: Attest build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-name: ${{ needs.prepare.outputs.ghcr_image }}
+          subject-name: ${{ env.GHCR_IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
           create-storage-record: false
@@ -344,8 +337,11 @@ jobs:
       - name: Repository name on Docker Hub
         id: repo
         env:
-          DOCKERHUB_IMAGE: ${{ needs.prepare.outputs.dockerhub_image }}
-        run: echo "repository=${DOCKERHUB_IMAGE#docker.io/}" >> "${GITHUB_OUTPUT}"
+          OWNER: ${{ github.repository_owner }}
+          VAR_DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
+        run: |
+          image="$(scripts/image-names.sh | sed -n 's/^DOCKERHUB_IMAGE=//p')"
+          echo "repository=${image#docker.io/}" >> "${GITHUB_OUTPUT}"
       - uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
