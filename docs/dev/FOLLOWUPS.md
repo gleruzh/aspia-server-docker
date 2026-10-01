@@ -106,6 +106,14 @@ Correctness points not fixed in PR 1, each small and open for discussion:
 
 ## From PR 2 (CI and publishing)
 
+- **upstream-watch.yml not verified end to end.** The owner chose not to run the planned rehearsal
+  (a test branch set back to 3.0.18). Verified so far: actionlint, the scripts it calls (version
+  lookup, package download with digest check, `versions.sh bump`) locally, and the PR body with a
+  stubbed `gh pr create`. Still unverified on GitHub: pushing the `aspia-bump/X.Y.Z` branch with
+  `GITHUB_TOKEN`, opening the pull request, and whether its `ci.yml` run waits for "Approve workflows
+  to run". Check on the first real Aspia release after 3.0.21: the scheduled run should open
+  "chore: bump Aspia to X.Y.Z" within 6 hours; read its log and the pull request body, and correct
+  docs/ci.md if GitHub behaves differently.
 - **Badges.** README uses relative badge links (`../../actions/workflows/ci.yml/badge.svg`), so no owner
   name is hard-coded. GitHub resolves them against the repository; this was not verified before the first
   push. If they do not render, the fallback is absolute URLs, which are fork-specific:

@@ -144,6 +144,13 @@ gh attestation verify oci://ghcr.io/<owner>/aspia-server@sha256:<digest> -R <own
 docker buildx imagetools inspect ghcr.io/<owner>/aspia-server@sha256:<digest> --format '{{ json .SBOM }}'
 ```
 
+The package pages on GHCR and Docker Hub list two platforms for each tag: `linux/amd64` and
+`unknown/unknown`. The second one is not a second image. It is the attestation manifest that
+BuildKit stores next to the image (the SBOM and the provenance), marked with the annotation
+`vnd.docker.reference.type: attestation-manifest`. It cannot be run, and `docker pull` always takes
+`linux/amd64`. The `docker pull ...@sha256:<index>@sha256:<entry>` commands that GHCR shows for each
+platform are not valid; pin the index digest from the publish run summary instead.
+
 ## The bump pull request (upstream-watch.yml)
 
 Every 6 hours the workflow lists the releases of `dchapyshev/aspia`, ignores drafts, pre-releases and
