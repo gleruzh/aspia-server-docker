@@ -47,7 +47,7 @@ on the "Variables" tab). None is needed for GHCR.
 | variable `DOCKERHUB_IMAGE` | Image name on Docker Hub, without `docker.io/`. Set it when the Docker Hub account differs from the GitHub owner. | Optional, default `<repository owner>/aspia-server` |
 | variable `QUAY_IMAGE` | Image name on Quay.io, without `quay.io/`. | Optional, default `<repository owner>/aspia-server` |
 
-The default names are lowercased, as registries require. Missing Docker Hub or Quay secrets are not
+The default names are lowercased, as registries require. Each job of `publish.yml` computes the names itself with `scripts/image-names.sh`: GitHub drops a job output whose value contains a secret, and `<owner>/aspia-server` contains `DOCKERHUB_USERNAME` whenever the Docker Hub user is named like the GitHub owner. In the run log such names appear as `***`. Missing Docker Hub or Quay secrets are not
 an error: the run logs "Docker Hub skipped" or "Quay.io skipped" and continues.
 
 ## Repository settings

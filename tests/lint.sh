@@ -13,7 +13,7 @@ readonly SHELLCHECK=koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6fe
 readonly ACTIONLINT=rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 
 readonly DOCKERFILES=(Dockerfile tests/helper/Dockerfile)
-readonly SCRIPTS=(aspia_start aspia_health aspia_common.sh tests/run.sh tests/lint.sh tests/helper/x25519_pub scripts/versions.sh scripts/aspia-release.sh)
+readonly SCRIPTS=(aspia_start aspia_health aspia_common.sh tests/run.sh tests/lint.sh tests/helper/x25519_pub scripts/versions.sh scripts/aspia-release.sh scripts/image-names.sh)
 
 status=0
 for file in "${DOCKERFILES[@]}"; do
