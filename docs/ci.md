@@ -64,6 +64,11 @@ an error: the run logs "Docker Hub skipped" or "Quay.io skipped" and continues.
 - **Package visibility.** The first push creates the GHCR package as private. Make it public once in
   the package settings (your profile or organisation > **Packages** > `aspia-server` > **Package
   settings** > **Change visibility**), so that users can pull without logging in.
+- **Package created outside Actions.** If the `aspia-server` package was first pushed by hand (with a
+  personal token, `docker push` or a local `act` run), the workflows get
+  `denied: permission_denied: write_package` until the repository is given access: **Package
+  settings** > **Manage Actions access** > **Add Repository** > this repository, role **Write**. A
+  package created by `publish.yml` itself has that access already.
 - **Code scanning.** The Trivy report in the Security tab needs code scanning, which is free for
   public repositories. On a private repository without GitHub Advanced Security the upload step
   fails without failing the run.
