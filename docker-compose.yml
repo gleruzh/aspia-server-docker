@@ -11,11 +11,13 @@ services:
     environment:
       # Required: the public address of this server, announced by the Relay to clients and hosts.
       # 'auto' detects it at startup. Set EXTERNAL_IP or ASPIA_RELAY_PUBLIC_ADDRESS (its new name,
-      # an exact alias); "docker compose config" fails with a clear error if neither is set. See
+      # an exact alias). If neither is set, the container exits with a clear error. Compose does
+      # not check it here: a ":?" nested inside a default is evaluated even when EXTERNAL_IP is set
+      # by Compose v2 (checked with v2.31 and v2.35), which would break every v2 user. See
       # .env.example and README.md for the full list of variables below (every other one is
       # optional: unset = the file is left alone, so a hand edit of router.conf/relay.conf
       # survives).
-      - EXTERNAL_IP=${EXTERNAL_IP:-${ASPIA_RELAY_PUBLIC_ADDRESS:?Set EXTERNAL_IP or ASPIA_RELAY_PUBLIC_ADDRESS to the public address of this server (or auto), e.g. in .env next to docker-compose.yml}}
+      - EXTERNAL_IP=${EXTERNAL_IP:-${ASPIA_RELAY_PUBLIC_ADDRESS:-}}
       - ASPIA_RELAY_PUBLIC_ADDRESS=${ASPIA_RELAY_PUBLIC_ADDRESS:-}
       - ASPIA_RELAY_PEER_PORT
       - ASPIA_RELAY_IDLE_TIMEOUT

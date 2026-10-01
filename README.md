@@ -107,7 +107,7 @@ Publish every port one-to-one (host port = container port): the Relay announces 
 | 8070/tcp | Relay: clients and hosts |
 | 8063/tcp | Router: Relays. Used inside the container; publish it only for a Relay on another machine. |
 
-`EXTERNAL_IP` (or its new name, `ASPIA_RELAY_PUBLIC_ADDRESS`) is required: the public address the Relay announces. Without one of them, `docker compose config`/`up` fails with a clear error, and a plain `docker run` container exits the same way. With docker compose, put it into a `.env` file next to `docker-compose.yml`; see `.env.example` for every variable and the "Configuration" section below.
+`EXTERNAL_IP` (or its new name, `ASPIA_RELAY_PUBLIC_ADDRESS`) is required: the public address the Relay announces. Without one of them the container exits with a clear error, with docker compose and with `docker run` alike. With docker compose, put it into a `.env` file next to `docker-compose.yml`; see `.env.example` for every variable and the "Configuration" section below.
 
 The Aspia log goes to `docker logs`; no log files are written.
 
