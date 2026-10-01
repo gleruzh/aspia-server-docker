@@ -15,14 +15,14 @@ Each item names the PR that found it.
   the image version that last ran next to the database and copy `router.db3` whenever it changes.
 - **`EXTERNAL_IP` validation** (PR 3). PR 1 rejects only empty or blank values and characters outside
   `[A-Za-z0-9._:-]`. The Router accepts an IP literal or a host name of at most 64 characters and
-  silently ignores a Relay whose address it rejects (separate addendum, 13.1).
+  silently ignores a Relay whose address it rejects (notes section 13.1).
 - **Healthcheck blind spots.** An ESTABLISHED socket to the Router does not prove that the Router
   accepted the Relay: an invalid `public_address`, or a sixth Relay over the limit of five, is visible
   only in the Router log. A log-based check would need the Router log in a file or a pipe the check
   can read.
 - **Role-aware healthcheck** (PR 5). `aspia_health` always checks Router and Relay. `aspia_start`
   keeps its process list in `SERVICES`; the healthcheck will need the same decision.
-- **Non-root.** Both processes run as root, as in 2.7.0. The addendum (13.4) shows that the Router and
+- **Non-root.** Both processes run as root, as in 2.7.0. Notes section 13.4 shows that the Router and
   Relay run as `nobody` with the right ownership; changing ownership of an existing 2.x volume and
   running the migration as non-root is not tested.
 - **Published image.** `docker-compose.yml` builds locally by default (`image: ${ASPIA_IMAGE:-aspia-server:3.0.21}`

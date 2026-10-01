@@ -332,11 +332,169 @@ publish-to-main behaviour.
 
 ## 12. Open items (not verified; verify before relying on them)
 
-- Whether `peer/public_address` accepts a DNS name rather than an IP.
-- Minimum 2.x host version that can connect to 8060; 2.x Client/Console compatibility with 3.x.
-- Relay as non-root; changing ownership of an existing root-owned 2.x volume.
-- Whether the Router applies per-address brute-force protection, and its thresholds (relevant to rootless Podman source-address rewriting).
-- Whether a Client can trigger `--install-update` remotely on a Router.
+Resolved since the first version of this file: DNS names in `peer/public_address`, brute-force protection,
+a network path to the updater and a non-root Relay (section 13); the minimum 2.x Host version, 2.6.0
+(section 15, upstream documentation). Still open:
+
+- Whether a 2.x Client or Console can connect to a 3.x Router (the upstream guide does not say; a 3.x
+  Client is needed to manage the Router, section 15).
+- Running the 2.x migration as non-root on a chowned, formerly root-owned volume.
+
+## 13. Open items resolved (verified 2026-09-30)
+
+Same legend as above. Source at tag `v3.0.21` was read from the tarball
+(`gh api repos/dchapyshev/aspia/tarball/v3.0.21`). Paths below are relative to `source/`, and line
+numbers refer to that tag. Run tests used `aspia-probe:3.0.21` with `--platform linux/amd64`, a user-defined
+Docker bridge network, and `ASPIA_LOG_TO_STDOUT=1 ASPIA_LOG_TO_FILE=0 LANG=C.UTF-8` so that `docker logs`
+shows the full log. Where a fact needed TRACE lines, `ASPIA_LOG_LEVEL=0` was added.
+
+### 13.1 `peer/public_address`: DNS names are accepted
+
+| Fact | Verified by |
+|---|---|
+| **An empty `public_address` stops the Relay from ever connecting to the Router.** The Relay logs `ERROR ... onPrepare : 100 ] Empty peer address`, returns from `RouterWorker::onPrepare`, keeps running, and opens no connection to 8063. Like an empty `public_key`, **the entrypoint must refuse to start when this key is empty**. | [src] `relay/workers/router_worker.cc:98-102`; [run] relay with `public_address=` for 8 s: that log line, and 0 ESTABLISHED sockets |
+| The Relay does not validate the value. It sends the string unchanged to the Router as `RelayKeyPool.peer_host`. | [src] `relay/workers/router_worker.cc:72,126,351`; `proto/router_relay.proto:29` (`string peer_host`) |
+| The Router accepts the key pool when `NetUtils::isValidIpAddress(host) \|\| NetUtils::isValidHostName(host)` holds. Otherwise it logs `ERROR ... "[Relay#N]" Ignoring key pool with invalid peer endpoint (host: "<value>" port: 8070 )` and drops **all** keys from that relay. The relay connection itself stays up. | [src] `router/relay.cc:171-177` |
+| `isValidHostName`: not empty, **at most 64 characters**, only letters, digits, `.`, `_` and `-`, at least one letter or digit. There is no check of label structure and no DNS lookup. `isValidIpAddress` accepts IPv4 and IPv6 literals (`QHostAddress`). | [src] `base/net/net_utils.cc:33` (`kMaxHostNameLength = 64`), `:144-149`, `:175-203` |
+| [run] `public_address=relay1.example.test`: Relay log `Peer address: "relay1.example.test"`, Router log `Received key pool: 100` followed by `Added key with id 0..99 for relay 1`, with no error. | [run] two containers, Router `vf-router`, Relay with `router/address=vf-router` |
+| [run] `public_address=bad_host!name`: the Relay logs `Connection to the router is established`, but the Router logs `Ignoring key pool with invalid peer endpoint (host: "bad_host!name" port: 8070 )`. **The Relay therefore looks healthy (an ESTABLISHED socket to 8063) while being unusable.** A `/proc/net/tcp` healthcheck cannot detect this. | [run] |
+| [run] A 65-character hostname (`a`×60 + `.test`) is rejected with the same `Ignoring key pool` line. A 64-character hostname is accepted (`Added key with id 0 for relay 4`). | [run] |
+| Clients and Hosts resolve the announced host with `asio::ip::tcp::resolver::async_resolve`, so a DNS name is resolved **on the peer**, not on the Router or the Relay. | [src] `base/peer/relay_peer.cc:91-98` |
+| The Router log never prints the announced `peer_host` for an accepted pool. Only the Relay log shows it (`Peer address: "..."`). | [run] Router log above |
+
+Not verified: an end-to-end session through the Relay with a DNS name (that needs a GUI Client and Host);
+an IPv6 literal as `public_address` (source only).
+
+### 13.2 Brute-force and flood protection in the Router (and Relay)
+
+| Fact | Verified by |
+|---|---|
+| **There is no ban and no counter of failed password logins or failed handshakes.** In the Router, nothing connects to `TcpServer::sig_errorOccurred` (the signal emitted when a handshake fails). A wrong password costs the attacker one TCP connection. | [src] `grep -rn sig_errorOccurred router` finds only per-channel connects in `client_operator.cc:68`, `host.cc:47`, `relay.cc:49` (after authentication); `base/net/tcp_server.cc:331-341` |
+| What exists instead is a **per-source-IP connection rate limit (FloodGuard, GCRA)** on every listener, applied at `accept()` **before** the white list and before any cryptography. It is keyed by `asio::ip::address` of the peer. A v4-mapped address counts as its own key. Each listener has its own guard, so the budgets are separate per port. | [src] `base/net/flood_guard.h:29-50`, `base/net/flood_guard.cc:76-127`; `base/net/tcp_server.cc:259-265` (flood guard) then `:269-281` (white list) |
+| Router limits (burst = `max`, then `max`/60 s steady; pending = handshakes in flight across all sources): **client 8062: 60/min per IP, 30 pending**; **host 8061 and legacy 8060: 300/min per IP, 100 pending, each port separately**; **relay 8063: 30/min per IP, 10 pending**. | [src] `router/workers/client_worker.cc:137-147`, `host_worker.cc:169-190`, `relay_worker.cc:140-151`; `base/net/tcp_server.cc:84-105` |
+| Relay peer port 8070: 60 connections per 60 s per IP, 60 pending sessions. | [src] `relay/workers/relay_worker.cc:44-46,244-246,452-455` |
+| Rejection = the accepted socket is closed immediately. There is **no ban period**: a source regains one connection every `60 s / max`. The tracking map holds at most 10 000 addresses and fails **open** when full. | [src] `flood_guard.cc:48-50,79-101` |
+| Log: `WARNING ... Per-address rate limit hit for "<addr>"; rejected N connection(s) since last warning` (at most one line per 30 s), and `WARNING ... Pending connection limit reached (...)`. Each individual rejection is logged only at TRACE: `Connection rejected by flood guard`. | [src] `flood_guard.cc:114-121,139-146`; [run] below |
+| [run] 75 back-to-back TCP connects from one container to 8062: **60 accepted, 15 rejected** (15 × TRACE `Connection rejected by flood guard`, one `WARNING ... Per-address rate limit hit for "::ffff:172.21.0.3"`). A connect from a second container IP right afterwards was accepted and not rate-limited. | [run] `for i in $(seq 1 75); do (exec 3<>/dev/tcp/vf-router/8062; exec 3>&-); done` |
+| Two-factor (TOTP) only: **per user** (not per IP), 10 failed codes lead to a **15-minute** block. The state is in memory and is lost when the Router restarts. | [src] `router/handlers/two_factor_handler.h:83-84,126`; `two_factor_handler.cc:181-196,323-338` |
+| Other caps: at most **5 concurrent relays** (see 13.6), at most 32 concurrent Client sessions per user (`kMaxClientsPerUser`), a 10 s handshake timeout for pending connections, and a 1-minute authenticator timeout. | [src] `router/workers/relay_worker.cc:195`, `router/workers/client_worker.h:67`, `base/net/tcp_server.cc:36`, `base/peer/authenticator.cc:36` |
+| Consequence for NAT or source rewriting (rootless Podman with slirp4netns/pasta port forwarding, some proxies): all peers share **one** budget per listener (for example 60 Client connections per minute in total), and `*/white_list` cannot tell them apart. Nothing gets banned. | follows from the rows above; Podman itself not tested |
+
+### 13.3 No network path to the updater
+
+| Fact | Verified by |
+|---|---|
+| `ConsoleUpdater` (the only user of `base/update/` in the server binaries) is called only from `main()`, when `--check-update` or `--install-update` is set, before any worker starts. | [src] `router/main.cc:505-508`, `relay/main.cc:244-247`; `grep -rlE 'UpdateInstaller\|UpdateChecker\|ConsoleUpdater'` finds, outside `base/update/`, only `router/main.cc`, `relay/main.cc`, `host/`, `client/`, `common/` |
+| No router or relay protocol message asks the Router or Relay to update. `grep -niE 'update\|install\|upgrade'` over `proto/router_relay.proto`, `relay_peer.proto`, `router_admin.proto`, `router_client.proto` and `router.proto` finds nothing. | [src] |
+| The only "update" command in the router protocol is `HostRequest` `"update"` (admin-only). The Router **forwards it to a remote Host**, which then checks for its own update. It does not touch the Router. | [src] `proto/router_manager.proto:42-43`; `router/client_admin.cc:229-240` → `router/workers/host_worker.cc:536-542` → `router/host_ng.cc:125-128` |
+| `ASPIA_NO_VERIFY_TLS_PEER` (disables TLS verification) is read only by the update checker and the downloader, so it affects only `--check-update` and `--install-update`. | [src] `base/update/update_checker.cc:279`, `base/net/http_file_downloader.cc:105` |
+
+The updater cannot be reached over the network. It is reachable only through the two CLI flags.
+
+### 13.4 Non-root and runtime write paths
+
+| Fact | Verified by |
+|---|---|
+| **Runtime writes, observed with inotify** during a normal Router + Relay run (config present, no migration, 25 s including start, relay registration and SIGTERM stop): `CREATE`/`MODIFY` only on `/var/lib/aspia/router.db3-wal`, `router.db3-shm`, and the two log files in `/var/log/aspia/{router,relay}/`. **Nothing under `/etc/aspia` was written** (only opened). The WAL and SHM files remain after shutdown. | [run] `inotifywait -m -r -e modify,create,delete,moved_to,moved_from,attrib,open /etc /var/lib/aspia /var/log/aspia` (inotify-tools installed inside a throwaway container) |
+| **Router, `/etc/aspia` read-only** (`:ro` volume, `--read-only` root filesystem, `ASPIA_LOG_TO_FILE=0`): starts normally, and all four TCP listeners come up. | [run] |
+| **Router, `/var/lib/aspia` read-only:** it starts and listens, but 1 s later logs `ERROR ... Unable to execute : "attempt to write a readonly database"` / `Unable to prune expired host removals`. **The database directory must be writable** (the directory, not only the file, because SQLite creates `-wal` and `-shm` there). | [run]; [src] `router/database.cc` WAL; inotify rows above |
+| **Relay as `nobody` (65534) with `relay.conf` owned by 65534, mode 0600, on a read-only volume, with a `--read-only` root filesystem:** runs and connects (`Connection to the router is established`). **The Relay needs read access only.** | [run] `docker run --user 65534:65534 --read-only -v <vol>:/etc/aspia:ro ... aspia_relay` |
+| **Router and Relay both as `nobody`**, `/etc/aspia` read-only and owned by 65534, `/var/lib/aspia` read-write and owned by 65534: all Router listeners (8060-8063) plus 8070 come up, the Relay registers (`New relay session: "127.0.0.1"`), and there are no errors. | [run] |
+| Relay as `nobody` with a root-owned 0600 `relay.conf`: `ERROR ... IniFile : 101 ] Unable to open file "/etc/aspia/relay.conf" : "Permission denied"`. It then runs on defaults (empty key and address), logs `Empty router address`, and **does not exit**. | [run] |
+| Log directory not writable (uid < 1000 uses `/var/log/aspia/<component>`, which the package creates as root 0755): the Relay as `nobody` with default logging writes **no log file and prints no error about it**. It still runs and connects. Use `ASPIA_LOG_TO_FILE=0` together with `ASPIA_LOG_TO_STDOUT=1`, or chown the log directory. | [run] `vf-roD`: only the three harmless startup ERRORs in `docker logs`, ESTABLISHED to 8063; [src] `base/logging.cc:104-111` |
+| Writes to `/etc/aspia` happen only in `--create-config`, in the 2.x migration (`router.conf`, `relay.conf`, renames `*.json` to `*.json.bak`), and in `--install` with data present (section 1). A read-only `/etc/aspia` is therefore safe only after those steps. | [src] `router/main.cc` `createConfig()`; `router/migration_utils.cc`, `relay/migration_utils.cc` (section 8) |
+| **Correction to section 1:** the probe image is not free of logs. `postinst` runs `aspia_router --install` and `aspia_relay --install`, and each run leaves one log file (`/var/log/aspia/router/aspia_router-<ts>.log`, `/var/log/aspia/relay/aspia_relay-<ts>.log`, owned by root) in the image. | [run] `find /var/log/aspia -ls` in `aspia-probe:3.0.21`; the log contains `Command line: ( "/usr/bin/aspia_router" , "--install" )` |
+
+Not tested: `chown -R` of an existing root-owned 2.x volume followed by the migration run as `nobody` (the
+migration renames files in `/etc/aspia`, so that directory would need to be writable by the user).
+
+### 13.5 No non-interactive way to set the initial admin password
+
+| Fact | Verified by |
+|---|---|
+| The only place that creates a Router user without a Client is `createConfig()`, which hardcodes `admin`/`admin` with ADMIN, MANAGER and OPERATOR session rights and the `ENABLED` flag. | [src] `router/main.cc:307-323`; `grep -rn 'RouterUser::create\|User::create('` finds, outside `router/main.cc`, only `client/`, `host/` and `base/peer/` |
+| No CLI option exists for it: router options are `install remove start stop keygen create-config reset-otp check-update install-update update-channel`. | [src] `router/main.cc:457-480` |
+| No config key exists for it (`Settings` has only ports, listen interfaces, keys, white lists, seed key and STUN), and no environment variable (the full list is in 13.8). | [src] `router/settings.h`; env grep in 13.8 |
+| A password can be changed only over the network, by an authenticated Client (`ChangePasswordRequest` carrying salt and verifier computed on the client side, or the admin's user management). | [src] `client/router_session.cc:720-730`, `router/client_operator.cc:201-203,512`, `router/handlers/user_request_handler.cc:397` |
+| Writing `users.salt`/`verifier` with `sqlite3` would need Aspia's own SRP variant: `x = BLAKE2b512(s \| BLAKE2b512(lower(I) \| ":" \| p))`, with group `kDefaultGroup`. That is not a supported interface. | [src] `base/crypto/srp_math.cc:393-418`, `base/peer/user.cc:122-155`; not tried |
+
+So a fresh install always starts with `admin`/`admin`, and the image can only tell the user to change it.
+
+### 13.6 Relay and Router in separate containers (Docker bridge network)
+
+Setup: `docker network create vf-net`. `vf-router` ran `aspia_router --create-config` and then `aspia_router`. Each
+Relay container ran `aspia_relay --create-config`, then `sed` set `router/address=vf-router`,
+`router/public_key=<router's relay.pub>` and `peer/public_address=<name>`.
+
+| Fact | Verified by |
+|---|---|
+| The Relay resolves `router/address` as a container name and connects in about 40 ms: `Connecting to router...`, then `Connection to the router is established (session count: 0 )`. | [run] |
+| **Router log lines for a registering relay** (exact): `INFO ... onNewRelayConnection : 208 ] New relay session: "172.21.0.3"`, then `INFO ... readKeyPool : 166 ] "[Relay#1]" Received key pool: 100 ( "172.21.0.3" )`, then `INFO ... add : 68 ] Relay not found in key pool. It will be added`, then **one line per key**: `INFO ... add : 76 ] Added key with id K for relay 1` (100 lines with the default `max_count=100`). On disconnect: `"[Relay#N]" Network error: TcpChannel::ErrorCode::REMOTE_HOST_CLOSED`, `All keys for relay N removed`. `N` is a per-connection counter, not a stable relay id. | [run] |
+| **Several relays at once: yes, up to 5.** Two relay containers were connected at the same time (two ESTABLISHED sockets on 8063). With 6 relays, the 6th was refused: Router `ERROR ... onNewRelayConnection : 204 ] Too many relay sessions. Connection is rejected for "172.21.0.4"`; Relay `Connection to the router has been lost: ... REMOTE_HOST_CLOSED`, `Reconnect after 15 seconds`. | [src] `router/workers/relay_worker.cc:195-205` (`kMaxRelays = 5`); [run] five relays (1 + 4 extra processes on peer ports 8071-8074 via `ASPIA_RELAY_CONFIG_FILE`) |
+| **`relay/white_list=172.21.0.3` (relay1's IP):** Router logs `Allowed relays: QStringList( "172.21.0.3" )`. Relay1 registers normally (`New relay session: "172.21.0.3"`). | [run] |
+| Relay2 (172.21.0.4, not listed) is rejected: at INFO the Router logs **nothing**. At TRACE it logs `TRACE ... operator() : 278 ] Connection rejected by white list: "::ffff:172.21.0.4"`. Relay2 logs `Connection to the router has been lost: TcpChannel::ErrorCode::REMOTE_HOST_CLOSED` then `Reconnect after 15 seconds`, forever. | [run] `ASPIA_LOG_LEVEL=0` |
+| White-list matching converts v4-mapped peers (`::ffff:a.b.c.d`) to IPv4, so plain IPv4 entries and IPv4 subnets match on the dual-stack listener. | [src] `base/net/net_utils.cc:254-286` |
+| In a white-listed deployment the Relay container needs a **fixed IP** (or a subnet entry), because Docker assigns bridge IPs dynamically. | follows from above |
+
+### 13.7 `listen_interface` values
+
+| Value | Router (`client`/`host`/`relay`/`stun` `listen_interface`) | Relay (`peer/listen_interface`) | Verified by |
+|---|---|---|---|
+| empty | binds `::` (dual-stack TCP), log `Listen interface: "ANY" : <port>`. STUN binds UDP `0.0.0.0`. | binds `::`, log `"ANY"` | [src] `base/net/tcp_server.cc:136-139`, `relay/workers/relay_worker.cc:207-209`; [run] |
+| IPv4 (`127.0.0.1`, `0.0.0.0`) | binds that address only (`127.0.0.1:8062`, `0.0.0.0:8061`, `0.0.0.0:8060`) | binds `127.0.0.1:8080`, and the Relay still connects to the Router | [run] `ss -Htln` |
+| IPv6 (`::1`, `::`) | `host/listen_interface=::1` binds **both** `[::1]:8061` and `[::1]:8060` (the legacy port uses the host setting). `::` gives `*:8063`. | binds `[::1]:8080` and connects | [run] |
+| bogus (`bogus.example`, `999.1.1.1`) | `ERROR ... isValidListenInterface : 166 ] Invalid interface address: "Invalid argument" ( 22 )` then `ERROR ... onPrepare ] Invalid listen interface address`. **That worker only** does not listen. The process keeps running and still logs `All workers started`. Hostnames are not resolved: an IP literal is required. | `ERROR ... Unable to get listen address: "Invalid argument" ( 22 )`. **No peer listener, and the Relay never connects to the Router** (the router connection is started from `RelayWorker::sig_ready`, which is not emitted). The process keeps running (killed by `timeout`, exit 124). | [src] `base/net/net_utils.cc:153-171`, `router/workers/*_worker.cc` `onPrepare`, `relay/workers/relay_worker.cc:194-204,268`; [run] |
+| valid IP not on the container (`10.99.99.99`) | `ERROR ... acceptor::bind failed: "Cannot assign requested address" ( 99 )`, `ERROR ... Unable to start client listener`. There is no retry, and the process keeps running. | `ERROR ... bind failed: "Cannot assign requested address" ( 99 )`, and it does not connect to the Router | [run]; [src] `router/workers/client_worker.cc:155-164` |
+
+Consequence: a mistyped `listen_interface` gives a **running container with a missing port**, so the
+healthcheck must check every expected LISTEN socket.
+
+### 13.8 Path overrides and every environment variable read
+
+| Fact | Verified by |
+|---|---|
+| `ASPIA_ROUTER_CONFIG_FILE` moves **only `router.conf`**. `host.pub` and `relay.pub` are still written to `BasePaths::appConfigDir()` = `/etc/aspia`, and the database stays at `/var/lib/aspia/router.db3`. | [src] `router/main.cc:216-219,274-275` (`publicKeyDirectory()` = `appConfigDir()`); `base/files/base_paths.cc:60-61,108-111`; [run] `--create-config` with `ASPIA_ROUTER_CONFIG_FILE=/data/cfg/router.conf` created `/data/cfg/router.conf`, `/etc/aspia/host.pub`, `/etc/aspia/relay.pub`, `/var/lib/aspia/router.db3` |
+| **`ASPIA_ROUTER_DB_FILE`** (not in the earlier notes) moves the database file. `--create-config` and the service both use it: [run] it created `/data/db/router.db3`, and the Router logged `Opening database: "/data/db/router.db3"`. | [src] `router/database.cc:379-392`; [run] |
+| The 2.x migration always looks for `/etc/aspia/router.json` and `/etc/aspia/relay.json` (`appConfigDir()`), whatever the overrides say. | [src] `router/migration_utils.cc:37-39`, `relay/migration_utils.cc:36-38`; [run] log `Old configuration file does NOT exist: "/etc/aspia/router.json"` with the overrides set |
+| `ASPIA_RELAY_CONFIG_FILE` moves `relay.conf` (the Relay has no other files). Several relay processes in one container, each with its own file, worked. | [src] `relay/settings.cc:33-40`; [run] 13.6 |
+
+All environment variables that `aspia_router` and `aspia_relay` read in Aspia code. Source:
+`grep -rnE 'qEnvironmentVariable|qgetenv|getenv|QProcessEnvironment' base router relay`, restricted to code
+compiled into the two binaries. Checked against the binaries with
+`grep -a -o 'ASPIA_[A-Z_]*' /usr/bin/aspia_{router,relay} | sort -u`:
+
+| Variable | Binary | Effect | Source |
+|---|---|---|---|
+| `ASPIA_ROUTER_CONFIG_FILE` | router | path of `router.conf` | `router/settings.cc:56` |
+| `ASPIA_ROUTER_DB_FILE` | router | path of `router.db3` | `router/database.cc:382` |
+| `ASPIA_RELAY_CONFIG_FILE` | relay | path of `relay.conf` | `relay/settings.cc:36` |
+| `ASPIA_LOG_LEVEL` | both | minimum log level, clamped to 0 (TRACE) .. FATAL; 1 = INFO is the default | `base/logging.cc:225-235`, `base/logging.h:114-115` |
+| `ASPIA_LOG_TO_FILE` | both | `0` disables the log file | `base/logging.cc:241` |
+| `ASPIA_LOG_TO_STDOUT` | both | `1` writes every line to stderr | `base/logging.cc:253` |
+| `ASPIA_MAX_LOG_FILE_AGE` | both | days to keep log files | `base/logging.cc:270` |
+| `ASPIA_NO_VERIFY_TLS_PEER` | both | if set, disables TLS peer verification, **for the updater only** | `base/update/update_checker.cc:279`, `base/net/http_file_downloader.cc:105` |
+| `XDG_STATE_HOME`, `HOME` | both | log directory, **only when euid >= 1000** | `base/logging.cc:104-117` |
+| `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `HOME` | both | only the per-user `appUser*Dir()` paths. The Router and Relay use `appConfigDir()`/`appDataDir()` (`/etc/aspia`, `/var/lib/aspia`), which ignore these variables. | `base/files/base_paths.cc:88,150,197` |
+
+`ASPIA_SMALL_ICON_SIZE` (`base/gui_application.cc`) is GUI-only and does not appear in either server binary
+(binary grep above). The other `XDG_*` strings in the binaries come from the statically linked Qt, as do the
+usual `QT_*` variables. Their effect on the server binaries was not examined.
+
+### 13.9 Changes to earlier sections implied by the above
+
+- Section 4, `peer/public_address`: it accepts an IPv4 or IPv6 literal, or a hostname of at most 64 characters
+  from `[A-Za-z0-9._-]`. **An empty value makes the Relay never connect**, and an invalid value makes the
+  Router silently ignore the Relay's keys.
+- Section 4, `*/listen_interface`: an IP literal only. A bad value disables that listener silently, and
+  on the Relay it also prevents the Router connection.
+- Section 5, non-root: the Relay also runs as `nobody` and needs only read access to `relay.conf`. The Router
+  needs a writable `/var/lib/aspia` and a readable `/etc/aspia`.
+- Section 9: the updater cannot be reached from the network (13.3). The "not verified" remark can go.
+- Section 10: a Relay that shows ESTABLISHED to 8063 can still be useless (invalid `public_address`, or
+  a 6th relay that is refused and reconnects every 15 s). Only the Router log shows this.
+- Section 12: the brute-force, updater, non-root Relay and DNS-name items are resolved. Still open: the minimum
+  2.x host version and 2.x/3.x Client compatibility, and running the migration as non-root on a chowned
+  2.x volume.
 
 ## 14. Verified while implementing PR 1
 
@@ -357,3 +515,27 @@ Same legend. "Image" is the PR 1 image (`docker build --platform linux/amd64 -t 
 | On a user-defined Docker network, a container has an extra LISTEN socket on a random high port (Docker's embedded DNS). Tests that list listening ports must not require an exact set. | [run] tests, scenario 1 |
 | Debian trixie ships `tini` 0.19.0-3+b8 (`/usr/bin/tini`, depends only on libc6). Started under `docker run --init` (so not PID 1) it warns `Tini is not running as PID 1 and isn't registered as a child subreaper`; with `tini -s` the warning is gone and stop/health behave the same. | [run] `apt-cache policy tini`; image with and without `-s`, `docker run --init` |
 | `wait -n -p VAR` (bash 5.2 in trixie) **unsets** `VAR` when a trapped signal interrupts the wait. Under `set -u`, reading it needs `${VAR:-}`. | [run] first version of `aspia_start` failed on `docker stop` with `pid: unbound variable` |
+
+## 15. Official migration guide (aspia.org/docs/migration)
+
+[doc] https://aspia.org/docs/migration, fetched 2026-09-30. Upstream documentation, quoted; not tested
+by us (needs GUI Clients and Hosts). Sections on the page: Before you start, Aspia Router, Aspia Relay, Aspia Host, Aspia Client.
+
+| Statement (verbatim) | Section |
+|---|---|
+| "Version 3.0.0 keeps working with Hosts of previous versions, so the whole network does not have to be updated at once." | Before you start |
+| "The minimum supported version is 2.6.0." (**supersedes** the unverified "2.6.2 and later" in the SinitsaDA README) | Before you start |
+| "The recommended order is: Router, then Relay, then Clients and Hosts." | Before you start |
+| "Until a Host is updated it keeps connecting to the Router as before." | Before you start |
+| Ports: "8060 - Hosts of versions below 3.0.0", "8061 - Hosts of version 3.0.0", "8062 - Clients", "8063 - Relays", "8065 - STUN server" | Aspia Router |
+| "The configuration is migrated automatically at the first start of the new version." "The white lists, the private key, the seed key and the listening interface are taken from the old configuration file." (consistent with section 8) | Aspia Router |
+| Relay: "the address and the public key of the Router, the listening interface, the port for peers, the idle timeout and the maximum number of peers are taken from the old configuration file." "The migration always sets the new port for relays - 8063." | Aspia Relay |
+| "A Host of version 2.7 does not have to be updated together with the Router. It keeps connecting to the Router on port 8060 and can be updated later." | Aspia Host |
+| "The Console has been removed. Its functions are performed by the Client: the address book, groups of computers and the management of the Router are now tabs of its window." | Aspia Client |
+| "Address books of previous versions are not converted automatically. Open the Client and use 'Import Old Address Book…' to import an existing `.aab` file." | Aspia Client |
+| "Two-factor authentication is mandatory in version 3.0.0. At the first connection every user, including the administrator, is asked to enroll." "The connection to the Router requires a code of two-factor authentication." | Aspia Client |
+| "The master password is now mandatory. At the first start the Client asks to set it…" (Client-side) | Aspia Client |
+
+Not stated on the page: whether a 2.x Client or Console can connect to a 3.x Router. Consequence: docs must say
+a 3.x Client is required to manage a 3.x Router (the 2.x Console no longer exists in 3.x), link the page, and not
+claim 2.x Client compatibility.
