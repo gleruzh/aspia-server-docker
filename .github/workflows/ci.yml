@@ -94,6 +94,45 @@ jobs:
           path: ${{ runner.temp }}/trivy.sarif
           retention-days: 14
 
+  # The Podman Quadlet unit in podman/, system-wide and rootless, on the runner's own Podman and
+  # systemd (the version is in the job summary). tests/podman.sh installs a service and removes it
+  # again; the runner is a throwaway machine.
+  podman:
+    name: Podman Quadlet (system-wide and rootless)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Record the Podman and systemd versions
+        run: |
+          # shellcheck disable=SC1091
+          pretty_name="$(. /etc/os-release && echo "${PRETTY_NAME}")"
+          {
+            echo "### Podman Quadlet test"
+            echo
+            echo "- $(podman --version)"
+            echo "- $(systemctl --version | head -n 1)"
+            echo "- ${pretty_name}"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
+
+      - name: Build the image (version from versions.env)
+        run: |
+          version="$(scripts/versions.sh get ASPIA_VERSION)"
+          docker build --platform linux/amd64 \
+            --build-arg "ASPIA_VERSION=${version}" \
+            --build-arg "IMAGE_SOURCE=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            -t aspia-server:ci .
+
+      - name: tests/podman.sh
+        env:
+          ASPIA_TEST_IMAGE: aspia-server:ci
+        run: tests/podman.sh
+
   # A separate job, so that the job running the pull request's code never holds
   # security-events: write. Pull requests from forks get a read-only token, so the upload is skipped
   # there; the table is in the test job's log either way. Code scanning is free for public repositories.
