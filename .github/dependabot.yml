@@ -1,0 +1,22 @@
+# Dependabot proposes updates as pull requests; nothing is bumped silently. It keeps current:
+# - the GitHub Actions pinned by commit SHA in .github/workflows (the version comment is updated too);
+# - the base image in the Dockerfile, pinned by tag and digest (debian:trixie-slim@sha256:...).
+# Aspia itself is updated by .github/workflows/upstream-watch.yml, not by Dependabot.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build

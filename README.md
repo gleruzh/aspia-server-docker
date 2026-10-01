@@ -1,6 +1,8 @@
 # Сервер Aspia (Relay + Router)
 ### Текущая версия (Current version) - 3.0.21
 
+[![CI](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml) [![Publish](../../actions/workflows/publish.yml/badge.svg)](../../actions/workflows/publish.yml)
+
 https://hub.docker.com/r/paprikkafox/aspia-server
 
 Данный контейнер предназначен для быстрого развертывания сервера удаленного доступа с открытым исходным кодом (aspia.org)
@@ -77,6 +79,21 @@ docker build -t username/aspia-server:3.0.21 .
 
 Deployment from an image is described here - https://hub.docker.com/r/paprikkafox/aspia-server
 
+### Published image
+
+GitHub Actions builds the image (linux/amd64), runs the tests against it, and publishes it to `ghcr.io/<owner>/aspia-server`, where `<owner>` is the GitHub account of the repository you use. Docker Hub and Quay.io get the same image when the maintainer has enabled them ([docs/ci.md](docs/ci.md)).
+
+Pin an exact version, or a digest for an image that never changes (the digest of each release is in the summary of its publish run):
+
+```shell
+docker pull ghcr.io/<owner>/aspia-server:3.0.21
+docker pull ghcr.io/<owner>/aspia-server@sha256:<digest>
+```
+
+With docker compose, put the same reference into `.env`: `ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.0.21` or `ASPIA_IMAGE=ghcr.io/<owner>/aspia-server@sha256:<digest>`.
+
+The version tag is rebuilt every week to pick up Debian security updates, so its digest changes; every weekly rebuild also gets its own tag `3.0.21-YYYYMMDD`, which never moves. The tags `latest`, `<major>` and `<major>.<minor>` exist only for convenience: they change under you on the next pull, so do not use them on a server. The image is signed with cosign; [docs/ci.md](docs/ci.md) shows how to verify it.
+
 ### Ports
 
 Publish every port one-to-one (host port = container port): the Relay announces its own port to clients and hosts.
@@ -90,7 +107,7 @@ Publish every port one-to-one (host port = container port): the Relay announces 
 | 8070/tcp | Relay: clients and hosts |
 | 8063/tcp | Router: Relays. Used inside the container; publish it only for a Relay on another machine. |
 
-`EXTERNAL_IP` (or its new name, `ASPIA_RELAY_PUBLIC_ADDRESS`) is required: the public address the Relay announces. Without one of them, `docker compose config`/`up` fails with a clear error, and a plain `docker run` container exits the same way. With docker compose, put it into a `.env` file next to `docker-compose.yml`; see `.env.example` for every variable and the "Configuration" section below.
+`EXTERNAL_IP` (or its new name, `ASPIA_RELAY_PUBLIC_ADDRESS`) is required: the public address the Relay announces. Without one of them the container exits with a clear error, with docker compose and with `docker run` alike. With docker compose, put it into a `.env` file next to `docker-compose.yml`; see `.env.example` for every variable and the "Configuration" section below.
 
 The Aspia log goes to `docker logs`; no log files are written.
 

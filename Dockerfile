@@ -8,34 +8,46 @@
 # HEALTHCHECK script. Changed: pinned base image, checksum verification, no curl in the image,
 # an init process, logs to stdout.
 
+# The version and the package checksums come from versions.env. Dockerfile syntax cannot read a
+# file into an ARG, so this default mirrors versions.env for a plain "docker build ." (CI passes
+# --build-arg ASPIA_VERSION from versions.env). The fetch stage fails when the two differ, and
+# scripts/versions.sh bump updates both.
 ARG ASPIA_VERSION=3.0.21
 
 # Debian 13 (trixie) slim, pinned by tag and index digest so that builds are reproducible.
 FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a AS base
 
 # ---------------------------------------------------------------------------------------------
-# Stage 1: download the release packages and verify them against checksums.sha256.
+# Stage 1: download the release packages and verify them against versions.env.
 # Upstream publishes no checksums for the Linux packages, so the values are committed to this
-# repository. A replaced release asset, or a version with no committed checksums, fails the build.
+# repository. A replaced release asset, or a version other than the one in versions.env, fails
+# the build.
 FROM base AS fetch
 ARG ASPIA_VERSION
 
+WORKDIR /pkg
+COPY versions.env /pkg/versions.env
+RUN pinned="$(sed -n 's/^ASPIA_VERSION=//p' versions.env)"; \
+    if [ "${pinned}" != "${ASPIA_VERSION}" ]; then \
+        echo "ASPIA_VERSION=${ASPIA_VERSION}, but versions.env pins Aspia ${pinned} (checksums exist only for that version)" >&2; \
+        exit 1; \
+    fi
+
 ADD https://github.com/dchapyshev/aspia/releases/download/v${ASPIA_VERSION}/aspia-router-${ASPIA_VERSION}-x86_64.deb /pkg/
 ADD https://github.com/dchapyshev/aspia/releases/download/v${ASPIA_VERSION}/aspia-relay-${ASPIA_VERSION}-x86_64.deb /pkg/
-COPY checksums.sha256 /pkg/checksums.sha256
 
-WORKDIR /pkg
-RUN grep -E "  aspia-(router|relay)-${ASPIA_VERSION}-x86_64\.deb$" checksums.sha256 > SHA256SUMS || true; \
-    if [ "$(wc -l < SHA256SUMS)" -ne 2 ]; then \
-        echo "checksums.sha256 has no entries for Aspia ${ASPIA_VERSION}" >&2; exit 1; \
-    fi; \
-    sha256sum --strict -c SHA256SUMS
+RUN printf '%s  %s\n' \
+        "$(sed -n 's/^ASPIA_ROUTER_SHA256=//p' versions.env)" "aspia-router-${ASPIA_VERSION}-x86_64.deb" \
+        "$(sed -n 's/^ASPIA_RELAY_SHA256=//p' versions.env)" "aspia-relay-${ASPIA_VERSION}-x86_64.deb" \
+        > SHA256SUMS \
+    && sha256sum --strict -c SHA256SUMS
 
 # ---------------------------------------------------------------------------------------------
 # Stage 2: the runtime image.
 FROM base
 ARG ASPIA_VERSION
-ARG IMAGE_SOURCE=https://github.com/paprikkafox/aspia-server-docker
+# The repository the image is built from; the publish workflow passes it. Empty for local builds.
+ARG IMAGE_SOURCE=""
 
 LABEL org.opencontainers.image.title="Aspia Server" \
       org.opencontainers.image.description="Aspia Router and Aspia Relay in one container" \

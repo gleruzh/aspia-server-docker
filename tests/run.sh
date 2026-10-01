@@ -10,7 +10,8 @@
 # and is removed on exit, also when a scenario fails.
 #
 # Scenarios:
-#   0. build: a tampered checksum makes the build fail; 0b. a docker run command replaces the server
+#   0. build: a tampered checksum makes the build fail; 0b. a docker run command replaces the server,
+#      and the image runs the Aspia version in versions.env
 #   0c. docker-compose.yml: local build by default, ASPIA_IMAGE override, EXTERNAL_IP required
 #   1. clean start
 #   2. restart keeps keys and configuration; 2b. a changed EXTERNAL_IP is applied, with a copy
@@ -38,11 +39,15 @@ cd "$(dirname "$0")/.."
 readonly PLATFORM=linux/amd64
 readonly OLD_IMAGE=paprikkafox/aspia-server:2.7.0@sha256:8db62b95681b09ab8dc2346d803a2981d7a44826b3a06310ab27b3d054215b82
 readonly HELPER_IMAGE=aspia-server-test-helper:local
+# Docker CLI with Compose v2.31, to check docker-compose.yml against the Compose v2 still common on servers.
+readonly COMPOSE_V2_IMAGE=docker:27.3-cli@sha256:328eb399a065780c2cebe9224de003aa14084cf69efae882ac27430f921819b7
 readonly RUN_ID="aspia-test-$$"
 readonly IP_OLD=203.0.113.10   # EXTERNAL_IP given to 2.7.0
 readonly IP_NEW=203.0.113.11   # EXTERNAL_IP given to the new image
 readonly HEALTH_TIMEOUT=180    # seconds; generous because CI or emulation may be slow
 IMAGE="${ASPIA_TEST_IMAGE:-aspia-server:test}"
+ASPIA_VERSION="$(sed -n 's/^ASPIA_VERSION=//p' versions.env)"   # the single source of the version
+readonly ASPIA_VERSION
 
 # ---------------------------------------------------------------------------------------------
 # Output, cleanup
@@ -188,10 +193,10 @@ config_sums() {
 scenario_build() {
     log "0. Build: the image, and a build with a tampered checksum must fail"
     TAMPER_DIR="$(mktemp -d)"
-    cp Dockerfile aspia_start aspia_health aspia_common.sh checksums.sha256 .dockerignore "${TAMPER_DIR}/"
+    cp Dockerfile aspia_start aspia_health aspia_common.sh versions.env .dockerignore "${TAMPER_DIR}/"
     # Flip the first hex digit of the router checksum.
-    awk 'NR == 1 { c = substr($0, 1, 1); $0 = (c == "0" ? "1" : "0") substr($0, 2) } { print }' \
-        checksums.sha256 > "${TAMPER_DIR}/checksums.sha256"
+    awk 'BEGIN { FS = OFS = "=" } $1 == "ASPIA_ROUTER_SHA256" { c = substr($2, 1, 1); $2 = (c == "0" ? "1" : "0") substr($2, 2) } { print }' \
+        versions.env > "${TAMPER_DIR}/versions.env"
     if docker build --progress=plain --platform "${PLATFORM}" "${TAMPER_DIR}" > "${TAMPER_DIR}/build.log" 2>&1; then
         fail "the build succeeded with a wrong checksum"
     fi
@@ -214,20 +219,20 @@ scenario_compose() {
     local images out
     log "0c. docker-compose.yml: builds locally by default, ASPIA_IMAGE overrides, ports from the same variable"
     images="$(EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE='' compose_config --images)"
-    [[ "${images}" == "aspia-server:3.0.21" ]] || fail "default image is '${images}', expected aspia-server:3.0.21"
+    [[ "${images}" == "aspia-server:${ASPIA_VERSION}" ]] || fail "default image is '${images}', expected aspia-server:${ASPIA_VERSION}"
     EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE='' compose_config --format json \
         | grep -q '"build"' || fail "the compose service has no build section"
-    images="$(EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE=registry.example/aspia-server:3.0.21 compose_config --images)"
-    [[ "${images}" == registry.example/aspia-server:3.0.21 ]] || fail "ASPIA_IMAGE is not used: '${images}'"
-    ok "default image aspia-server:3.0.21 with a build section; ASPIA_IMAGE overrides it"
+    images="$(EXTERNAL_IP="${IP_NEW}" ASPIA_IMAGE="registry.example/aspia-server:${ASPIA_VERSION}" compose_config --images)"
+    [[ "${images}" == "registry.example/aspia-server:${ASPIA_VERSION}" ]] || fail "ASPIA_IMAGE is not used: '${images}'"
+    ok "default image aspia-server:${ASPIA_VERSION} with a build section; ASPIA_IMAGE overrides it"
 
-    # Neither variable set: compose itself refuses (a nested default), naming both variables.
-    if out="$(unset EXTERNAL_IP ASPIA_RELAY_PUBLIC_ADDRESS; compose_config 2>&1)"; then
-        fail "docker compose config succeeded with neither EXTERNAL_IP nor ASPIA_RELAY_PUBLIC_ADDRESS set"
-    fi
-    grep -q 'EXTERNAL_IP' <<<"${out}" || fail "the compose error does not name EXTERNAL_IP: ${out}"
-    grep -q 'ASPIA_RELAY_PUBLIC_ADDRESS' <<<"${out}" || fail "the compose error does not name ASPIA_RELAY_PUBLIC_ADDRESS: ${out}"
-    ok "docker compose config fails when neither EXTERNAL_IP nor ASPIA_RELAY_PUBLIC_ADDRESS is set"
+    # Neither variable set: compose passes an empty EXTERNAL_IP, and the container refuses to start
+    # (scenario 6). Compose cannot require "one of two" portably: Compose v2 evaluates a ":?" nested
+    # in a default even when the outer variable is set.
+    out="$(unset EXTERNAL_IP ASPIA_RELAY_PUBLIC_ADDRESS; compose_config --format json)" \
+        || fail "docker compose config failed with neither address variable set: ${out}"
+    grep -q '"EXTERNAL_IP": ""' <<<"${out}" || fail "EXTERNAL_IP is not empty with neither variable set: ${out}"
+    ok "neither EXTERNAL_IP nor ASPIA_RELAY_PUBLIC_ADDRESS set: compose passes it empty, the container refuses (scenario 6)"
 
     # Only the new alias set: EXTERNAL_IP takes its value (a nested default, not a second ":?").
     out="$(unset EXTERNAL_IP; ASPIA_RELAY_PUBLIC_ADDRESS="${IP_NEW}" compose_config --format json)"
@@ -245,6 +250,13 @@ scenario_compose() {
     docker compose --env-file .env.example -f docker-compose.yml config >/dev/null \
         || fail "docker compose config failed with .env.example"
     ok "docker compose config succeeds with .env.example"
+
+    # The same file with Compose v2, which most servers still have (docker-compose-plugin v2).
+    out="$(docker run --rm --label "aspia-test=${RUN_ID}" -v "${PWD}/docker-compose.yml:/w/docker-compose.yml:ro" -w /w \
+        -e "EXTERNAL_IP=${IP_NEW}" "${COMPOSE_V2_IMAGE}" docker compose --env-file /dev/null config --format json 2>&1)" \
+        || fail "Compose v2 cannot read docker-compose.yml with EXTERNAL_IP set: ${out}"
+    grep -q "\"EXTERNAL_IP\": \"${IP_NEW}\"" <<<"${out}" || fail "Compose v2 did not pass EXTERNAL_IP: ${out}"
+    ok "Compose v2 ($(docker run --rm "${COMPOSE_V2_IMAGE}" docker compose version --short)) reads docker-compose.yml"
 }
 
 scenario_command() {
@@ -256,6 +268,7 @@ scenario_command() {
         || fail "the command exited non-zero: ${out}"
     [[ "$(head -n 1 <<<"${out}")" == tini ]] || fail "PID 1 is not tini: ${out}"
     grep -qE '^aspia_router [0-9]' <<<"${out}" || fail "the command did not run: ${out}"
+    grep -qF "aspia_router ${ASPIA_VERSION}." <<<"${out}" || fail "the image does not run Aspia ${ASPIA_VERSION} (versions.env): ${out}"
     ok "ran 'aspia_router --version' under tini: $(grep -E '^aspia_router' <<<"${out}")"
 }
 
