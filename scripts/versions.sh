@@ -12,7 +12,7 @@
 #
 # Pinned references: the ASPIA_VERSION default in the Dockerfile (Dockerfile syntax cannot read a
 # file, so that default is a mirror, and the build fails when it differs from versions.env), and
-# every image tag in the compose files, Quadlet units and user documentation (*.md outside docs/dev/,
+# every image tag in the compose files, .env.example, Quadlet units and user documentation (*.md outside docs/dev/,
 # which is history). An image tag of this image is valid only as <version> or <version>-YYYYMMDD;
 # latest and the floating X and X.Y tags are published for convenience, never referenced here.
 # Needs git, awk, sed and perl (all present on GitHub's Ubuntu runners and on macOS).
@@ -40,7 +40,7 @@ valid_version() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
 valid_sha256() { [[ "$1" =~ ^[0-9a-f]{64}$ ]]; }
 
 pinned_files() {
-    git ls-files --cached --others --exclude-standard -- Dockerfile '*.yml' '*.yaml' '*.container' '*.md' | grep -vE '^(\.github|docs/dev|tests)/' || true
+    git ls-files --cached --others --exclude-standard -- Dockerfile .env.example '*.yml' '*.yaml' '*.container' '*.md' | grep -vE '^(\.github|docs/dev|tests)/' || true
 }
 
 check() {

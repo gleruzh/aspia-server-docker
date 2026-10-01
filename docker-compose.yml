@@ -10,19 +10,42 @@ services:
     hostname: aspia-server
     environment:
       # Required: the public address of this server, announced by the Relay to clients and hosts.
-      # Set it in a .env file next to this file (EXTERNAL_IP=203.0.113.10) or in the shell.
-      - EXTERNAL_IP=${EXTERNAL_IP:?Set EXTERNAL_IP to the public IP address of this server, e.g. in .env next to docker-compose.yml}
+      # 'auto' detects it at startup. Set EXTERNAL_IP or ASPIA_RELAY_PUBLIC_ADDRESS (its new name,
+      # an exact alias); "docker compose config" fails with a clear error if neither is set. See
+      # .env.example and README.md for the full list of variables below (every other one is
+      # optional: unset = the file is left alone, so a hand edit of router.conf/relay.conf
+      # survives).
+      - EXTERNAL_IP=${EXTERNAL_IP:-${ASPIA_RELAY_PUBLIC_ADDRESS:?Set EXTERNAL_IP or ASPIA_RELAY_PUBLIC_ADDRESS to the public address of this server (or auto), e.g. in .env next to docker-compose.yml}}
+      - ASPIA_RELAY_PUBLIC_ADDRESS=${ASPIA_RELAY_PUBLIC_ADDRESS:-}
+      - ASPIA_RELAY_PEER_PORT
+      - ASPIA_RELAY_IDLE_TIMEOUT
+      - ASPIA_RELAY_MAX_PEERS
+      - ASPIA_ROUTER_CLIENT_PORT
+      - ASPIA_ROUTER_HOST_PORT
+      - ASPIA_ROUTER_LEGACY_PORT
+      - ASPIA_ROUTER_STUN_ENABLED
+      - ASPIA_ROUTER_STUN_PORT
+      - ASPIA_ROUTER_CLIENT_ALLOWED_IPS
+      - ASPIA_ROUTER_HOST_ALLOWED_IPS
+      - ASPIA_ROUTER_RELAY_ALLOWED_IPS
+      - ASPIA_LOG_LEVEL
+      - TZ
+      - PUID
+      - PGID
     volumes:
       - ./data/config:/etc/aspia:rw
       - ./data/database:/var/lib/aspia:rw
-    # Publish every port one-to-one (host port = container port). The Relay tells clients and
-    # hosts its own port (8070), so a different host port would break relayed connections.
+    # Publish every port one-to-one (host port = container port): the Relay announces its own
+    # peer port (ASPIA_RELAY_PEER_PORT) to clients and hosts, so a different host port would break
+    # relayed connections. Both sides of every mapping come from the same variable, with the
+    # upstream default when it is not set, so the ports here always match what aspia_start writes
+    # into router.conf/relay.conf.
     ports:
-      - "8060:8060"       # Router: hosts of Aspia 2.x
-      - "8061:8061"       # Router: hosts of Aspia 3.x
-      - "8062:8062"       # Router: clients (address book and Router management)
-      - "8065:8065/udp"   # Router: built-in STUN server
-      - "8070:8070"       # Relay: clients and hosts
+      - "${ASPIA_ROUTER_LEGACY_PORT:-8060}:${ASPIA_ROUTER_LEGACY_PORT:-8060}"       # Router: hosts of Aspia 2.x
+      - "${ASPIA_ROUTER_HOST_PORT:-8061}:${ASPIA_ROUTER_HOST_PORT:-8061}"           # Router: hosts of Aspia 3.x
+      - "${ASPIA_ROUTER_CLIENT_PORT:-8062}:${ASPIA_ROUTER_CLIENT_PORT:-8062}"       # Router: clients (address book and Router management)
+      - "${ASPIA_ROUTER_STUN_PORT:-8065}:${ASPIA_ROUTER_STUN_PORT:-8065}/udp"       # Router: built-in STUN server
+      - "${ASPIA_RELAY_PEER_PORT:-8070}:${ASPIA_RELAY_PEER_PORT:-8070}"             # Relay: clients and hosts
       # 8063 is the Router port for Relays. The Relay in this container reaches it internally;
-      # publish it only for a Relay running on another machine.
+      # publish it only for a Relay running on another machine (not configurable in this PR).
     restart: unless-stopped
