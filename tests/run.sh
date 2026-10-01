@@ -38,6 +38,8 @@ cd "$(dirname "$0")/.."
 readonly PLATFORM=linux/amd64
 readonly OLD_IMAGE=paprikkafox/aspia-server:2.7.0@sha256:8db62b95681b09ab8dc2346d803a2981d7a44826b3a06310ab27b3d054215b82
 readonly HELPER_IMAGE=aspia-server-test-helper:local
+# Docker CLI with Compose v2.31, to check docker-compose.yml against the Compose v2 still common on servers.
+readonly COMPOSE_V2_IMAGE=docker:27.3-cli@sha256:328eb399a065780c2cebe9224de003aa14084cf69efae882ac27430f921819b7
 readonly RUN_ID="aspia-test-$$"
 readonly IP_OLD=203.0.113.10   # EXTERNAL_IP given to 2.7.0
 readonly IP_NEW=203.0.113.11   # EXTERNAL_IP given to the new image
@@ -221,13 +223,13 @@ scenario_compose() {
     [[ "${images}" == registry.example/aspia-server:3.0.21 ]] || fail "ASPIA_IMAGE is not used: '${images}'"
     ok "default image aspia-server:3.0.21 with a build section; ASPIA_IMAGE overrides it"
 
-    # Neither variable set: compose itself refuses (a nested default), naming both variables.
-    if out="$(unset EXTERNAL_IP ASPIA_RELAY_PUBLIC_ADDRESS; compose_config 2>&1)"; then
-        fail "docker compose config succeeded with neither EXTERNAL_IP nor ASPIA_RELAY_PUBLIC_ADDRESS set"
-    fi
-    grep -q 'EXTERNAL_IP' <<<"${out}" || fail "the compose error does not name EXTERNAL_IP: ${out}"
-    grep -q 'ASPIA_RELAY_PUBLIC_ADDRESS' <<<"${out}" || fail "the compose error does not name ASPIA_RELAY_PUBLIC_ADDRESS: ${out}"
-    ok "docker compose config fails when neither EXTERNAL_IP nor ASPIA_RELAY_PUBLIC_ADDRESS is set"
+    # Neither variable set: compose passes an empty EXTERNAL_IP, and the container refuses to start
+    # (scenario 6). Compose cannot require "one of two" portably: Compose v2 evaluates a ":?" nested
+    # in a default even when the outer variable is set.
+    out="$(unset EXTERNAL_IP ASPIA_RELAY_PUBLIC_ADDRESS; compose_config --format json)" \
+        || fail "docker compose config failed with neither address variable set: ${out}"
+    grep -q '"EXTERNAL_IP": ""' <<<"${out}" || fail "EXTERNAL_IP is not empty with neither variable set: ${out}"
+    ok "neither EXTERNAL_IP nor ASPIA_RELAY_PUBLIC_ADDRESS set: compose passes it empty, the container refuses (scenario 6)"
 
     # Only the new alias set: EXTERNAL_IP takes its value (a nested default, not a second ":?").
     out="$(unset EXTERNAL_IP; ASPIA_RELAY_PUBLIC_ADDRESS="${IP_NEW}" compose_config --format json)"
@@ -245,6 +247,13 @@ scenario_compose() {
     docker compose --env-file .env.example -f docker-compose.yml config >/dev/null \
         || fail "docker compose config failed with .env.example"
     ok "docker compose config succeeds with .env.example"
+
+    # The same file with Compose v2, which most servers still have (docker-compose-plugin v2).
+    out="$(docker run --rm --label "aspia-test=${RUN_ID}" -v "${PWD}/docker-compose.yml:/w/docker-compose.yml:ro" -w /w \
+        -e "EXTERNAL_IP=${IP_NEW}" "${COMPOSE_V2_IMAGE}" docker compose --env-file /dev/null config --format json 2>&1)" \
+        || fail "Compose v2 cannot read docker-compose.yml with EXTERNAL_IP set: ${out}"
+    grep -q "\"EXTERNAL_IP\": \"${IP_NEW}\"" <<<"${out}" || fail "Compose v2 did not pass EXTERNAL_IP: ${out}"
+    ok "Compose v2 ($(docker run --rm "${COMPOSE_V2_IMAGE}" docker compose version --short)) reads docker-compose.yml"
 }
 
 scenario_command() {
