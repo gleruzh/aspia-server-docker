@@ -8,16 +8,21 @@
 #        - 2.x data:       copy every file the upstream migration changes, then let the binaries
 #                          migrate on start (router.json/relay.json -> router.conf/relay.conf);
 #        - 3.x data:       leave it alone.
-#      Then write EXTERNAL_IP (and the Router public key, if the Relay has none) into the Relay
-#      configuration. A file is only rewritten if a value actually changes.
+#      Then apply every ASPIA_ROUTER_*/ASPIA_RELAY_* variable that is set (EXTERNAL_IP is kept as
+#      an alias of ASPIA_RELAY_PUBLIC_ADDRESS) into the Router/Relay configuration. A variable that
+#      is set is written on every start; a variable that is unset leaves the file as it is, so a
+#      hand edit survives. A file is only rewritten if a value actually changes.
 #   3. Start the processes, forward SIGTERM/SIGINT to them, and exit non-zero if one of them dies.
 #
 # Based on server/aspia_start from SinitsaDA/aspia-server-docker (commit de15b99, GPL-3.0),
 # https://github.com/SinitsaDA/aspia-server-docker. Ported: leaving the 2.x migration to the
 # binaries, filling relay.conf router/public_key from the Router key, the awk INI editing, and
 # the wait -n supervision with signal forwarding. Changed: EXTERNAL_IP is required, backups
-# before migration, no renaming of existing data, no sleep before starting the Relay, no
-# EXTERNAL_IP=auto, and the configuration files are rewritten atomically.
+# before migration, no renaming of existing data, no sleep before starting the Relay, and the
+# configuration files are rewritten atomically. PR 3 added: an ASPIA_ROUTER_*/ASPIA_RELAY_*
+# variable scheme for every documented router.conf/relay.conf key (ports, allow-lists, STUN,
+# Relay timeout/limit), stricter address/port/list validation, EXTERNAL_IP=auto (detected with
+# curl, added back to the image for this only), and PUID/PGID to run both processes as non-root.
 
 # SC2329: validate_*, prepare_* and start_* are called by name through SERVICES, on_signal by trap.
 # shellcheck disable=SC2329
@@ -45,11 +50,21 @@ readonly LISTEN_TIMEOUT_SECONDS=60
 # every phase below runs validate_<name>, prepare_<name> and start_<name> for each entry.
 readonly SERVICES=(router relay)
 
+# IPv6 literal, without zone id: https://stackoverflow.com/questions/53497 (public domain snippet).
+readonly RE_IPV6='^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))$'
+
+# Sources for ASPIA_RELAY_PUBLIC_ADDRESS=auto, tried in order. Plain, well-known "what is my IP"
+# endpoints (the same ones SinitsaDA/aspia-server-docker used), each given a short timeout.
+readonly AUTO_ADDRESS_SOURCES=("https://api.ipify.org" "https://ifconfig.me/ip" "https://icanhazip.com")
+readonly AUTO_ADDRESS_TIMEOUT=5
+
 BACKUP_SUFFIX=".pre-${ASPIA_VERSION:-3.x}-$(date -u +%Y%m%dT%H%M%SZ)"
 readonly BACKUP_SUFFIX
 
 ROUTER_STATE=""   # new | migrate | existing
 RELAY_STATE=""    # new | migrate | existing
+PEER_PUBLIC_ADDRESS=""   # resolved in validate_relay: ASPIA_RELAY_PUBLIC_ADDRESS, its alias
+                          # EXTERNAL_IP, or the result of "auto" detection.
 
 declare -A CHILDREN=()   # pid -> process name
 declare -A BACKED_UP=()  # file -> 1 once copied (or created) in this start; backup() skips it
@@ -152,16 +167,275 @@ adopt_legacy_key() {
     done
 }
 
+# set_conf_value <file> <section> <key> <value> <label>: like ini_set, but only touches the file
+# (with a backup first) when the value actually changes, and logs what it did.
+set_conf_value() {
+    local file="$1" section="$2" key="$3" value="$4" label="$5" current
+    current="$(ini_get "${file}" "${section}" "${key}" "")"
+    if [[ "${current}" != "${value}" ]]; then
+        backup "${file}"
+        ini_set "${file}" "${section}" "${key}" "${value}"
+        log "${label}: set [${section}] ${key}=${value} (was '${current}')."
+    fi
+}
+
+# trim <string>: strips leading and trailing whitespace.
+trim() {
+    local s="$1"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "${s}"
+}
+
+# ---------------------------------------------------------------------------------------------
+# Validation helpers for ASPIA_ROUTER_*/ASPIA_RELAY_* variables. Each one is a no-op when the
+# named variable is unset or empty (the "leave the file alone" case); an invalid value is a fatal
+# error naming the variable, so nothing starts on a typo.
+
+is_valid_ipv4() {
+    local ip="$1" o
+    [[ "${ip}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || return 1
+    local -a parts
+    IFS=. read -ra parts <<<"${ip}"
+    for o in "${parts[@]}"; do
+        [[ "${o}" == 0 || "${o}" != 0* ]] || return 1   # reject a leading zero (ambiguous, and Qt rejects it)
+        ((10#${o} <= 255)) || return 1
+    done
+}
+
+is_valid_ipv6() { [[ "$1" =~ ${RE_IPV6} ]]; }
+
+is_valid_ip() { is_valid_ipv4 "$1" || is_valid_ipv6 "$1"; }
+
+# is_valid_hostname: matches the Router's own isValidHostName (notes section 13.1): not empty, at
+# most 64 characters, only letters, digits, '.', '_' and '-', at least one letter or digit.
+is_valid_hostname() {
+    local h="$1"
+    ((${#h} >= 1 && ${#h} <= 64)) || return 1
+    [[ "${h}" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+    [[ "${h}" =~ [A-Za-z0-9] ]] || return 1
+}
+
+# is_valid_address: what peer/public_address accepts (notes section 13.1): an IP literal or a
+# host name. No DNS lookup is done, on either side.
+is_valid_address() { is_valid_ip "$1" || is_valid_hostname "$1"; }
+
+is_valid_ip_or_cidr() {
+    local val="$1" addr prefix
+    if [[ "${val}" == */* ]]; then
+        addr="${val%%/*}"
+        prefix="${val#*/}"
+        [[ "${prefix}" =~ ^[0-9]+$ ]] || return 1
+        if is_valid_ipv4 "${addr}"; then
+            ((10#${prefix} <= 32)) || return 1
+        elif is_valid_ipv6 "${addr}"; then
+            ((10#${prefix} <= 128)) || return 1
+        else
+            return 1
+        fi
+    else
+        is_valid_ip "${val}" || return 1
+    fi
+}
+
+# ipv4_to_int <a.b.c.d>: the address as one 32-bit number, for CIDR containment arithmetic.
+ipv4_to_int() {
+    local a b c d
+    IFS=. read -r a b c d <<<"$1"
+    echo $(( (10#${a} << 24) | (10#${b} << 16) | (10#${c} << 8) | 10#${d} ))
+}
+
+# allowed_ips_covers_ipv4 <list> <ipv4>: true if the comma-separated allow-list (already validated
+# by require_allowed_ips) contains <ipv4> itself or a CIDR subnet it falls in. IPv6 entries never
+# match an IPv4 target (this image has no IPv6-mapped loopback case to cover).
+allowed_ips_covers_ipv4() {
+    local list="$1" target="$2" entry addr prefix mask
+    local target_int
+    target_int="$(ipv4_to_int "${target}")"
+    local -a entries
+    IFS=',' read -ra entries <<<"${list}"
+    for entry in "${entries[@]}"; do
+        entry="$(trim "${entry}")"
+        if [[ "${entry}" == */* ]]; then
+            addr="${entry%%/*}"
+            prefix="${entry#*/}"
+            is_valid_ipv4 "${addr}" || continue
+            ((10#${prefix} == 0)) && return 0
+            mask=$(( (0xFFFFFFFF << (32 - 10#${prefix})) & 0xFFFFFFFF ))
+            (( ($(ipv4_to_int "${addr}") & mask) == (target_int & mask) )) && return 0
+        elif [[ "${entry}" == "${target}" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# require_port <VAR>: 1-65535, decimal (a leading zero is still decimal, as the Aspia binaries read it).
+require_port() {
+    local name="$1" value="${!1:-}"
+    [[ -z "${value}" ]] && return 0
+    if ! [[ "${value}" =~ ^[0-9]+$ ]] || ! ((10#${value} >= 1 && 10#${value} <= 65535)); then
+        die "${name}='${value}' is not a valid port: it must be a number from 1 to 65535."
+    fi
+}
+
+require_bool() {
+    local name="$1" value="${!1:-}"
+    [[ -z "${value}" ]] && return 0
+    case "${value,,}" in
+        0 | 1 | true | false) return 0 ;;
+    esac
+    die "${name}='${value}' must be 0, 1, true or false."
+}
+
+# require_minutes <VAR>: relay peer/idle_timeout is minutes; upstream places no documented upper
+# bound, this is only a sanity limit against an obvious typo (525600 minutes = 1 year).
+require_minutes() {
+    local name="$1" value="${!1:-}"
+    [[ -z "${value}" ]] && return 0
+    if ! [[ "${value}" =~ ^[0-9]+$ ]] || ! ((10#${value} >= 1 && 10#${value} <= 525600)); then
+        die "${name}='${value}' must be a number of minutes from 1 to 525600."
+    fi
+}
+
+# require_count <VAR>: relay peer/max_count; same reasoning as require_minutes for the bound.
+require_count() {
+    local name="$1" value="${!1:-}"
+    [[ -z "${value}" ]] && return 0
+    if ! [[ "${value}" =~ ^[0-9]+$ ]] || ! ((10#${value} >= 1 && 10#${value} <= 1000000)); then
+        die "${name}='${value}' must be a number from 1 to 1000000."
+    fi
+}
+
+# require_allowed_ips <VAR>: a comma-separated list of IPs or CIDR subnets (router.conf white_list
+# keys, notes section 4). Same rule as every other variable: an empty value ("VAR=") is treated the
+# same as unset, so the file is left alone -- it does NOT clear an existing list (an empty
+# white_list in router.conf itself still means "allow all"; to actually clear one, edit the file,
+# or set the variable to the list you want).
+require_allowed_ips() {
+    local name="$1" value="${!1:-}" entry
+    [[ -z "${value}" ]] && return 0
+    local -a entries
+    IFS=',' read -ra entries <<<"${value}"
+    for entry in "${entries[@]}"; do
+        entry="$(trim "${entry}")"
+        [[ -n "${entry}" ]] || die "${name}='${value}' has an empty entry (a stray or trailing comma)."
+        is_valid_ip_or_cidr "${entry}" || die "${name}='${value}': '${entry}' is not an IP address or a CIDR subnet."
+    done
+}
+
+# refuse_path_override <VAR> <path this image still uses instead>: ASPIA_ROUTER_CONFIG_FILE,
+# ASPIA_ROUTER_DB_FILE and ASPIA_RELAY_CONFIG_FILE are read by the Aspia binaries themselves (notes
+# section 13.8) to move router.conf, router.db3 and relay.conf. This image's scripts still use the
+# fixed paths above; if one of these is set, they would validate and edit the wrong file. Refuse
+# rather than misbehave (docs/dev/FOLLOWUPS.md, "Path overrides").
+refuse_path_override() {
+    local name="$1" value="${!1:-}" fixed_path="$2"
+    [[ -z "${value}" ]] && return 0
+    die "${name}='${value}' is set. This image's scripts do not yet support moving that file" \
+        "(they still read and write ${fixed_path} directly); aspia_start and aspia_health would" \
+        "check the wrong path. Unset ${name}. Nothing was changed."
+}
+
+# detect_public_address: tries every source in AUTO_ADDRESS_SOURCES in turn; prints the first
+# address that answers within the timeout and is a valid IP literal, and logs which source it was.
+detect_public_address() {
+    local src ip
+    for src in "${AUTO_ADDRESS_SOURCES[@]}"; do
+        if ip="$(curl -fsS --connect-timeout "${AUTO_ADDRESS_TIMEOUT}" --max-time "${AUTO_ADDRESS_TIMEOUT}" "${src}" 2>/dev/null)"; then
+            ip="$(trim "${ip}")"
+            if is_valid_ip "${ip}"; then
+                log "Relay: detected the public address ${ip} via ${src}."
+                printf '%s\n' "${ip}"
+                return 0
+            fi
+            warn "Relay: ${src} answered '${ip}', which is not a valid IP address; trying the next source."
+        fi
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------------------------
+# Phase 0: run as PUID:PGID instead of root, if requested. A no-op when neither is set.
+#
+# Split in two so that ownership is never touched before every validate_* has passed ("nothing was
+# changed" must stay true when a start is refused): validate_puid_pgid only checks the variables
+# (called from the validate phase, like every other require_*); drop_privileges does the chown and
+# the re-exec, called only once every validate_* has succeeded. validate_puid_pgid is skipped after
+# the re-exec (_ASPIA_PRIVDROP_DONE): by then EUID is the target uid, not 0, so its own "must start
+# as root" check would otherwise misfire on a value that was already valid.
+
+validate_puid_pgid() {
+    [[ -n "${_ASPIA_PRIVDROP_DONE:-}" ]] && return 0
+    local puid="${PUID:-}" pgid="${PGID:-}"
+    [[ -z "${puid}" && -z "${pgid}" ]] && return 0   # default: stay root, exactly like before PR 3
+
+    [[ -n "${puid}" && -n "${pgid}" ]] \
+        || die "PUID and PGID must both be set, or both left unset (got PUID='${puid}' PGID='${pgid}')."
+    if ! [[ "${puid}" =~ ^[0-9]+$ ]] || ! ((10#${puid} <= 2147483647)); then
+        die "PUID='${puid}' is not a valid user id."
+    fi
+    if ! [[ "${pgid}" =~ ^[0-9]+$ ]] || ! ((10#${pgid} <= 2147483647)); then
+        die "PGID='${pgid}' is not a valid group id."
+    fi
+    ((EUID == 0)) \
+        || die "PUID/PGID require the container to start as root; do not combine them with 'docker run --user'."
+}
+
+# drop_privileges <args...>: chowns the two volumes to PUID:PGID and re-execs this script as that
+# user, passing on the resolved Relay address (so "auto" is not queried twice). Guarded by
+# _ASPIA_PRIVDROP_DONE (not EUID, so that PUID=0/PGID=0 does not loop forever). Only called from
+# main() after every validate_* has already passed.
+drop_privileges() {
+    [[ -n "${_ASPIA_PRIVDROP_DONE:-}" ]] && return 0
+    local puid="${PUID:-}" pgid="${PGID:-}"
+    [[ -z "${puid}" && -z "${pgid}" ]] && return 0
+
+    chown -R "${puid}:${pgid}" "${CONFIG_DIR}" "${DATA_DIR}"
+    log "PUID/PGID set: running the Router and the Relay as uid=${puid} gid=${pgid}."
+    export _ASPIA_PRIVDROP_DONE=1
+    # Both names, already resolved: "auto" is not queried twice, and validate_relay does not log a
+    # spurious "set to different values" the second time around when only one of them was given.
+    export ASPIA_RELAY_PUBLIC_ADDRESS="${PEER_PUBLIC_ADDRESS}"
+    export EXTERNAL_IP="${PEER_PUBLIC_ADDRESS}"
+    exec setpriv --reuid="${puid}" --regid="${pgid}" --clear-groups --no-new-privs -- "$0" "$@"
+}
+
 # ---------------------------------------------------------------------------------------------
 # Phase 1: validate. Runs before anything is written to the volumes.
 
 validate_router() {
     local file found=()
 
+    require_port ASPIA_ROUTER_CLIENT_PORT
+    require_port ASPIA_ROUTER_HOST_PORT
+    require_port ASPIA_ROUTER_LEGACY_PORT
+    require_port ASPIA_ROUTER_STUN_PORT
+    require_bool ASPIA_ROUTER_STUN_ENABLED
+    require_allowed_ips ASPIA_ROUTER_CLIENT_ALLOWED_IPS
+    require_allowed_ips ASPIA_ROUTER_HOST_ALLOWED_IPS
+    require_allowed_ips ASPIA_ROUTER_RELAY_ALLOWED_IPS
+    # This image's own Relay always reaches the Router over 127.0.0.1 (notes section 4, router/address
+    # in relay.conf). Excluding it from relay/white_list would silently lock out the co-located Relay:
+    # it looks like it starts (the port opens), but every connection is closed immediately and the
+    # container never becomes healthy. Catch it here instead of a several-minute unexplained timeout.
+    if [[ -n "${ASPIA_ROUTER_RELAY_ALLOWED_IPS:-}" ]] \
+        && ! allowed_ips_covers_ipv4 "${ASPIA_ROUTER_RELAY_ALLOWED_IPS}" 127.0.0.1; then
+        die "ASPIA_ROUTER_RELAY_ALLOWED_IPS='${ASPIA_ROUTER_RELAY_ALLOWED_IPS}' does not cover 127.0.0.1." \
+            "In this image the Router and its own co-located Relay always connect over the loopback" \
+            "address; excluding it would lock the Relay in this container out. Add 127.0.0.1 to the" \
+            "list, e.g. '127.0.0.1,${ASPIA_ROUTER_RELAY_ALLOWED_IPS}'. Nothing was changed."
+    fi
+    refuse_path_override ASPIA_ROUTER_CONFIG_FILE "${ROUTER_CONF}"
+    refuse_path_override ASPIA_ROUTER_DB_FILE "${ROUTER_DB}"
+
     if [[ -f "${ROUTER_JSON}" ]]; then
         [[ -f "${ROUTER_DB}" ]] || die "Found the Aspia 2.x configuration ${ROUTER_JSON}, but not the database ${ROUTER_DB}." \
             "Mount the database volume at ${DATA_DIR} (./data/database in docker-compose.yml). Nothing was changed."
         ROUTER_STATE=migrate
+        # preseed_router_migration edits router.json; check it here, while nothing has been written yet.
+        jq -e 'type == "object"' "${ROUTER_JSON}" >/dev/null 2>&1 \
+            || die "${ROUTER_JSON} is not valid JSON. Fix or restore it. Nothing was changed."
     elif [[ -s "${ROUTER_CONF}" ]]; then
         [[ -f "${ROUTER_DB}" ]] || die "Found ${ROUTER_CONF}, but not the database ${ROUTER_DB}." \
             "Mount the database volume at ${DATA_DIR} (./data/database in docker-compose.yml). Nothing was changed."
@@ -184,17 +458,38 @@ validate_router() {
 }
 
 validate_relay() {
-    # With an empty [peer] public_address the Relay runs but never registers with the Router.
-    if [[ -z "${EXTERNAL_IP:-}" || "${EXTERNAL_IP}" =~ ^[[:space:]]*$ ]]; then
-        die "EXTERNAL_IP is not set. Set it to the public address of this server, the one clients and hosts use" \
-            "to reach the Relay, e.g. 'docker run -e EXTERNAL_IP=203.0.113.10 ...' or EXTERNAL_IP=203.0.113.10" \
-            "in the .env file next to docker-compose.yml. Nothing was changed."
+    local addr
+
+    require_port ASPIA_RELAY_PEER_PORT
+    require_minutes ASPIA_RELAY_IDLE_TIMEOUT
+    require_count ASPIA_RELAY_MAX_PEERS
+    refuse_path_override ASPIA_RELAY_CONFIG_FILE "${RELAY_CONF}"
+
+    if [[ -n "${ASPIA_RELAY_PUBLIC_ADDRESS:-}" && -n "${EXTERNAL_IP:-}" \
+        && "${ASPIA_RELAY_PUBLIC_ADDRESS}" != "${EXTERNAL_IP}" ]]; then
+        log "Relay: both ASPIA_RELAY_PUBLIC_ADDRESS='${ASPIA_RELAY_PUBLIC_ADDRESS}' and EXTERNAL_IP='${EXTERNAL_IP}'" \
+            "are set to different values; using ASPIA_RELAY_PUBLIC_ADDRESS (EXTERNAL_IP is its alias)."
     fi
-    # Only a basic check that keeps the INI file well-formed: IPv4/IPv6 literals and host names
-    # pass. The Router applies the full rules and ignores a Relay whose address it rejects.
-    if ! [[ "${EXTERNAL_IP}" =~ ^[A-Za-z0-9._:-]+$ ]]; then
-        die "EXTERNAL_IP='${EXTERNAL_IP}' is not an IP address or host name. Nothing was changed."
+    addr="${ASPIA_RELAY_PUBLIC_ADDRESS:-${EXTERNAL_IP:-}}"
+
+    if [[ -z "${addr}" || "${addr}" =~ ^[[:space:]]*$ ]]; then
+        die "ASPIA_RELAY_PUBLIC_ADDRESS is not set, and its alias EXTERNAL_IP is not set either." \
+            "Set one of them to the public address of this server, the one clients and hosts use to" \
+            "reach the Relay: an IP address, a host name, or 'auto' to detect it, e.g." \
+            "'docker run -e ASPIA_RELAY_PUBLIC_ADDRESS=203.0.113.10 ...' or that variable in the .env" \
+            "file next to docker-compose.yml. Nothing was changed."
     fi
+
+    if [[ "${addr}" == "auto" ]]; then
+        addr="$(detect_public_address)" || die "ASPIA_RELAY_PUBLIC_ADDRESS=auto: could not detect the public" \
+            "IP address of this server from any source (tried: ${AUTO_ADDRESS_SOURCES[*]}, ${AUTO_ADDRESS_TIMEOUT}s" \
+            "each). Set ASPIA_RELAY_PUBLIC_ADDRESS to the address directly, or check that the container has" \
+            "network access. Nothing was changed."
+    elif ! is_valid_address "${addr}"; then
+        die "ASPIA_RELAY_PUBLIC_ADDRESS='${addr}' is not an IP address or a host name (at most 64" \
+            "characters: letters, digits, '.', '_' or '-'). Nothing was changed."
+    fi
+    PEER_PUBLIC_ADDRESS="${addr}"
 
     if [[ -s "${RELAY_CONF}" ]]; then
         RELAY_STATE=existing
@@ -215,6 +510,65 @@ validate_relay() {
 
 # ---------------------------------------------------------------------------------------------
 # Phase 2: prepare the configuration.
+
+# preseed_router_migration: router.json (2.x) fields that the binary's own migration copies
+# (notes section 8): Port -> host/legacy_port, {Client,Host,Relay}WhiteList -> */white_list. The
+# 3.x-only keys (client/host/relay/stun ports, stun/enabled) have no 2.x field at all, so setting
+# their variables on a migration start has no effect until the *next* start, once router.conf
+# exists; apply_router_settings then applies them as usual.
+# shellcheck disable=SC2016  # the $-prefixed names below are jq variables, not shell ones
+preseed_router_migration() {
+    # router.json was already validated as JSON in validate_router, before anything was written.
+    local -a args=() filters=()
+    if [[ -n "${ASPIA_ROUTER_LEGACY_PORT:-}" ]]; then
+        args+=(--arg port "${ASPIA_ROUTER_LEGACY_PORT}")
+        filters+=('.Port = $port')
+    fi
+    if [[ -n "${ASPIA_ROUTER_CLIENT_ALLOWED_IPS:-}" ]]; then
+        args+=(--arg cwl "${ASPIA_ROUTER_CLIENT_ALLOWED_IPS}")
+        filters+=('.ClientWhiteList = $cwl')
+    fi
+    if [[ -n "${ASPIA_ROUTER_HOST_ALLOWED_IPS:-}" ]]; then
+        args+=(--arg hwl "${ASPIA_ROUTER_HOST_ALLOWED_IPS}")
+        filters+=('.HostWhiteList = $hwl')
+    fi
+    if [[ -n "${ASPIA_ROUTER_RELAY_ALLOWED_IPS:-}" ]]; then
+        args+=(--arg rwl "${ASPIA_ROUTER_RELAY_ALLOWED_IPS}")
+        filters+=('.RelayWhiteList = $rwl')
+    fi
+    ((${#filters[@]})) || return 0
+
+    local joined
+    joined="$(IFS='|'; echo "${filters[*]}")"
+    json_set "${ROUTER_JSON}" "${args[@]}" "${joined}"
+    log "Router: preset ${#filters[@]} value(s) from ASPIA_ROUTER_* in ${ROUTER_JSON} before migration."
+}
+
+# apply_router_settings: writes every ASPIA_ROUTER_* variable that is set into router.conf, which
+# must already exist (new or existing state; not the migrate start itself).
+apply_router_settings() {
+    [[ -n "${ASPIA_ROUTER_CLIENT_PORT:-}" ]] \
+        && set_conf_value "${ROUTER_CONF}" client port "${ASPIA_ROUTER_CLIENT_PORT}" Router
+    [[ -n "${ASPIA_ROUTER_HOST_PORT:-}" ]] \
+        && set_conf_value "${ROUTER_CONF}" host port "${ASPIA_ROUTER_HOST_PORT}" Router
+    [[ -n "${ASPIA_ROUTER_LEGACY_PORT:-}" ]] \
+        && set_conf_value "${ROUTER_CONF}" host legacy_port "${ASPIA_ROUTER_LEGACY_PORT}" Router
+    if [[ -n "${ASPIA_ROUTER_STUN_ENABLED:-}" ]]; then
+        local enabled="${ASPIA_ROUTER_STUN_ENABLED,,}"
+        [[ "${enabled}" == "true" ]] && enabled=1
+        [[ "${enabled}" == "false" ]] && enabled=0
+        set_conf_value "${ROUTER_CONF}" stun enabled "${enabled}" Router
+    fi
+    [[ -n "${ASPIA_ROUTER_STUN_PORT:-}" ]] \
+        && set_conf_value "${ROUTER_CONF}" stun port "${ASPIA_ROUTER_STUN_PORT}" Router
+    [[ -n "${ASPIA_ROUTER_CLIENT_ALLOWED_IPS:-}" ]] \
+        && set_conf_value "${ROUTER_CONF}" client white_list "${ASPIA_ROUTER_CLIENT_ALLOWED_IPS}" Router
+    [[ -n "${ASPIA_ROUTER_HOST_ALLOWED_IPS:-}" ]] \
+        && set_conf_value "${ROUTER_CONF}" host white_list "${ASPIA_ROUTER_HOST_ALLOWED_IPS}" Router
+    [[ -n "${ASPIA_ROUTER_RELAY_ALLOWED_IPS:-}" ]] \
+        && set_conf_value "${ROUTER_CONF}" relay white_list "${ASPIA_ROUTER_RELAY_ALLOWED_IPS}" Router
+    return 0
+}
 
 prepare_router() {
     local output file
@@ -238,16 +592,90 @@ prepare_router() {
                 "and upgrades ${ROUTER_DB} in place when it starts. Copying the files it changes first."
             backup "${ROUTER_JSON}" "${ROUTER_JSON}.bak" "${ROUTER_CONF}" \
                 "${ROUTER_DB}" "${ROUTER_DB}-journal" "${ROUTER_DB}-wal" "${ROUTER_DB}-shm"
+            preseed_router_migration
             ;;
         existing)
             log "Router: using the existing configuration ${ROUTER_CONF}."
             ;;
     esac
     adopt_legacy_key
+    [[ "${ROUTER_STATE}" == migrate ]] || apply_router_settings
+}
+
+# preseed_relay_migration <relay.pub key>: relay.json (2.x) fields the binary's own migration
+# copies (notes section 8): PeerAddress, RouterPublicKey, PeerPort, PeerIdleTimeout, MaxPeerCount.
+# All values in relay.json are strings, including the numeric ones.
+# shellcheck disable=SC2016  # the $-prefixed names below are jq variables, not shell ones
+preseed_relay_migration() {
+    local key="$1" peer_address router_key
+    peer_address="$(jq -r '.PeerAddress // ""' "${RELAY_JSON}")" \
+        || die "${RELAY_JSON} is not valid JSON. The backup copy is next to it."
+    router_key="$(jq -r '.RouterPublicKey // ""' "${RELAY_JSON}")"
+    [[ -n "${router_key}" || -n "${key}" ]] \
+        || die "${RELAY_JSON} has no RouterPublicKey and ${RELAY_PUB} is missing."
+
+    local -a args=() filters=()
+    if [[ "${peer_address}" != "${PEER_PUBLIC_ADDRESS}" ]]; then
+        args+=(--arg address "${PEER_PUBLIC_ADDRESS}")
+        filters+=('.PeerAddress = $address')
+    fi
+    if [[ -z "${router_key}" ]]; then
+        args+=(--arg key "${key}")
+        filters+=('.RouterPublicKey = $key')
+    fi
+    if [[ -n "${ASPIA_RELAY_PEER_PORT:-}" ]]; then
+        args+=(--arg port "${ASPIA_RELAY_PEER_PORT}")
+        filters+=('.PeerPort = $port')
+    fi
+    if [[ -n "${ASPIA_RELAY_IDLE_TIMEOUT:-}" ]]; then
+        args+=(--arg timeout "${ASPIA_RELAY_IDLE_TIMEOUT}")
+        filters+=('.PeerIdleTimeout = $timeout')
+    fi
+    if [[ -n "${ASPIA_RELAY_MAX_PEERS:-}" ]]; then
+        args+=(--arg maxc "${ASPIA_RELAY_MAX_PEERS}")
+        filters+=('.MaxPeerCount = $maxc')
+    fi
+    ((${#filters[@]})) || return 0
+
+    local joined
+    joined="$(IFS='|'; echo "${filters[*]}")"
+    json_set "${RELAY_JSON}" "${args[@]}" "${joined}"
+    [[ "${peer_address}" == "${PEER_PUBLIC_ADDRESS}" ]] \
+        || log "Relay: set PeerAddress=${PEER_PUBLIC_ADDRESS} in ${RELAY_JSON} (was '${peer_address}')."
+    [[ -n "${router_key}" ]] || log "Relay: set RouterPublicKey in ${RELAY_JSON} from the Router key."
+}
+
+# apply_relay_settings <relay.pub key>: writes public_address and every ASPIA_RELAY_* variable
+# that is set into relay.conf, which must already exist. router/public_key keeps its own
+# fill-only-when-empty rule (unrelated to the new variables: it is derived from the Router, never
+# given directly by the user).
+apply_relay_settings() {
+    local key="$1" current
+
+    set_conf_value "${RELAY_CONF}" peer public_address "${PEER_PUBLIC_ADDRESS}" Relay
+    [[ -n "${ASPIA_RELAY_PEER_PORT:-}" ]] \
+        && set_conf_value "${RELAY_CONF}" peer port "${ASPIA_RELAY_PEER_PORT}" Relay
+    [[ -n "${ASPIA_RELAY_IDLE_TIMEOUT:-}" ]] \
+        && set_conf_value "${RELAY_CONF}" peer idle_timeout "${ASPIA_RELAY_IDLE_TIMEOUT}" Relay
+    [[ -n "${ASPIA_RELAY_MAX_PEERS:-}" ]] \
+        && set_conf_value "${RELAY_CONF}" peer max_count "${ASPIA_RELAY_MAX_PEERS}" Relay
+
+    # router/public_key is filled only when it is empty; a key set by hand is left alone.
+    current="$(ini_get "${RELAY_CONF}" router public_key "")"
+    if [[ -z "${current}" ]]; then
+        [[ -n "${key}" ]] || die "${RELAY_CONF} has no [router] public_key, and ${RELAY_PUB} does not exist."
+        backup "${RELAY_CONF}"
+        ini_set "${RELAY_CONF}" router public_key "${key}"
+        log "Relay: set [router] public_key from the Router key."
+    elif [[ -n "${key}" && "${current,,}" != "${key,,}" ]]; then
+        warn "[router] public_key in ${RELAY_CONF} differs from the Router key. Left as it is;" \
+            "the Relay will not connect to this container's Router unless that is intended."
+    fi
+    return 0
 }
 
 prepare_relay() {
-    local key current peer_address router_key output
+    local key output
     key="$(read_key "${RELAY_PUB}")"
 
     case "${RELAY_STATE}" in
@@ -264,22 +692,7 @@ prepare_relay() {
             log "Relay: found Aspia 2.x configuration. aspia_relay converts ${RELAY_JSON} to ${RELAY_CONF}" \
                 "when it starts. Copying the files it changes first."
             backup "${RELAY_JSON}" "${RELAY_JSON}.bak" "${RELAY_CONF}"
-            # relay.json is the only place to put EXTERNAL_IP before the migration runs. The
-            # RouterPublicKey is filled only when it is empty. The file is rewritten once, and
-            # only if a value changes.
-            peer_address="$(jq -r '.PeerAddress // ""' "${RELAY_JSON}")" \
-                || die "${RELAY_JSON} is not valid JSON. The backup copy is next to it."
-            router_key="$(jq -r '.RouterPublicKey // ""' "${RELAY_JSON}")"
-            [[ -n "${router_key}" || -n "${key}" ]] \
-                || die "${RELAY_JSON} has no RouterPublicKey and ${RELAY_PUB} is missing."
-            if [[ "${peer_address}" != "${EXTERNAL_IP}" || -z "${router_key}" ]]; then
-                # shellcheck disable=SC2016  # $address and $key are jq variables
-                json_set "${RELAY_JSON}" --arg address "${EXTERNAL_IP}" --arg key "${key}" \
-                    '.PeerAddress = $address | if (.RouterPublicKey // "") == "" then .RouterPublicKey = $key else . end'
-                [[ "${peer_address}" == "${EXTERNAL_IP}" ]] \
-                    || log "Relay: set PeerAddress=${EXTERNAL_IP} in ${RELAY_JSON} (was '${peer_address}')."
-                [[ -n "${router_key}" ]] || log "Relay: set RouterPublicKey in ${RELAY_JSON} from the Router key."
-            fi
+            preseed_relay_migration "${key}"
             return
             ;;
         existing)
@@ -287,26 +700,7 @@ prepare_relay() {
             ;;
     esac
 
-    # relay.conf exists here. peer/public_address follows EXTERNAL_IP on every start.
-    current="$(ini_get "${RELAY_CONF}" peer public_address "")"
-    if [[ "${current}" != "${EXTERNAL_IP}" ]]; then
-        backup "${RELAY_CONF}"
-        ini_set "${RELAY_CONF}" peer public_address "${EXTERNAL_IP}"
-        log "Relay: set [peer] public_address=${EXTERNAL_IP} (was '${current}')."
-    fi
-
-    # router/public_key is filled only when it is empty; a key set by hand is left alone.
-    current="$(ini_get "${RELAY_CONF}" router public_key "")"
-    if [[ -z "${current}" ]]; then
-        [[ -n "${key}" ]] || die "${RELAY_CONF} has no [router] public_key, and ${RELAY_PUB} does not exist."
-        backup "${RELAY_CONF}"
-        ini_set "${RELAY_CONF}" router public_key "${key}"
-        log "Relay: set [router] public_key from the Router key."
-    elif [[ -n "${key}" && "${current,,}" != "${key,,}" ]]; then
-        warn "[router] public_key in ${RELAY_CONF} differs from the Router key. Left as it is;" \
-            "the Relay will not connect to this container's Router unless that is intended."
-    fi
-    return 0
+    apply_relay_settings "${key}"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -400,12 +794,15 @@ print_summary() {
     local key
     key="$(read_key "${HOST_PUB}")"
     log "----------------------------------------------------------------------"
-    log "External address (Relay):  ${EXTERNAL_IP}"
+    log "External address (Relay):  ${PEER_PUBLIC_ADDRESS}"
     if [[ -z "${key}" ]]; then
         [[ -e "${HOST_PUB}" ]] && key="not found (${HOST_PUB} holds no valid key)" \
             || key="not found (${HOST_PUB} does not exist)"
     fi
     log "Public key for hosts:      ${key}"
+    if [[ -n "${PUID:-}" || -n "${PGID:-}" ]]; then
+        log "Running as:                 uid=${PUID:-0} gid=${PGID:-0}"
+    fi
     log "Ports (publish them unchanged, host port = container port):"
     log "  $(ini_get "${ROUTER_CONF}" host legacy_port 8060)/tcp  Router: hosts of Aspia 2.x"
     log "  $(ini_get "${ROUTER_CONF}" host port 8061)/tcp  Router: hosts"
@@ -428,11 +825,16 @@ main() {
 
     mkdir -p "${CONFIG_DIR}" "${DATA_DIR}"
 
+    # Every validate_* below only reads. Ownership is changed (drop_privileges) only once all of
+    # them have passed, so a refused start never touches the volumes, PUID/PGID included.
+    validate_puid_pgid
+    for service in "${SERVICES[@]}"; do "validate_${service}"; done
+    drop_privileges "$@"
+
     router_version="$(/usr/bin/aspia_router --version 2>/dev/null)" || router_version="aspia_router: unknown version"
     relay_version="$(/usr/bin/aspia_relay --version 2>/dev/null)" || relay_version="aspia_relay: unknown version"
     log "Aspia Server image ${ASPIA_VERSION:-unknown}: ${router_version}, ${relay_version}."
 
-    for service in "${SERVICES[@]}"; do "validate_${service}"; done
     for service in "${SERVICES[@]}"; do
         ((STOPPING)) || "prepare_${service}"
     done
