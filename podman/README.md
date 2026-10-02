@@ -1,3 +1,5 @@
+**English** | [Русский](README.ru.md)
+
 # Aspia server under Podman (systemd, Quadlet)
 
 Run the Aspia Router and Relay as a systemd service on a machine that has Podman and no Docker
@@ -12,7 +14,7 @@ Run the Aspia Router and Relay as a systemd service on a machine that has Podman
 |---|---|
 | `aspia-server.container` | The Quadlet unit: image, ports, volumes, environment, health check, restart policy. |
 | `aspia-config.volume`, `aspia-data.volume` | Named volumes for `/etc/aspia` (configuration and keys) and `/var/lib/aspia` (database). |
-| `aspia-server.env.example` | The environment file. Copy it to `aspia-server.env`. The variables are the ones in the [main README](../README.md#environment-variables). |
+| `aspia-server.env.example` | The environment file. Copy it to `aspia-server.env`. The variables are in the tables [Ports](../README.md#ports) and [Environment variables](../README.md#environment-variables) of the main README. |
 | `aspia-relay.container`, `aspia-relay-config.volume`, `aspia-relay.env.example` | A Relay on its own, connected to a Router on another machine (section 11). |
 
 ## 1. Choose the image (one line)
@@ -157,9 +159,9 @@ of `:Z` itself was not tested. Rootless: use directories inside the user's home.
 ## 6. Configuration
 
 Edit `aspia-server.env` (next to the `.container` file), then `sudo systemctl restart aspia-server.service`
-(rootless: `systemctl --user restart ...`). Every variable and its default is in the table in the
-[main README](../README.md#environment-variables); the rules there apply unchanged: a variable that is set is
-written to the configuration file on every start, an unset one leaves the file alone.
+(rootless: `systemctl --user restart ...`). Every variable and its default is in the tables
+[Ports](../README.md#ports) and [Environment variables](../README.md#environment-variables) of the main README.
+The rules there apply unchanged.
 
 Podman reads this file itself, not systemd: one `VAR=value` per line, no quotes, no trailing comments.
 A changed port variable needs the matching `PublishPort=` line (see the comments in the unit).

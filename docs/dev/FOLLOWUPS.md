@@ -243,23 +243,14 @@ Decisions on earlier items:
 
 New:
 
-- **`podman/README.md` is English only.** Translating it too would double the work for every change; decide
-  whether translations cover it.
 - **Download URLs point at `main`.** The quick start, the 2.x upgrade and the Relay steps download the compose
   files from `raw.githubusercontent.com/<owner>/aspia-server-docker/main/...`. A compose file on `main` can be
   newer than the image tag a user pins. Repository release tags (for example `v3.0.21-1`) would let the README
   pin the files as well as the image.
 - **Badges in translations.** The badge links are relative (`../../actions/...`); a translation in `docs/`
-  needs one more `../`. Check that both render on GitHub, and on Docker Hub (where the description sync
-  rewrites relative links).
-- **`docs/README.*.md` and `scripts/versions.sh`.** Already covered: `pinned_files` takes every `*.md` outside
-  `docs/dev/`, so a translation's image tags are checked and bumped like the README's. Nothing to do; noted so
-  nobody adds it twice.
+  needs one more `../`. Check that both render on GitHub. (`docs/dockerhub.md` has no badges.)
 - **Not verified with a GUI.** The Client and Host steps in the README come from aspia.org and were not run;
   see notes section 20 for what was and was not checked.
-- **Repository release tag for the compose files.** README downloads `docker-compose.yml` and `.env.example`
-  from `main`. A release tag of the repository (for example `v3.0.21-1`) per image version would let the README
-  pin the files as well as the image. Covered above in "Download URLs point at `main`"; the decision is the owner's.
 - **The example `EXTERNAL_IP` in `.env.example`.** `203.0.113.10` (a documentation address) looks like a real
   value to readers, and the container then starts with a wrong public address. Decision for the owner: comment
   the line out (the container then stops with a clear error until it is set) or use `auto`.
@@ -271,6 +262,17 @@ New:
 - **Lint check for translation hashes.** `git merge-base --is-ancestor <hash> HEAD`, for the hash in the first
   line of every `docs/README.*.md`, would catch a hash lost in a rebase or an amend (see TRANSLATING.md). Not
   implemented.
-- **The Docker Hub description is a separate file.** `docs/dockerhub.md` (short, because Docker Hub cuts a
-  description at 25,000 bytes) is not generated from `README.md`. Keep its tags, ports and credits in sync by hand.
-  `scripts/versions.sh check` already covers its image tag.
+- **`docs/dockerhub.md` reaches Docker Hub only when an image is published.** The description sync is a job of
+  `publish.yml`, so a merge that changes only the docs is synced at the next weekly or manual publish.
+- **Entrypoint message names the wrong variable.** A missing public address stops the start with
+  `ERROR: ASPIA_RELAY_PUBLIC_ADDRESS is not set`, but the documented name is `EXTERNAL_IP`. The message
+  should name `EXTERNAL_IP` (or both).
+- **Apply all variables in the same start after a 2.x migration.** The Router ports (`ASPIA_ROUTER_CLIENT_PORT`,
+  `ASPIA_ROUTER_HOST_PORT`, `ASPIA_ROUTER_STUN_PORT`) and `ASPIA_ROUTER_STUN_ENABLED` have no 2.x field to preseed,
+  so they apply from the second start, and the README tells the user to run `docker compose restart`. Applying
+  them after the binary has written `router.conf`, in the same start, would remove the extra restart.
+- **`*_CONFIG_FILE` and `*_DB_FILE` make the container refuse to start.** `ASPIA_ROUTER_CONFIG_FILE`,
+  `ASPIA_ROUTER_DB_FILE` and `ASPIA_RELAY_CONFIG_FILE` stop the start with an error. Ignoring them with a
+  warning may be friendlier (the compose files never pass them, so only `docker run` and Podman users meet this).
+- **One service and container name in all compose files.** The service is `aspia-server`, `aspia-router` or
+  `aspia-relay` by file, which is why the README needs a service-name note. One name everywhere would remove it.
