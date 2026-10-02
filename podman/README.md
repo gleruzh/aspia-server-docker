@@ -201,7 +201,7 @@ why step 1 is there). Remove an unused old image with `podman image rm`.
 
 ## 9. Older Podman: no Quadlet (fallback)
 
-Podman 4.4 and older cannot use the unit: Quadlet needs 4.4 and the health check keys need 4.5. On Debian 12
+Podman 4.4 and older cannot use the unit: its health check keys need 4.5 (Quadlet itself appeared in 4.4). On Debian 12
 (Podman 4.3), Ubuntu 22.04 (3.4) and RHEL 8 before 8.10 use `podman run`, then let Podman write a systemd
 unit, as root. Replace `<owner>` in the last line with the account that publishes the image (section 1; a local
 build is not possible on these versions). A Docker-built image moved over with `docker save | podman load`
