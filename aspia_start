@@ -104,8 +104,7 @@ replace_file() {
     mv -f "$2" "$1"
 }
 
-# copy_file <source> <dest>: like cp -a, but sets mode and times while root still owns the copy, so
-# CAP_FOWNER is not needed when the source belongs to another uid (docs/dev/UPSTREAM-3.x-NOTES.md, 20).
+# copy_file <src> <dest>: cp -a without CAP_FOWNER (mode first, then owner).
 copy_file() {
     cp --preserve=mode,timestamps -- "$1" "$2"
     chown --reference="$1" -- "$2"

@@ -165,7 +165,15 @@ docker run -d --name aspia-server --restart unless-stopped \
   ghcr.io/<owner>/aspia-server:3.0.21
 ```
 
-Every Linux capability is dropped except five, no process can gain privileges (setuid programs do not work), the image's own files are read-only (only the two volumes are written), and the container may have at most 128 processes and threads (it uses fewer than 30). The five that stay: `CHOWN`, `SETUID`, `SETGID` and `KILL` for `PUID`/`PGID` (give the volumes to that user, switch to it, and pass `docker stop` on to its processes); `DAC_OVERRIDE` (with `CHOWN`) to read, write and back up files that belong to another user, for example a host directory or an installation that used `PUID`/`PGID` before, and for the health check to read the configuration when `PUID`/`PGID` is set. Without `PUID`/`PGID` and with volumes owned by root, none of the five is needed: you may remove them (`--cap-add`, or `cap_add:` in the compose file). The Podman units also keep `NET_BIND_SERVICE`, because Podman, unlike Docker's bridge network, treats ports below 1024 as privileged; with Docker and `--network host`, a port below 1024 needs `--cap-add NET_BIND_SERVICE`. The measurements are in docs/dev/UPSTREAM-3.x-NOTES.md, section 20.
+All other capabilities are dropped, no process can gain privileges (setuid programs do not work), the image's own files are read-only (only the two volumes are written), and the container may have at most 128 processes and threads (it uses fewer than 30). The capabilities that stay:
+
+- `CHOWN`: give the volumes to `PUID`/`PGID`, and keep the owner of a backup copy.
+- `DAC_OVERRIDE`: read and write files of another user (a host directory, an earlier `PUID`/`PGID` install), and let the health check read the configuration under `PUID`/`PGID`.
+- `SETUID`, `SETGID`: switch to `PUID`/`PGID`.
+- `KILL`: pass `docker stop` on to the processes running as `PUID`/`PGID`.
+- `NET_BIND_SERVICE` (Podman units only): Podman treats ports below 1024 as privileged; with Docker and `--network host`, such a port needs `--cap-add NET_BIND_SERVICE`.
+
+For the simplest setup (no `PUID`/`PGID`, volumes owned by root) none of the five is needed: remove the `--cap-add` lines (`cap_add:` in a compose file). Details and measurements: [docs/dev/UPSTREAM-3.x-NOTES.md](docs/dev/UPSTREAM-3.x-NOTES.md), section 20.
 
 ### Running a Relay on a separate host
 
