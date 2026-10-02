@@ -13,7 +13,7 @@
 # quickly and cleanly; the keys are the same after "systemctl restart"; and systemd restarts the
 # container after it was killed. It also applies the Network=host edit that the unit file describes
 # in a comment and checks it. Both units: the container has the expected capabilities,
-# no-new-privileges, a read-only root filesystem without tmpfs and the pids limit.
+# a read-only root filesystem without tmpfs and the pids limit.
 # Everything it installed is removed at the end, and nothing it did not install is touched.
 #
 # "guard" checks that safety: it creates a volume and a unit that look like a user's own install,
@@ -171,9 +171,9 @@ is_healthy() {
 wait_healthy() { wait_until "${HEALTHY_TIMEOUT}" is_healthy; }
 
 # check_hardening CONTAINER: the running container has the hardening the units ship (one list, here;
-# README "Security settings"): capabilities, no-new-privileges, read-only root without tmpfs, pids limit.
+# README "Security settings"): capabilities, no security options (no-new-privileges breaks the stop on Ubuntu 24.04), read-only root without tmpfs, pids limit.
 check_hardening() {
-    local file got want="[CAP_CHOWN CAP_DAC_OVERRIDE CAP_KILL CAP_SETGID CAP_SETUID] [no-new-privileges] true 128"
+    local file got want="[CAP_CHOWN CAP_DAC_OVERRIDE CAP_KILL CAP_SETGID CAP_SETUID] [] true 128"
     got="$(run podman inspect --format '{{.EffectiveCaps}} {{.HostConfig.SecurityOpt}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.PidsLimit}}' "$1")"
     [[ "${got}" == "${want}" ]] || die "$1: capabilities, security options, read-only root, pids limit are '${got}', expected '${want}'"
     for file in /tmp/probe /usr/bin/aspia_start; do

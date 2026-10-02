@@ -165,6 +165,7 @@ Candidates from the PR 3 task that were deliberately left out, with the reason:
 - **A tighter set for the simplest setup.** Without PUID/PGID and with root-owned volumes no capability is needed
   (notes section 20). Not shipped as a variant: a user who later sets PUID/PGID, or mounts a host directory owned
   by a user, would get a failing start. The README names the override.
+- **`NoNewPrivileges=` back in the Podman units** once Ubuntu's crun AppArmor profile no longer stacks with no-new-privileges (notes section 20). Re-test with the per-flag diagnostic (diag/podman-signal branch, `tests/diag-signal.sh`).
 - **`PidsLimit=` in the Quadlet units** once the minimum Podman is 4.7 or later; until then `PodmanArgs=--pids-limit=`.
 - **The Podman fallback without Quadlet** (podman/README.md, section 9, `podman run` for Podman < 4.5) does not
   carry the hardening flags. Not tested on Podman 3.4/4.4 with the real image (section 18: stand-in only).

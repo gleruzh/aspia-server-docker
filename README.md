@@ -172,7 +172,7 @@ All other capabilities are dropped, no process can gain privileges (setuid progr
 - `SETUID`, `SETGID`: switch to `PUID`/`PGID`.
 - `KILL`: pass `docker stop` on to the processes running as `PUID`/`PGID`.
 
-For the simplest setup (no `PUID`/`PGID`, volumes owned by root) none of the five is needed: remove the `--cap-add` flags (`cap_add:` in a compose file). The default ports are all above 1024; to use a port below 1024, add `--cap-add NET_BIND_SERVICE` (Docker with `--network host`) or `AddCapability=NET_BIND_SERVICE` (Podman units). Details and measurements: [docs/dev/UPSTREAM-3.x-NOTES.md](docs/dev/UPSTREAM-3.x-NOTES.md), section 20.
+For the simplest setup (no `PUID`/`PGID`, volumes owned by root) none of the five is needed: remove the `--cap-add` flags (`cap_add:` in a compose file). The default ports are all above 1024; to use a port below 1024, add `--cap-add NET_BIND_SERVICE` (Docker with `--network host`) or `AddCapability=NET_BIND_SERVICE` (Podman units). The Podman units do not set `NoNewPrivileges`: on Ubuntu 24.04 (AppArmor, crun profile) it blocks the clean stop; Docker is not affected. Details and measurements: [docs/dev/UPSTREAM-3.x-NOTES.md](docs/dev/UPSTREAM-3.x-NOTES.md), section 20.
 
 ### Running a Relay on a separate host
 

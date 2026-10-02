@@ -1338,12 +1338,14 @@ scenario_compose_hardening() {
     # The Quadlet units: the same set.
     for unit in podman/aspia-server.container podman/aspia-relay.container; do
         [[ "$(sed -n 's/^AddCapability=//p' "${unit}")" == "${CAPS[*]}" ]] || fail "${unit}: AddCapability= is not ${CAPS[*]}"
-        for line in DropCapability=ALL NoNewPrivileges=true ReadOnly=true; do
+        for line in DropCapability=ALL ReadOnly=true; do
             grep -qxF -- "${line}" "${unit}" || fail "${unit} has no line ${line}"
         done
+        # Absent on purpose: AppArmor on Ubuntu 24.04 then blocks tini's SIGTERM (notes, section 20).
+        ! grep -q '^NoNewPrivileges=' "${unit}" || fail "${unit} sets NoNewPrivileges= (breaks the stop on Ubuntu 24.04, notes section 20)"
         [[ "$(grep '^PodmanArgs=' "${unit}")" == "PodmanArgs=--pids-limit=${PIDS_LIMIT} --read-only-tmpfs=false" ]] || fail "${unit}: PodmanArgs= is not --pids-limit=${PIDS_LIMIT} --read-only-tmpfs=false"
     done
-    ok "both Podman units: AddCapability= ${CAPS[*]}, DropCapability=ALL, NoNewPrivileges, ReadOnly, pids ${PIDS_LIMIT}"
+    ok "both Podman units: AddCapability= ${CAPS[*]}, DropCapability=ALL, no NoNewPrivileges, ReadOnly, pids ${PIDS_LIMIT}"
 
     readme="$(sed -n '/^### Security settings/,/^### Running a Relay/p' README.md)"
     for line in "--cap-drop ALL" "--security-opt no-new-privileges:true" "--read-only" "--pids-limit ${PIDS_LIMIT} "; do
