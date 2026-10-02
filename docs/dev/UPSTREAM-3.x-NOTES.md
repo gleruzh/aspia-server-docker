@@ -614,3 +614,29 @@ Not verified in PR 4: a real reboot (a restart of the outer container stands in 
 interact with them; Podman 4.5.0 itself (4.5.1 is the lowest run); EL8/EL9/EL10 themselves (their repositories
 carry Podman 4.9.4, 5.8.2 and 5.8.2 per `dnf info podman` in `almalinux:8/9/10`, versions covered by the runs
 above); a real Client or Host through the published Relay port; PUID/PGID in Podman; rootless host directories.
+
+## 19. Verified while implementing PR 5
+
+Same legend. "Image" is the PR 5 image (`docker build --platform linux/amd64 -t aspia-server:pr5 .`); "probe" is
+`aspia-probe:3.0.21` (section 0) with `ASPIA_LOG_TO_STDOUT=1 ASPIA_LOG_TO_FILE=0 LANG=C.UTF-8`; "tests" is
+`tests/run.sh` (scenario numbers 17-24) and `tests/podman.sh relay`. Docker Desktop 29.8.1 on Apple Silicon; the
+Podman runs used the nested hosts of section 18 (Ubuntu 24.04 / Podman 4.9.3, Fedora 44 / Podman 5.8.7).
+
+| Fact | Verified by |
+|---|---|
+| **Router name that does not resolve:** the Relay logs `Connection to the router has been lost: TcpChannel::ErrorCode::SPECIFIED_HOST_NOT_FOUND`, `Reconnect after 15 seconds`, and retries forever (about every 16 s). It does not exit. A stopped Docker container's name stops resolving, so a stopped Router on the same Docker network gives this error too. | [run] probe, `router/address=no-such-router.invalid`, 50 s; tests 20 |
+| **Router address whose packets are dropped** (`10.255.255.1`): `Connecting to router...`, 30 s later `Connection to the router has been lost: TcpChannel::ErrorCode::SOCKET_TIMEOUT`, then `Reconnect after 15 seconds`: one attempt every ~46 s. | [run] probe, 50 s |
+| **Router up, port closed** (`router/port=8064`): `CONNECTION_REFUSED` within milliseconds, retried every 15 s (section 5). | [run] tests 20 |
+| **Router restarted under a connected Relay:** the Relay logs `Connection to the router has been lost: TcpChannel::ErrorCode::REMOTE_HOST_CLOSED`, `Reconnect after 15 seconds`, and is connected again ~15 s later (`Connection to the router is established (session count: 0 )`). The Router logs `New relay session` and `"[Relay#1]" Received key pool: 100` again; the `Relay#N` counter starts again from 1 after a Router restart. | [run] probe, `docker restart` of the Router; tests 20 |
+| With `relay/white_list` empty the Router logs at INFO, at start: `onPrepare : 134 ] Connections from all relays will be allowed` (likewise `... all clients ...` and `... all hosts ...`). | [run] probe |
+| A Relay refused by the Router's `relay/white_list` sees `REMOTE_HOST_CLOSED` right after connecting, on every attempt (section 13.6, confirmed with `ASPIA_ROLE=router`, `ASPIA_ROUTER_RELAY_ALLOWED_IPS=10.213.47.200` and two Relays on fixed addresses: `.200` registers, `.201` is refused and never healthy). | [run] tests 21 |
+| The Router of a combined Router+Relay container accepts a Relay from another container in addition to its own: two ESTABLISHED sockets on 8063, both Relays send their key pool. | [run] tests 24 |
+| A Relay on its own needs no Router file: `aspia_relay --create-config` on an empty `/etc/aspia`, then the three `[router]` keys and `peer/public_address` set, and it connects; nothing is written to `/var/lib/aspia`. Docker still creates an anonymous volume for `/var/lib/aspia`, because the Dockerfile declares it a `VOLUME`. | [run] tests 17 |
+| Docker's and Podman's health checks run with the container's environment, so `aspia_health` sees `ASPIA_ROLE` (a `router` container is healthy without a Relay; a `relay` container is healthy without a Router). | [run] tests 17; `tests/podman.sh relay` (`podman healthcheck run`) |
+| Two Relays registered with one Router at the same time (key from a variable and from a mounted file); the Router shows 2 ESTABLISHED on 8063. Section 13.6 has the limit of five. | [run] tests 18 |
+| Podman, Relay and Router on **one** machine (a test artefact; real Relays are on other hosts): a root Relay that dials the host's own address reaches a root Router's published 8063, and the Router sees `10.88.0.1` (the bridge gateway). A **rootless Podman 5.8.7 (pasta)** Relay that dials the host's own address gets `CONNECTION_REFUSED`: pasta gives the container the host's address, so the connection stays inside the container. Dialling the Router container's bridge address (`10.88.0.x`) works for root and rootless. A rootless 4.9.3 Router (slirp4netns, rootlessport) saw a rootless Relay as `10.0.2.100`, the same rewrite section 18 measured for clients. | [run] `tests/podman.sh relay`, first versions, on 4.9.3 and 5.8.7 |
+| The 3.x Client has a Relays view in its Router management: `client/desktop/management/router_relays_widget.{cc,ui}` and `relay_list_model.cc`. The admin protocol has `RelayListRequest` / `RelayList` (`RelayInfo`: `ip_address`, `computer_name`, `os_name`, `version`, `pool_size`, `statistics`) and a `RelayRequest` `"disconnect"` (`entry_id` -1 = all). Not checked with a GUI Client. | [src] `proto/router_admin.proto:30-85`; `gh api "repos/dchapyshev/aspia/contents/source/client/desktop/management?ref=v3.0.21"` |
+
+Not verified in PR 5: a session (Client to Host) actually relayed through a Relay on another host across real NAT;
+how the Router picks among several Relays; the Client's Relays view itself; `ASPIA_ROLE=router` under Podman; IPv6
+addresses for `ASPIA_RELAY_ROUTER_ADDRESS`.
