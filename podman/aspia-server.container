@@ -1,0 +1,49 @@
+# Aspia server (Router + Relay) as a Podman Quadlet unit. Install, both variants (system-wide and
+# rootless), updating and troubleshooting: podman/README.md.
+
+[Unit]
+Description=Aspia server (Router and Relay)
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+# The image: podman/README.md, section 1. The default is the name a local build gives; for the
+# published image use an exact tag or an @sha256 digest, never latest.
+Image=localhost/aspia-server:3.0.21
+
+ContainerName=aspia-server
+EnvironmentFile=aspia-server.env
+
+# Network: published ports, one-to-one (host port = container port), because the Relay tells
+# clients its own port. If you change a port in aspia-server.env, change it here too.
+# 8063 (Router <-> Relay) stays inside the container.
+PublishPort=8060:8060/tcp
+PublishPort=8061:8061/tcp
+PublishPort=8062:8062/tcp
+PublishPort=8065:8065/udp
+PublishPort=8070:8070/tcp
+# Host networking instead of published ports (podman/README.md, "Network=host"):
+# delete the PublishPort= lines above and uncomment the two lines below.
+#Network=host
+#Environment=ASPIA_ROUTER_RELAY_ALLOWED_IPS=127.0.0.1
+
+# Configuration, keys and database. Named volumes, created by the .volume units next to this file.
+Volume=aspia-config.volume:/etc/aspia
+Volume=aspia-data.volume:/var/lib/aspia
+
+# The health check is set here explicitly, so it does not depend on how the image was built or pulled.
+HealthCmd=/usr/bin/aspia_health
+HealthInterval=30s
+HealthTimeout=10s
+HealthRetries=3
+HealthStartPeriod=60s
+
+# No auto-update label on purpose: this project never updates a running container.
+
+[Service]
+Restart=always
+RestartSec=10
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target

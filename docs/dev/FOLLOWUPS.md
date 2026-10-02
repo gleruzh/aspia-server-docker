@@ -88,6 +88,42 @@ Candidates from the PR 3 task that were deliberately left out, with the reason:
   overrides" item above); making every path in `aspia_start`/`aspia_health` actually follow them is
   a larger, self-contained change left for later.
 
+## From PR 4 (Podman Quadlet)
+
+- **Untested on purpose or by lack of a machine:** a real reboot (the tests restart the whole test host once
+  instead); SELinux in enforcing mode (the `:Z` host-directory variant); the firewalld and ufw commands in
+  `podman/README.md` and how Podman's forwarding rules interact with them; Podman 4.5.0 (4.5.1 is the lowest
+  run); RHEL-family distributions themselves; rootless host directories; `PUID`/`PGID` under Podman; a real Client
+  or Host through the Relay. Read the CI job's Podman version in the job summary and add it to the "Tested with" line of
+  `podman/README.md` and to notes section 18.
+- **Podman 4.4 (RHEL 9.2).** The unit needs 4.5 because of `HealthCmd`. Expressing the health check with
+  `PodmanArgs=--health-cmd=...` would reach 4.4.1, at the cost of losing the Quadlet keys and of untested
+  behaviour. Not done: 4.4 is old, and the fallback in `podman/README.md` covers it.
+- **Rootless on Podman 4.x without `Network=host`.** Rootless slirp4netns rewrites the client address
+  (notes section 18); `Network=host` is the documented way out. Not tried: switching 4.x to pasta where it is
+  available (`Network=pasta` needs a newer Podman than 4.9.3 had in the test), or slirp4netns with
+  `port_handler=slirp4netns`, which keeps the source address in some versions.
+- **Ports in the unit are not derived from the environment file.** Compose takes both sides of a port
+  mapping from one variable; Quadlet cannot, so changing a port variable needs a matching `PublishPort=` edit
+  (or `Network=host`). A small generator script could write the `PublishPort=` lines from the env file.
+- **`Notify=healthy`.** Not used: `systemctl start` returns when the container has started, not when it is
+  healthy. A start that waits for `healthy` would make `systemctl start` fail loudly on a bad `EXTERNAL_IP`;
+  needs a test on each Podman version first.
+- **A `.build` unit** (Quadlet builds the image from a checkout) would remove the `podman build` step from
+  the default `Image=localhost/...` path; not added to keep the unit one file plus two volumes.
+- **CI duplicates the image build.** The `podman` job builds its own image (about as long as the `test`
+  job's build); it could reuse the `test` job's image through an artifact, if build time matters.
+- **For PR 5: `Network=host` needs a second setting.** In the combined image the Router accepts relay
+  registrations on 8063 from any address unless `ASPIA_ROUTER_RELAY_ALLOWED_IPS` is set, so with host
+  networking (needed for rootless Podman 4.x) the unit must also set `ASPIA_ROUTER_RELAY_ALLOWED_IPS=127.0.0.1`
+  (a commented pair of lines in the unit). The Router/Relay split (PR 5), or an entrypoint default of
+  `127.0.0.1` when the Relay is co-located and the variable is unset, would remove that.
+- **The Dockerfile's `HEALTHCHECK --start-interval` breaks `podman build` on Podman < 5.1** (`flag provided
+  but not defined: -start-interval`; notes section 18). Documented in `podman/README.md`: build with Docker
+  and `podman load`, or use the published image. A change to the image would remove it.
+- **PR 6 (README rewrite).** The main README has only a short pointer to `podman/README.md`; the Podman text
+  should be folded into the new structure and translated.
+
 ## From the PR 1 review (codex, agy and four cleanup reviewers)
 
 Correctness points not fixed in PR 1, each small and open for discussion:

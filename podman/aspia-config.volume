@@ -1,0 +1,3 @@
+# Named volume for the Router and Relay configuration and keys (/etc/aspia). Podman names it
+# systemd-aspia-config; "podman volume ls" shows it. No keys needed: the defaults are right.
+[Volume]

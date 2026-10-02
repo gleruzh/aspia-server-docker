@@ -1,0 +1,2 @@
+# Named volume for the Router database (/var/lib/aspia). Podman names it systemd-aspia-data.
+[Volume]

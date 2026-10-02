@@ -94,6 +94,10 @@ With docker compose, put the same reference into `.env`: `ASPIA_IMAGE=ghcr.io/<o
 
 The version tag is rebuilt every week to pick up Debian security updates, so its digest changes; every weekly rebuild also gets its own tag `3.0.21-YYYYMMDD`, which never moves. The tags `latest`, `<major>` and `<major>.<minor>` exist only for convenience: they change under you on the next pull, so do not use them on a server. The image is signed with cosign; [docs/ci.md](docs/ci.md) shows how to verify it.
 
+### Podman (systemd service)
+
+On a machine with Podman and no Docker (RHEL, AlmaLinux, Rocky, Fedora, Debian, Ubuntu), [podman/](podman/README.md) has a ready-made Quadlet unit: copy a few files, run `systemctl daemon-reload` and `systemctl start`, and the server runs as a systemd service that restarts on failure and starts at boot. System-wide and rootless installs are both described, with the network and firewall details, the manual update steps, and a fallback for Podman older than 4.5. Requires Podman 4.5 or later; use the published image (a local `podman build` needs Podman 5.1 or later).
+
 ### Ports
 
 Publish every port one-to-one (host port = container port): the Relay announces its own port to clients and hosts.
