@@ -47,4 +47,10 @@ services:
       - "${ASPIA_ROUTER_CLIENT_PORT:-8062}:${ASPIA_ROUTER_CLIENT_PORT:-8062}"       # clients
       - "${ASPIA_ROUTER_STUN_PORT:-8065}:${ASPIA_ROUTER_STUN_PORT:-8065}/udp"       # STUN
       - "8063:8063"                                                                 # Relays (router.conf [relay] port)
+    # Least privilege; why each capability: README.md, "Security settings".
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID, KILL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    pids_limit: 128
     restart: unless-stopped

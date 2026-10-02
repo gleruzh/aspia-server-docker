@@ -151,6 +151,29 @@ Not configurable through a variable in this image: `router.conf`'s `[relay] port
 
 `docker run -e ASPIA_ROUTER_CONFIG_FILE=...`, `ASPIA_ROUTER_DB_FILE` and `ASPIA_RELAY_CONFIG_FILE` are the Aspia binaries' own variables for moving their files; this image's scripts do not yet follow them (they still read the default paths) and refuse to start rather than silently check the wrong file. See docs/dev/FOLLOWUPS.md.
 
+### Security settings
+
+The compose files and the Podman units start the container with few privileges. The same with `docker run`:
+
+```shell
+docker run -d --name aspia-server --restart unless-stopped \
+  --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETUID --cap-add SETGID --cap-add KILL \
+  --security-opt no-new-privileges:true --read-only --pids-limit 128 \
+  -e EXTERNAL_IP=203.0.113.10 \
+  -p 8060:8060 -p 8061:8061 -p 8062:8062 -p 8065:8065/udp -p 8070:8070 \
+  -v "$PWD/data/config:/etc/aspia" -v "$PWD/data/database:/var/lib/aspia" \
+  ghcr.io/<owner>/aspia-server:3.0.21
+```
+
+All other capabilities are dropped, no process can gain privileges (setuid programs do not work), the image's own files are read-only (only the two volumes are written), and the container may have at most 128 processes and threads (it uses fewer than 30). The capabilities that stay:
+
+- `CHOWN`: give the volumes to `PUID`/`PGID`, and keep the owner of a backup copy.
+- `DAC_OVERRIDE`: read and write files of another user (a host directory, an earlier `PUID`/`PGID` install), and let the health check read the configuration under `PUID`/`PGID`.
+- `SETUID`, `SETGID`: switch to `PUID`/`PGID`.
+- `KILL`: pass `docker stop` on to the processes running as `PUID`/`PGID`.
+
+For the simplest setup (no `PUID`/`PGID`, volumes owned by root) none of the five is needed: remove the `--cap-add` flags (`cap_add:` in a compose file). The default ports are all above 1024; to use a port below 1024, add `--cap-add NET_BIND_SERVICE` (Docker with `--network host`) or `AddCapability=NET_BIND_SERVICE` (Podman units). The Podman units do not set `NoNewPrivileges`: on Ubuntu 24.04 (AppArmor, crun profile) it blocks the clean stop; Docker is not affected. Details and measurements: [docs/dev/UPSTREAM-3.x-NOTES.md](docs/dev/UPSTREAM-3.x-NOTES.md), section 20.
+
 ### Running a Relay on a separate host
 
 The same image runs the Router alone (`ASPIA_ROLE=router`) or a Relay alone (`ASPIA_ROLE=relay`), so a Relay can sit on another machine, closer to a group of users, or take the relayed traffic off the Router's machine. One Router accepts at most five Relays at a time (an Aspia limit). Without `ASPIA_ROLE` nothing changes: the default `all` is the combined container described above.

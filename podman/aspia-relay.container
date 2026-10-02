@@ -29,6 +29,14 @@ Volume=aspia-relay-config.volume:/etc/aspia
 # uncomment this line, and set ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE=/run/aspia/router-relay.pub.
 #Volume=/etc/aspia-relay/router-relay.pub:/run/aspia/router-relay.pub:ro,Z
 
+# Least privilege, as in the compose files (README "Security settings").
+DropCapability=ALL
+AddCapability=CHOWN DAC_OVERRIDE SETUID SETGID KILL
+# No NoNewPrivileges: on Ubuntu 24.04 AppArmor then blocks tini's SIGTERM (docs/dev/UPSTREAM-3.x-NOTES.md, section 20).
+ReadOnly=true
+# PidsLimit= needs Podman 4.7; --read-only-tmpfs=false: no tmpfs on /tmp, /run (as in compose).
+PodmanArgs=--pids-limit=128 --read-only-tmpfs=false
+
 # Healthy = listening on 8070 and connected to the Router (podman/README.md, section 11).
 HealthCmd=/usr/bin/aspia_health
 HealthInterval=30s
