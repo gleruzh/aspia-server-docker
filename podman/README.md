@@ -4,7 +4,7 @@ Run the Aspia Router and Relay as a systemd service on a machine that has Podman
 (RHEL, AlmaLinux, Rocky, Fedora, Debian, Ubuntu). Copy a few files, `systemctl daemon-reload`,
 `systemctl start`: the service restarts when it fails and starts again after a reboot.
 
-- Needs **Podman 4.5 or later** and systemd. Older Podman: see "Older Podman" below.
+- Needs **Podman 4.5 or later** and systemd. Older Podman: see section 9.
 - The image is linux/amd64 only. Nothing here updates a running container: you change the version and restart.
 - Tested with Podman 4.5.1, 4.9.3, 5.4.2 and 5.8.7 by `tests/podman.sh` (measurements: `docs/dev/UPSTREAM-3.x-NOTES.md`, section 18).
 
@@ -40,7 +40,6 @@ A local `podman build` needs **Podman 5.1 or later**: the Dockerfile's `HEALTHCH
 older Podman fail with `flag provided but not defined: -start-interval`. On older Podman use the published
 image, or build with Docker and move the image over: `docker save aspia-server:3.0.21 | podman load`
 (then `Image=localhost/aspia-server:3.0.21` fits only if `podman images` shows that name; otherwise tag it).
-The published image itself runs on Podman 4.5 and later.
 
 ## 2. Install system-wide (as root)
 
@@ -99,15 +98,13 @@ The unit publishes the ports one-to-one (host port = container port) with `Publi
 every client its own port, so `9070:8070` would break relayed connections. Port 8063 (Router to Relay) is
 not published.
 
-**Rule:** rootless on Podman 4.x (slirp4netns) -> use `Network=host`. Otherwise (root, or rootless Podman
-5.x with pasta) keep the published ports. `Network=host` opens 8063 on all interfaces, so it is not the
-safe default.
-
 | Setup | Address the Router sees for a client | Use |
 |---|---|---|
 | System-wide (root) | The real address. | Published ports. |
 | Rootless, Podman 5.x (pasta; `podman info --format '{{.Host.RootlessNetworkCmd}}'` prints `pasta`) | The real address for clients on other machines. | Published ports. |
 | Rootless, Podman 4.x (slirp4netns) | **`10.0.2.100` for every client.** | `Network=host`. |
+
+Network=host opens 8063 on all interfaces, so it is not the safe default.
 
 The shared address breaks IP allow-lists (`ASPIA_ROUTER_CLIENT_ALLOWED_IPS`, `ASPIA_ROUTER_HOST_ALLOWED_IPS`:
 every client looks the same), makes all clients share the Router's per-address rate limit, and makes the
@@ -122,12 +119,11 @@ In `aspia-server.container`, delete the `PublishPort=` lines and uncomment the t
 sudo systemctl daemon-reload && sudo systemctl restart aspia-server.service    # rootless: systemctl --user ...
 ```
 
-The second line matters: with host networking **port 8063 is open on every interface of the host**, and
-without a Relay allow-list anyone who can reach it may register as a Relay (the Router accepts up to five).
+The second line matters: without a Relay allow-list anyone who can reach 8063 may register as a Relay (the Router accepts up to five).
 `ASPIA_ROUTER_RELAY_ALLOWED_IPS=127.0.0.1` lets only the Relay inside this container in (tested on 4.9.3: a
 connection to 8063 from another machine is rejected, the Relay still connects). If you also set that variable
 in `aspia-server.env`, give both the same value. Open the same ports in your firewall as for published
-ports (section 7) and leave 8063 closed. To go back, restore the `PublishPort=` lines from
+ports (section 7). To go back, restore the `PublishPort=` lines from
 `podman/aspia-server.container` and comment the two lines out.
 
 ## 5. Volumes: named volumes (default) or host directories
@@ -165,8 +161,7 @@ Edit `aspia-server.env` (next to the `.container` file), then `sudo systemctl re
 written to the configuration file on every start, an unset one leaves the file alone.
 
 Podman reads this file itself, not systemd: one `VAR=value` per line, no quotes, no trailing comments.
-If you change a port variable, change the matching `PublishPort=` line too (host port = container port),
-or use `Network=host`.
+A changed port variable needs the matching `PublishPort=` line (see the comments in the unit).
 
 ## 7. Firewall
 
@@ -205,7 +200,9 @@ why step 1 is there). Remove an unused old image with `podman image rm`.
 
 Podman 4.4 and older cannot use the unit: Quadlet needs 4.4 and the health check keys need 4.5. On Debian 12
 (Podman 4.3), Ubuntu 22.04 (3.4) and RHEL 8 before 8.10 use `podman run`, then let Podman write a systemd
-unit, as root. The image on the last line is the published one (section 1); a local build needs Podman 5.1.
+unit, as root. Replace `<owner>` in the last line with the account that publishes the image (section 1; a local
+build is not possible on these versions). A Docker-built image moved over with `docker save | podman load`
+can be used instead.
 
 ```shell
 sudo install -d /etc/aspia-server
@@ -218,7 +215,7 @@ sudo podman run -d --name aspia-server --env-file /etc/aspia-server/aspia-server
   -v aspia-config:/etc/aspia -v aspia-data:/var/lib/aspia \
   --health-cmd /usr/bin/aspia_health --health-interval 30s --health-timeout 10s \
   --health-retries 3 --health-start-period 60s \
-  localhost/aspia-server:3.0.21
+  ghcr.io/<owner>/aspia-server:3.0.21
 cd /etc/systemd/system
 sudo podman generate systemd --new --files --name --restart-policy=always aspia-server
 sudo podman rm -f aspia-server

@@ -32,15 +32,9 @@ docker run --rm -v "${PWD}:/repo:ro" -w /repo "${ACTIONLINT}" -no-color || statu
 # the Image= line of the Quadlet unit). Names are the lines "NAME=" or "#NAME=".
 env_names() { sed -nE 's/^#?([A-Z][A-Z0-9_]*)=.*/\1/p' "$1" | sort -u; }
 
-PODMAN_ENV=${PODMAN_ENV:-podman/aspia-server.env.example}
-echo "${PODMAN_ENV} variables match .env.example"
-only_compose=$(comm -23 <(env_names .env.example | grep -vx ASPIA_IMAGE) <(env_names "${PODMAN_ENV}"))
-only_podman=$(comm -13 <(env_names .env.example | grep -vx ASPIA_IMAGE) <(env_names "${PODMAN_ENV}"))
-if [[ -n "${only_compose}${only_podman}" ]]; then
-    [[ -z "${only_compose}" ]] || echo "  in .env.example but missing from ${PODMAN_ENV}: ${only_compose//$'\n'/ }"
-    [[ -z "${only_podman}" ]] || echo "  in ${PODMAN_ENV} but not in .env.example: ${only_podman//$'\n'/ }"
-    status=1
-fi
+echo "podman/aspia-server.env.example variables match .env.example"
+diff --label ".env.example" --label "podman/aspia-server.env.example" \
+    <(env_names .env.example | grep -vx ASPIA_IMAGE) <(env_names podman/aspia-server.env.example) || status=1
 
 echo "scripts/versions.sh check"
 scripts/versions.sh check || status=1
