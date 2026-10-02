@@ -1324,7 +1324,7 @@ scenario_role_all_explicit() {
 jq_img() { docker run --rm -i --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" --entrypoint jq "${IMAGE}" "$@"; }
 
 scenario_compose_hardening() {
-    local file unit expected out caps readme
+    local file unit expected out caps readme line
     log "0e. The compose files, Podman units and README carry the hardening settings that the scenarios run with"
     caps="$(printf '"%s",' "${CAPS[@]}")"
     expected="{\"cap_drop\":[\"ALL\"],\"cap_add\":[${caps%,}],\"security_opt\":[\"no-new-privileges:true\"],\"read_only\":true,\"pids_limit\":${PIDS_LIMIT},\"tmpfs\":null}"
@@ -1338,16 +1338,19 @@ scenario_compose_hardening() {
     # The Quadlet units: the same set plus NET_BIND_SERVICE (Podman keeps ports < 1024 privileged).
     for unit in podman/aspia-server.container podman/aspia-relay.container; do
         [[ "$(sed -n 's/^AddCapability=//p' "${unit}")" == "${CAPS[*]} NET_BIND_SERVICE" ]] || fail "${unit}: AddCapability= is not ${CAPS[*]} NET_BIND_SERVICE"
-        for line in DropCapability=ALL NoNewPrivileges=true ReadOnly=true "PodmanArgs=--pids-limit=${PIDS_LIMIT} --read-only-tmpfs=false"; do
+        for line in DropCapability=ALL NoNewPrivileges=true ReadOnly=true; do
             grep -qxF -- "${line}" "${unit}" || fail "${unit} has no line ${line}"
         done
+        [[ "$(grep '^PodmanArgs=' "${unit}")" == "PodmanArgs=--pids-limit=${PIDS_LIMIT} --read-only-tmpfs=false" ]] || fail "${unit}: PodmanArgs= is not --pids-limit=${PIDS_LIMIT} --read-only-tmpfs=false"
     done
     ok "both Podman units: AddCapability= ${CAPS[*]} NET_BIND_SERVICE, DropCapability=ALL, NoNewPrivileges, ReadOnly, pids ${PIDS_LIMIT}"
 
-    readme="$(sed -n '/^### Security settings/,/^###* [^S]/p' README.md)"
-    for line in "--cap-drop ALL" "--security-opt no-new-privileges:true" "--read-only" "--pids-limit ${PIDS_LIMIT}" "${CAPS[@]/#/--cap-add }"; do
+    readme="$(sed -n '/^### Security settings/,/^### Running a Relay/p' README.md)"
+    for line in "--cap-drop ALL" "--security-opt no-new-privileges:true" "--read-only" "--pids-limit ${PIDS_LIMIT} "; do
         grep -qF -- "${line}" <<<"${readme}" || fail "the README docker run example has no '${line}'"
     done
+    [[ "$(grep '^  --' <<<"${readme}" | grep -o -- '--cap-add [A-Z_]*' | sed 's/--cap-add //' | sort | tr '\n' ' ')" == "$(printf '%s\n' "${CAPS[@]}" | sort | tr '\n' ' ')" ]] \
+        || fail "the README docker run example has other --cap-add flags than ${CAPS[*]}"
     ok "the README docker run example has the same flags"
 }
 
@@ -1368,17 +1371,19 @@ cap_mask() {
     printf '%016x\n' "${mask}"
 }
 
-# check_hardening <container> <CapEff of the Aspia processes>: every process has NoNewPrivs 1 and that
-# CapEff (tini, PID 1, always the full set: it forwards signals); the root is read-only; the pids limit is set.
+# check_hardening <container> <CapEff of the Aspia processes>: tini and the Aspia processes (role all) have NoNewPrivs 1 and
+# that CapEff (tini, PID 1, always the full set: it forwards signals); the root is read-only; the pids limit is set.
 check_hardening() {
-    local status host full
+    local status host full name
     full="$(cap_mask "${CAPS[@]}")"
-    # One awk pass over /proc inside the container: "name CapEff NoNewPrivs" per process, without awk itself.
-    # shellcheck disable=SC2016  # $1.. are awk's, $0 is the script given to sh
-    status="$(docker exec "$1" sh -c 'exec awk "$0" /proc/[0-9]*/status 2>/dev/null' \
-        '/^Name:/ {n = $2} /^CapEff:/ {c = $2} /^NoNewPrivs:/ && n != "awk" {print n, c, $2}')"
-    grep -q '^tini ' <<<"${status}" || fail "no tini in the process list: ${status}"
-    [[ -z "$(awk -v m="$2" -v f="${full}" '$3 != 1 || $2 != ($1 == "tini" ? f : m)' <<<"${status}")" ]] \
+    # cat, not awk: a process that exits during the read must not fail it. Parsed here, on the host.
+    # Only tini and the Aspia processes are judged: a health check (root, full set under PUID) may run at any time.
+    status="$(docker exec "$1" sh -c 'cat /proc/[0-9]*/status 2>/dev/null; true' \
+        | awk '/^Name:/ {n = $2} /^CapEff:/ {c = $2} /^NoNewPrivs:/ {print n, c, $2}')"
+    for name in tini aspia_router aspia_relay; do
+        grep -q "^${name} " <<<"${status}" || fail "$1: no ${name} in the process list: ${status}"
+    done
+    [[ -z "$(awk -v m="$2" -v f="${full}" '$1 ~ /^(tini|aspia_start|aspia_router|aspia_relay)$/ && ($3 != 1 || $2 != ($1 == "tini" ? f : m))' <<<"${status}")" ]] \
         || fail "$1: expected NoNewPrivs 1 and CapEff $2 (tini ${full}), got:"$'\n'"${status}"
     host="$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.PidsLimit}}' "$1")"
     [[ "${host}" == "true ${PIDS_LIMIT}" ]] || fail "$1: ReadonlyRootfs and PidsLimit are '${host}'"
