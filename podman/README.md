@@ -13,6 +13,7 @@ Run the Aspia Router and Relay as a systemd service on a machine that has Podman
 | `aspia-server.container` | The Quadlet unit: image, ports, volumes, environment, health check, restart policy. |
 | `aspia-config.volume`, `aspia-data.volume` | Named volumes for `/etc/aspia` (configuration and keys) and `/var/lib/aspia` (database). |
 | `aspia-server.env.example` | The environment file. Copy it to `aspia-server.env`. The variables are the ones in the [main README](../README.md#configuration). |
+| `aspia-relay.container`, `aspia-relay-config.volume`, `aspia-relay.env.example` | A Relay on its own, connected to a Router on another machine (section 11). |
 
 ## 1. Choose the image (one line)
 
@@ -239,3 +240,25 @@ To update, change the tag in `/etc/systemd/system/container-aspia-server.service
 - Rootless service stops when you log out: run `sudo loginctl enable-linger <user>`.
 - `systemctl --user` says "Failed to connect to bus": you are not in a login session; log in over ssh or
   use `machinectl shell <user>@`.
+
+## 11. A Relay on its own host, or the Router alone
+
+The steps for both sides, the ports and how to confirm that the Relay registered are in the main README,
+["Running a Relay on a separate host"](../README.md#running-a-relay-on-a-separate-host). Under Podman:
+
+**Relay host.** Install `aspia-relay.container`, `aspia-relay-config.volume` and `aspia-relay.env.example` (as
+`aspia-relay.env`) the way section 2 (or 3) installs the server files, set the `Image=` line (section 1), and set
+`ASPIA_RELAY_ROUTER_ADDRESS`, `ASPIA_RELAY_ROUTER_PUBLIC_KEY` (the Router's `relay.pub`) and `EXTERNAL_IP` in
+`aspia-relay.env`. Then `systemctl daemon-reload` and `systemctl start aspia-relay.service` (rootless:
+`systemctl --user ...`). The unit sets `ASPIA_ROLE=relay`, publishes only 8070/tcp, and is healthy once the Relay is
+connected to the Router: `podman healthcheck run aspia-relay`. Open 8070/tcp in the firewall (section 7); the
+connection to the Router's 8063/tcp is outgoing.
+
+**Router host.** Keep `aspia-server.container`, set `ASPIA_ROLE=router` and `ASPIA_ROUTER_RELAY_ALLOWED_IPS` (your
+Relays' addresses) in `aspia-server.env`, add `PublishPort=8063:8063/tcp` to the unit, and open 8063/tcp to the
+Relay hosts only. A rootless Router on Podman 4.x sees every connection as coming from `10.0.2.100` (section 4,
+measured for clients; the published 8063 goes through the same forwarding), so the allow-list
+cannot tell them apart there: use root, Podman 5, or the firewall.
+
+`tests/podman.sh relay` tests the relay unit (system-wide and rootless, against a Router on the same machine). It
+does not test the Router-only setup under Podman, or two machines.

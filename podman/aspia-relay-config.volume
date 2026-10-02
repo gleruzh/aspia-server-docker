@@ -1,0 +1,3 @@
+# Named volume for the configuration of the Relay-only unit (/etc/aspia: relay.conf). Podman names it
+# systemd-aspia-relay-config. Separate from aspia-config.volume: the Relay refuses a Router's volume.
+[Volume]
