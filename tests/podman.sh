@@ -5,9 +5,9 @@
 #
 #   tests/podman.sh [system|rootless|guard|all]      (default: all)
 #
-# For each variant it installs the files exactly as the README says (the unit keeps its own Image=
-# line: the test image is tagged with that name), runs the Quadlet generator in dry-run mode, starts
-# the service, and checks: the unit is generated without errors; the service starts and the
+# For each variant it installs the files as the README says (the unit's Image= line is replaced by
+# ASPIA_TEST_IMAGE, the one edit the README asks for; the test asserts that nothing else differs),
+# runs the Quadlet generator in dry-run mode, starts the service, and checks: the unit is generated without errors; the service starts and the
 # container becomes healthy ("podman healthcheck run" succeeds); the unit is wanted by
 # default.target (so it starts at boot); "systemctl stop" finishes quickly and cleanly; the keys are
 # the same after "systemctl restart"; and systemd restarts the container after it was killed. It also
@@ -26,8 +26,9 @@
 #                       else taken from Docker's image store ("docker save | podman load"); else
 #                       pulled.
 #   ASPIA_TEST_USER     rootless user when this script runs as root (default aspia-podman-test;
-#                       created, and removed again, if it does not exist). When run as a normal
-#                       user, that user is the rootless user.
+#                       created, and removed again, if it does not exist). An existing user is never
+#                       modified: it must already have ranges in /etc/subuid and /etc/subgid. When
+#                       run as a normal user, that user is the rootless user (same requirement).
 # The system-wide variant needs root, or sudo without a password. ss (iproute2) is required.
 
 set -euo pipefail
@@ -41,7 +42,6 @@ readonly PORTS=(8060 8061 8062 8063 8065 8070)
 readonly STOP_LIMIT=20          # seconds: "systemctl stop" must finish well inside systemd's 70 s default
 readonly HEALTHY_TIMEOUT=240    # seconds; generous, because CI runners and emulation are slow
 
-UNIT_IMAGE=""                   # the Image= line of the shipped unit: the test image gets this name
 MODE=""                         # system or rootless: set per variant
 RL_USER=""
 RL_HOME=""
@@ -49,9 +49,9 @@ RL_RUNTIME=""
 UNIT_DIR=""
 CREATED_USER=0
 ENABLED_LINGER=0
-OWNS_INSTALL=0                  # 1 once check_free passed and this run owns the unit, files and volumes
+OWNED_DIR=""                    # the unit directory this run installs into; set only after check_free passed
 CREATED_TAGS=()                 # image names this run added to the Podman store (and so removes again)
-TMPFILES=()                     # temporary files, removed on exit
+STOPLOG=""                      # temporary file, removed on exit
 
 say() { printf '\n=== %s\n' "$*"; }
 ok() { printf 'ok - %s\n' "$*"; }
@@ -160,31 +160,23 @@ check_free() {
     for file in aspia-server.container aspia-config.volume aspia-data.volume aspia-server.env; do
         [[ ! -e "${UNIT_DIR}/${file}" ]] || die "${UNIT_DIR}/${file} already exists"
     done
-    return 0
 }
 
-# load_image: makes the test image available to the current Podman (root's or the rootless user's)
-# under the exact name of the unit's Image= line. Only names this run created are removed later.
+# load_image: makes ASPIA_TEST_IMAGE exist in the current Podman store (root's or the rootless
+# user's). Only names this run added are removed later, never a user's image.
 load_image() {
-    local loaded=""
+    local loaded
     if run podman image exists "${ASPIA_TEST_IMAGE}"; then
-        loaded="${ASPIA_TEST_IMAGE}"
+        return 0
     elif command -v docker > /dev/null && docker image inspect "${ASPIA_TEST_IMAGE}" > /dev/null 2>&1; then
         loaded="$(docker save "${ASPIA_TEST_IMAGE}" | run podman load -q | sed -n 's/^Loaded image[^:]*: //p' | head -n 1)" || die "docker save | podman load failed"
         [[ -n "${loaded}" ]] || die "could not load the image into Podman"
         CREATED_TAGS+=("${loaded}")
     else
         run podman pull -q "${ASPIA_TEST_IMAGE}" > /dev/null || die "could not pull ${ASPIA_TEST_IMAGE}"
-        loaded="${ASPIA_TEST_IMAGE}"
-        CREATED_TAGS+=("${loaded}")
+        CREATED_TAGS+=("${ASPIA_TEST_IMAGE}")
     fi
-    if run podman image exists "${UNIT_IMAGE}"; then
-        [[ "$(run podman image inspect --format '{{.Id}}' "${UNIT_IMAGE}")" == "$(run podman image inspect --format '{{.Id}}' "${loaded}")" ]] \
-            || die "an image named ${UNIT_IMAGE} (the unit's Image=) already exists and is a different image; not moving its tag"
-    else
-        run podman tag "${loaded}" "${UNIT_IMAGE}"
-        CREATED_TAGS+=("${UNIT_IMAGE}")
-    fi
+    run podman image exists "${ASPIA_TEST_IMAGE}" || die "${ASPIA_TEST_IMAGE} is not in Podman's store after loading"
 }
 
 setup_rootless_user() {
@@ -199,9 +191,14 @@ setup_rootless_user() {
         RL_USER="$(id -un)"
     fi
     RL_HOME="$(getent passwd "${RL_USER}" | cut -d: -f6)"
-    # Rootless Podman needs subordinate uid/gid ranges for the user.
-    if ! grep -q "^${RL_USER}:" /etc/subuid 2> /dev/null; then
+    # Rootless Podman needs subordinate uid/gid ranges. A user this run created gets them (userdel
+    # removes them again); an existing user is never modified.
+    if ((CREATED_USER == 1)) && ! grep -q "^${RL_USER}:" /etc/subuid 2> /dev/null; then
         as_root usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "${RL_USER}"
+    fi
+    if ! grep -q "^${RL_USER}:" /etc/subuid 2> /dev/null || ! grep -q "^${RL_USER}:" /etc/subgid 2> /dev/null; then
+        echo "${RL_USER} has no subordinate ID ranges, and this script does not modify an existing user. Add them (e.g. 'usermod --add-subuids 100000-165535 --add-subgids 100000-165535 ${RL_USER}') or set ASPIA_TEST_USER to another name." >&2
+        exit 2
     fi
     uid="$(id -u "${RL_USER}")"
     RL_RUNTIME="/run/user/${uid}"
@@ -217,7 +214,7 @@ setup_rootless_user() {
 
 run_variant() {
     MODE="$1"
-    local label generator out status=0 before after t0 elapsed result stoplog logger restarts_before
+    local label generator out status=0 before after t0 elapsed result logger restarts_before
     local -a generator_args=(--dryrun)
     if [[ "${MODE}" == system ]]; then
         label="system-wide (root)"
@@ -230,15 +227,19 @@ run_variant() {
     fi
     say "Variant: ${label}"
     check_free
+    OWNED_DIR="${UNIT_DIR}"
     load_image
-    ok "image available as ${UNIT_IMAGE}"
+    ok "image ${ASPIA_TEST_IMAGE} is in Podman's store"
 
-    say "Install the files the way podman/README.md says"
-    OWNS_INSTALL=1
+    say "Install the files the way podman/README.md says (the Image= line is the one edit)"
     run mkdir -p "${UNIT_DIR}"
     run install -m 0644 podman/aspia-server.container podman/aspia-config.volume podman/aspia-data.volume "${UNIT_DIR}/"
     run install -m 0644 podman/aspia-server.env.example "${UNIT_DIR}/aspia-server.env"
-    ok "installed into ${UNIT_DIR}, unit unchanged (Image=${UNIT_IMAGE})"
+    run sed -i "s|^Image=.*|Image=${ASPIA_TEST_IMAGE}|" "${UNIT_DIR}/aspia-server.container"
+    run grep -qxF "Image=${ASPIA_TEST_IMAGE}" "${UNIT_DIR}/aspia-server.container" || die "the Image= edit did not take"
+    diff <(sed '/^Image=/d' podman/aspia-server.container) <(run sed '/^Image=/d' "${UNIT_DIR}/aspia-server.container") \
+        || die "the installed unit differs from the shipped one in more than its Image= line"
+    ok "installed into ${UNIT_DIR}; the unit differs from the shipped one only in Image=${ASPIA_TEST_IMAGE}"
 
     say "Quadlet generator, dry run"
     generator="$(find_generator)" || die "no Quadlet generator found (is this Podman older than 4.4?)"
@@ -246,9 +247,6 @@ run_variant() {
     printf '%s\n' "${out}"
     ((status == 0)) || die "the generator exited with status ${status}"
     grep -q '^ExecStart=/usr/bin/podman run' <<< "${out}" || die "the generator produced no ExecStart for the container"
-    # Podman 4.4.1's generator exits 0 even when it cannot convert a unit; ExecStart above catches
-    # that too, this names the cause.
-    ! grep -q 'Error converting' <<< "${out}" || die "the generator could not convert a unit"
     grep -q 'systemd-aspia-config' <<< "${out}" || die "the generator did not use the aspia-config volume"
     ok "generator: no errors"
 
@@ -279,9 +277,8 @@ run_variant() {
     ok "restarted by systemd (NRestarts was ${restarts_before}), healthy, same keys"
 
     say "Stop"
-    stoplog="$(mktemp)"
-    TMPFILES+=("${stoplog}")
-    run podman logs -f --tail 0 "${CONTAINER}" > "${stoplog}" 2>&1 &
+    STOPLOG="$(mktemp)"
+    run podman logs -f --tail 0 "${CONTAINER}" > "${STOPLOG}" 2>&1 &
     logger=$!
     sleep 1
     t0=${SECONDS}
@@ -291,14 +288,13 @@ run_variant() {
     wait_until 10 pid_gone "${logger}" || true
     kill "${logger}" 2> /dev/null || true
     wait "${logger}" 2> /dev/null || true
-    grep -q 'All processes have exited; exit code 0' "${stoplog}" || { cat "${stoplog}"; die "the container did not exit cleanly on SIGTERM (no 'All processes have exited; exit code 0' in its log)"; }
+    grep -q 'All processes have exited; exit code 0' "${STOPLOG}" || { cat "${STOPLOG}"; die "the container did not exit cleanly on SIGTERM (no 'All processes have exited; exit code 0' in its log)"; }
     result="$(sctl show "${UNIT}" -p Result --value)"
-    echo "systemctl stop took ${elapsed} s, Result=${result}"
     ((elapsed < STOP_LIMIT)) || die "systemctl stop took ${elapsed} s (limit ${STOP_LIMIT} s)"
     [[ "${result}" == success ]] || die "the unit's Result after stop is '${result}', not success"
     [[ "$(sctl is-active "${UNIT}" || true)" == inactive ]] || die "the unit is not inactive after stop"
     run podman container exists "${CONTAINER}" 2> /dev/null && die "the container still exists after stop"
-    ok "stopped in ${elapsed} s, no timeout, SIGTERM ended both processes with exit code 0, container removed"
+    ok "stopped in ${elapsed} s, Result=${result}, SIGTERM ended both processes with exit code 0, container removed"
 
     say "Start again: the data is still there"
     sctl start "${UNIT}" || die "second start failed"
@@ -307,7 +303,6 @@ run_variant() {
     ok "same keys after stop and start"
 
     say "Network=host: the edit described in the unit file (delete PublishPort= lines, uncomment the marked lines)"
-    run grep -qxF '#Network=host' "${UNIT_DIR}/aspia-server.container" || die "the unit has no '#Network=host' line to uncomment"
     run sed -i -e '/^PublishPort=/d' \
         -e 's/^#\(Network=host\)$/\1/' \
         -e 's/^#\(Environment=ASPIA_ROUTER_RELAY_ALLOWED_IPS=127\.0\.0\.1\)$/\1/' "${UNIT_DIR}/aspia-server.container"
@@ -337,10 +332,10 @@ guard_check() {
     run podman volume create systemd-aspia-config > /dev/null
     printf '# a unit that is not ours\n' | run tee "${UNIT_DIR}/aspia-server.container" > /dev/null
     out="$("${REPO}/tests/podman.sh" system 2>&1)" || status=$?
-    if run podman volume exists systemd-aspia-config; then volume_kept=1; fi
-    if run grep -q 'not ours' "${UNIT_DIR}/aspia-server.container"; then unit_kept=1; fi
-    run podman volume rm -f systemd-aspia-config > /dev/null 2>&1 || true
-    run rm -f "${UNIT_DIR}/aspia-server.container"
+    run podman volume exists systemd-aspia-config && volume_kept=1
+    run grep -q 'not ours' "${UNIT_DIR}/aspia-server.container" && unit_kept=1
+    quiet run podman volume rm -f systemd-aspia-config
+    quiet run rm -f "${UNIT_DIR}/aspia-server.container"
     MODE=""
     UNIT_DIR=""
     ((status != 0)) || die "the test did not refuse to start next to an existing install"
@@ -353,15 +348,15 @@ guard_check() {
 cleanup_variant() {
     [[ -n "${MODE}" ]] || return 0
     local tag
-    # Only what this run installed: before OWNS_INSTALL, anything found belongs to the user.
-    if ((OWNS_INSTALL == 1)); then
+    # Only what this run installed: before check_free passed (OWNED_DIR unset), anything found belongs to the user.
+    if [[ -n "${OWNED_DIR}" ]]; then
         quiet sctl stop "${UNIT}"
         quiet run podman rm -f "${CONTAINER}"
-        quiet run rm -f "${UNIT_DIR}/aspia-server.container" "${UNIT_DIR}/aspia-config.volume" \
-            "${UNIT_DIR}/aspia-data.volume" "${UNIT_DIR}/aspia-server.env"
+        quiet run rm -f "${OWNED_DIR}/aspia-server.container" "${OWNED_DIR}/aspia-config.volume" \
+            "${OWNED_DIR}/aspia-data.volume" "${OWNED_DIR}/aspia-server.env"
         quiet sctl daemon-reload
         quiet run podman volume rm -f systemd-aspia-config systemd-aspia-data
-        OWNS_INSTALL=0
+        OWNED_DIR=""
     fi
     for tag in "${CREATED_TAGS[@]}"; do
         quiet run podman rmi -f "${tag}"
@@ -384,7 +379,7 @@ on_exit() {
     local status=$?
     trap - EXIT
     cleanup_variant || true
-    if ((${#TMPFILES[@]} > 0)); then rm -f "${TMPFILES[@]}"; fi
+    [[ -z "${STOPLOG}" ]] || rm -f "${STOPLOG}"
     echo
     if ((status == 0)); then echo "podman: all checks passed"; else echo "podman: FAILED"; fi
     exit "${status}"
@@ -406,13 +401,8 @@ main() {
         sudo -n true 2> /dev/null || { echo "the system-wide variant needs root or passwordless sudo" >&2; exit 2; }
     fi
     [[ "$(grep -c '^Image=' podman/aspia-server.container)" == 1 ]] || { echo "the unit must have exactly one Image= line" >&2; exit 2; }
-    UNIT_IMAGE="$(sed -n 's/^Image=//p' podman/aspia-server.container)"
-    [[ "${UNIT_IMAGE}" != *@* ]] || { echo "the unit pins its image by digest; the test needs a tag to give the test image" >&2; exit 2; }
-    echo "Podman: $(podman --version); systemd: $(systemctl --version | head -n 1)"
-    if [[ -r /etc/os-release ]]; then
-        # shellcheck disable=SC1091
-        echo "OS: $(. /etc/os-release && echo "${PRETTY_NAME}")"
-    fi
+    printf '### Podman Quadlet test\n\n- %s; %s; %s\n' "$(podman --version)" "$(systemctl --version | head -n 1)" \
+        "$(sed -n 's/^PRETTY_NAME="\(.*\)"$/\1/p' /etc/os-release 2> /dev/null)" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
     trap on_exit EXIT
     if [[ "${which}" == guard || "${which}" == all ]]; then guard_check; fi
     if [[ "${which}" == system || "${which}" == all ]]; then run_variant system; fi

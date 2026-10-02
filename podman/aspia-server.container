@@ -7,9 +7,8 @@ Wants=network-online.target
 After=network-online.target
 
 [Container]
-# The image (podman/README.md, section 1). localhost/aspia-server:3.0.21 is the name a local
-# "podman build" gives (that needs Podman 5.1 or later); you usually change it to the published
-# image: an exact tag or an @sha256 digest, never latest.
+# The image: podman/README.md, section 1. The default is the name a local build gives; for the
+# published image use an exact tag or an @sha256 digest, never latest.
 Image=localhost/aspia-server:3.0.21
 
 ContainerName=aspia-server
@@ -27,7 +26,6 @@ PublishPort=8070:8070/tcp
 # delete the PublishPort= lines above and uncomment the two lines below.
 #Network=host
 #Environment=ASPIA_ROUTER_RELAY_ALLOWED_IPS=127.0.0.1
-# (An Environment= line wins over the same variable in aspia-server.env: tested on Podman 4.9.3 and 5.8.7.)
 
 # Configuration, keys and database. Named volumes, created by the .volume units next to this file.
 Volume=aspia-config.volume:/etc/aspia

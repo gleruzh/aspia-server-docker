@@ -108,18 +108,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Record the Podman and systemd versions
-        run: |
-          # shellcheck disable=SC1091
-          pretty_name="$(. /etc/os-release && echo "${PRETTY_NAME}")"
-          {
-            echo "### Podman Quadlet test"
-            echo
-            echo "- $(podman --version)"
-            echo "- $(systemctl --version | head -n 1)"
-            echo "- ${pretty_name}"
-          } | tee -a "${GITHUB_STEP_SUMMARY}"
-
       - name: Build the image (version from versions.env)
         run: |
           version="$(scripts/versions.sh get ASPIA_VERSION)"
