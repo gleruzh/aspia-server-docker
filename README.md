@@ -9,30 +9,20 @@ This repository builds a Docker image of the server part of [Aspia](https://aspi
 ## What this is, and what it is not
 
 - This is unofficial packaging. The Aspia developers do not publish or support this image.
-- Aspia itself is written by Dmitry Chapyshev: [dchapyshev/aspia](https://github.com/dchapyshev/aspia). The image installs the Router and Relay packages from the official Aspia releases and checks their checksums.
+- Aspia is written by Dmitry Chapyshev: [dchapyshev/aspia](https://github.com/dchapyshev/aspia). The image installs the official Router and Relay packages and checks their checksums.
 - The original Docker image of the Aspia server (Aspia 2.x) is by Dmitry Fox: [paprikkafox/aspia-server-docker](https://github.com/paprikkafox/aspia-server-docker). This project continues it for Aspia 3.x.
 - This is not Aspia documentation. For the Router, the Relay, the Host and the Client, read the documentation on [aspia.org](https://aspia.org/documentation.html).
 - The image does not update itself. You choose the version and you update by hand.
 
-The terms in this document:
-
-| Term | Meaning |
-|---|---|
-| Router | The Aspia program that the Hosts and the Clients connect to. It keeps the users and the list of Hosts. |
-| Relay | The Aspia program that carries a session when the Client and the Host cannot connect directly. |
-| Host | The Aspia program on a computer that you want to control. |
-| Client | The Aspia program that you use to connect to a Host and to manage the Router. |
-| server | The machine where you run this image. |
-
 ## Requirements
 
-- A Linux server with an x86_64 (amd64) processor. Aspia publishes no ARM packages for the Router and the Relay, so there is no ARM image.
-- Docker Engine 25.0 or later, with the Docker Compose plugin (the `docker compose` command). Install them with the [official Docker instructions](https://docs.docker.com/engine/install/). The image health check uses an option that needs Docker Engine 25.0.
+- A Linux server with an x86_64 (amd64) processor. There is no ARM image, because Aspia publishes no ARM packages for the server.
+- Docker Engine 25.0 or later, with the Docker Compose plugin (the `docker compose` command). Use the [official Docker instructions](https://docs.docker.com/engine/install/).
 - A public IP address or a DNS name for the server. The Hosts and the Clients must be able to reach it.
 - The ports in the section [Ports](#ports) must be open in your firewall.
 - The Aspia Client and the Aspia Host, version 3.x. Download them from the [Aspia releases](https://github.com/dchapyshev/aspia/releases).
 
-The commands below run as a user who can use Docker. On a default Docker installation this needs `sudo`, or the steps in [Linux post-installation steps for Docker Engine](https://docs.docker.com/engine/install/linux-postinstall/).
+The commands below need a user who can use Docker: `sudo`, or the [post-installation steps](https://docs.docker.com/engine/install/linux-postinstall/).
 
 ## Quick start
 
@@ -47,27 +37,46 @@ The image is published to the GitHub Container Registry as `ghcr.io/<owner>/aspi
     curl -fsSL -o .env https://raw.githubusercontent.com/<owner>/aspia-server-docker/main/.env.example
     ```
 
-2. Open the file `.env` in a text editor. Set the public address of the server and the image. The image must have an exact version tag:
+2. Open the file `.env` in a text editor. The file already contains the line `EXTERNAL_IP=203.0.113.10`. This is only an example address. Replace it with the public address of the server. If you keep it, relayed sessions fail and nothing reports an error. Then set the image. The image must have an exact version tag:
 
     ```shell
+    # .env
     EXTERNAL_IP=203.0.113.10
     ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.0.21
     ```
 
-    `EXTERNAL_IP` is required. It is the address that the Relay gives to the Clients and the Hosts. It can be an IP address or a DNS name. The value `auto` detects the public IP address at every start.
+    `EXTERNAL_IP` is the address that the Relay gives to the Clients and the Hosts. It can be an IP address or a DNS name. The value `auto` detects the public IP address at every start.
 
-3. Download the image and start the container:
+3. Open the ports from the section [Ports](#ports) in the firewall of the server.
+
+4. Download the image and start the container:
 
     ```shell
     docker compose pull
     docker compose up -d
     ```
 
-4. Check that the container is healthy. After a few seconds the status shows `(healthy)`:
+5. Check that the container is healthy. After a few seconds the status shows `(healthy)`:
 
     ```shell
     docker compose ps
     ```
+
+To see the log:
+
+```shell
+docker compose logs aspia-server
+```
+
+The terms in this document:
+
+| Term | Meaning |
+|---|---|
+| Router | The Aspia program that the Hosts and the Clients connect to. It keeps the users and the list of Hosts. |
+| Relay | The Aspia program that carries a session when the Client and the Host cannot connect directly. |
+| Host | The Aspia program on a computer that you want to control. |
+| Client | The Aspia program that you use to connect to a Host and to manage the Router. |
+| server | The machine where you run this image. |
 
 The server keeps its data in the directory `data` next to `docker-compose.yml`:
 
@@ -77,12 +86,6 @@ The server keeps its data in the directory `data` next to `docker-compose.yml`:
 | `./data/database` | `/var/lib/aspia` | The Router database |
 
 Keep this directory. It holds the keys of the Router. If you lose the keys, you must configure every Host again.
-
-To see the log:
-
-```shell
-docker compose logs aspia-server
-```
 
 ## First login
 
@@ -104,15 +107,14 @@ Do not use the key in `relay.pub` for Hosts. That key is only for Relays.
 
 ### Connect with the Client and change the password
 
-On the first start the Router creates the user `admin` with the password `admin`. Change this password right after the first login.
+On the first start the Router creates the user `admin` with the password `admin`. Change this password after the first login.
 
-1. Install the Aspia Client.
-2. Add the Router in the Client. Use the address of your server. The Router accepts Clients on port 8062.
-3. Log in as `admin` with the password `admin`.
-4. Two-factor authentication is mandatory in Aspia 3.x. At the first login the Client asks you to set it up with an authenticator app.
-5. Open the users of the Router and change the password of `admin`.
+1. Install the Aspia Client. At its first start the Client asks for a master password. The password is mandatory and cannot be recovered.
+2. Add the Router: enter the address of your server (the Router accepts Clients on port 8062), set "Access Level" to "Administrator", and log in as `admin` with the password `admin`.
+3. Two-factor authentication is mandatory in Aspia 3.x. At the first login the Client asks you to set it up with an authenticator app.
+4. Open the users of the Router and change the password of `admin`.
 
-The Client documentation describes these steps: [Aspia Client](https://aspia.org/docs/client), section "Connection to a Router" and section "Users". Aspia 3.x has no command and no configuration setting for this password. You can change it only in the Client.
+The Client documentation describes these steps: [Aspia Client](https://aspia.org/docs/client). Aspia 3.x has no command and no configuration setting for this password. You can change it only in the Client.
 
 ### Connect a Host
 
@@ -120,20 +122,22 @@ The Client documentation describes these steps: [Aspia Client](https://aspia.org
 2. In the settings of the Host, open the tab "Router". Enter the address of your server and the public key for Hosts.
 3. The Router accepts Hosts of Aspia 3.x on port 8061.
 
-A Host that connects for the first time appears in the Client in the section "Unapproved hosts". The Host documentation is here: [Aspia Host](https://aspia.org/docs/host), section "Router tab". The approval of Hosts is described in [Aspia Client](https://aspia.org/docs/client), section "Unapproved hosts".
+A Host that connects for the first time appears in the Client in the section "Unapproved hosts". You can connect to it there. Approve the Host to store its settings. See [Aspia Host](https://aspia.org/docs/host) and [Aspia Client](https://aspia.org/docs/client).
 
 ## Ports
 
 Publish every port with the same number on the server and in the container. The Relay gives its own port number to the Clients and the Hosts, so a different port on the server breaks relayed sessions. `docker-compose.yml` already does this.
 
-| Port | Service | Purpose | Open to the internet |
-|---|---|---|---|
-| 8060/tcp | Router | Hosts of Aspia 2.x | Only if you still have Hosts of Aspia 2.x |
-| 8061/tcp | Router | Hosts of Aspia 3.x | Yes |
-| 8062/tcp | Router | Clients: the address book and the management of the Router | Yes, or only to the networks of your users |
-| 8065/udp | Router | Built-in STUN server | Yes |
-| 8070/tcp | Relay | Clients and Hosts in a relayed session | Yes |
-| 8063/tcp | Router | Relays | No. `docker-compose.yml` does not publish it. Open it only to a Relay on another server (see [Running a Relay on a separate host](#running-a-relay-on-a-separate-host)). |
+| Port | Variable | Service | Purpose | Open to the internet |
+|---|---|---|---|---|
+| 8060/tcp | `ASPIA_ROUTER_LEGACY_PORT` | Router | Hosts of Aspia 2.x | Only if you still have Hosts of Aspia 2.x |
+| 8061/tcp | `ASPIA_ROUTER_HOST_PORT` | Router | Hosts of Aspia 3.x | Yes |
+| 8062/tcp | `ASPIA_ROUTER_CLIENT_PORT` | Router | Clients: the address book and the management of the Router | Yes, or only to the networks of your users |
+| 8065/udp | `ASPIA_ROUTER_STUN_PORT` | Router | Built-in STUN server | Yes |
+| 8070/tcp | `ASPIA_RELAY_PEER_PORT` | Relay | Clients and Hosts in a relayed session | Yes. On a Relay-only server this is the only port to open. |
+| 8063/tcp | none | Router | Relays | No. `docker-compose.yml` does not publish it. Open it only to a Relay on another server (see [Running a Relay on a separate host](#running-a-relay-on-a-separate-host)). |
+
+The port numbers are the defaults. A variable changes the port in the configuration file and the published port.
 
 Docker adds its own firewall rules for published ports. Read [Docker and ufw](https://docs.docker.com/engine/network/packet-filtering-firewalls/#docker-and-ufw) if you use `ufw` on the server.
 
@@ -150,37 +154,30 @@ The rules:
 - A variable that is set is written to the configuration file at every start.
 - A variable that is not set does not change the configuration file. Your own changes in `router.conf` and `relay.conf` stay.
 - An empty value counts as not set. For example, `ASPIA_ROUTER_CLIENT_ALLOWED_IPS=` does not clear an existing list. To clear a list, edit `router.conf`.
-- An invalid value stops the container. The log names the variable. Nothing is changed.
-- `docker-compose.yml` takes the port on the server and the port in the container from the same variable. If you change a port variable, the published port changes too.
+- An invalid value stops the start. The container then restarts again and again (status `Restarting`). The log names the variable. Nothing is changed.
 
 | Variable | Default | What it sets |
 |---|---|---|
-| `EXTERNAL_IP` | none, required | The public address that the Relay gives to the Clients and the Hosts (`relay.conf`, `[peer] public_address`). An IP address, a DNS name of at most 64 characters, or `auto`. |
+| `EXTERNAL_IP` | none, required | The public address that the Relay gives to the Clients and the Hosts. An IP address, a DNS name of at most 64 characters, or `auto`. |
 | `ASPIA_RELAY_PUBLIC_ADDRESS` | none | The new name of `EXTERNAL_IP`, with the same effect. If both are set to different values, this one is used. |
-| `ASPIA_RELAY_PEER_PORT` | `8070` | The Relay port for Clients and Hosts (`relay.conf`, `[peer] port`). |
-| `ASPIA_RELAY_IDLE_TIMEOUT` | `5` | Minutes that the Relay keeps an idle connection (`relay.conf`, `[peer] idle_timeout`). |
-| `ASPIA_RELAY_MAX_PEERS` | `100` | The maximum number of Clients and Hosts that the Relay serves at the same time (`relay.conf`, `[peer] max_count`). |
-| `ASPIA_ROUTER_HOST_PORT` | `8061` | The Router port for Hosts of Aspia 3.x (`router.conf`, `[host] port`). |
-| `ASPIA_ROUTER_LEGACY_PORT` | `8060` | The Router port for Hosts of Aspia 2.x (`router.conf`, `[host] legacy_port`). |
-| `ASPIA_ROUTER_CLIENT_PORT` | `8062` | The Router port for Clients (`router.conf`, `[client] port`). |
-| `ASPIA_ROUTER_STUN_ENABLED` | `1` | `1` turns the built-in STUN server on, `0` turns it off (`router.conf`, `[stun] enabled`). |
-| `ASPIA_ROUTER_STUN_PORT` | `8065` | The UDP port of the STUN server (`router.conf`, `[stun] port`). |
-| `ASPIA_ROUTER_CLIENT_ALLOWED_IPS` | empty: all addresses | Addresses and subnets that may connect as Clients, separated by commas, for example `203.0.113.0/24` (`router.conf`, `[client] white_list`). |
-| `ASPIA_ROUTER_HOST_ALLOWED_IPS` | empty: all addresses | Addresses and subnets that may connect as Hosts (`router.conf`, `[host] white_list`). |
-| `ASPIA_ROUTER_RELAY_ALLOWED_IPS` | empty: all addresses | Addresses and subnets that may connect as Relays (`router.conf`, `[relay] white_list`). With `ASPIA_ROLE=all` the list must contain `127.0.0.1`, because the Relay in the same container connects from that address. |
-| `ASPIA_ROLE` | `all` | What the container runs: `all` (Router and Relay), `router` or `relay`. See [Running a Relay on a separate host](#running-a-relay-on-a-separate-host). |
-| `ASPIA_RELAY_ROUTER_ADDRESS` | none | Only for `ASPIA_ROLE=relay`, and required there: the address of the Router (`relay.conf`, `[router] address`). |
-| `ASPIA_RELAY_ROUTER_PORT` | `8063` | Only for `ASPIA_ROLE=relay`: the Router port for Relays (`relay.conf`, `[router] port`). |
-| `ASPIA_RELAY_ROUTER_PUBLIC_KEY` | none | Only for `ASPIA_ROLE=relay`, and required there: the content of the file `relay.pub` of the Router (`relay.conf`, `[router] public_key`). |
+| `ASPIA_RELAY_IDLE_TIMEOUT` | `5` | Minutes that the Relay keeps an idle connection. |
+| `ASPIA_RELAY_MAX_PEERS` | `100` | The maximum number of Clients and Hosts that the Relay serves at the same time. |
+| `ASPIA_ROUTER_STUN_ENABLED` | `1` | `1` turns the built-in STUN server on, `0` turns it off. |
+| `ASPIA_ROUTER_CLIENT_ALLOWED_IPS`, `ASPIA_ROUTER_HOST_ALLOWED_IPS` | empty: all addresses | Addresses and subnets that may connect as Clients or as Hosts, separated by commas, for example `203.0.113.0/24`. |
+| `ASPIA_ROUTER_RELAY_ALLOWED_IPS` | empty: all addresses | Addresses and subnets that may connect as Relays. With `ASPIA_ROLE=all` the list must contain `127.0.0.1`, because the Relay in the same container connects from that address. |
+| `ASPIA_ROLE` | `all` | What the container runs: `all` (Router and Relay), `router` or `relay`. The compose files set it. Set it yourself only for `docker run --env-file` or Podman. See [Running a Relay on a separate host](#running-a-relay-on-a-separate-host). |
+| `ASPIA_RELAY_ROUTER_ADDRESS` | none | Only for `ASPIA_ROLE=relay`, and required there: the address of the Router. |
+| `ASPIA_RELAY_ROUTER_PORT` | `8063` | Only for `ASPIA_ROLE=relay`: the Router port for Relays. |
+| `ASPIA_RELAY_ROUTER_PUBLIC_KEY` | none | Only for `ASPIA_ROLE=relay`, and required there: the content of the file `relay.pub` of the Router. |
 | `ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE` | none | Only for `ASPIA_ROLE=relay`: the path of a file with that key, instead of the key itself. |
 | `PUID`, `PGID` | `0` (root) | Run the Router and the Relay as this user ID and group ID. Set both or neither. The container changes the owner of `./data/config` and `./data/database` at every start. |
 | `TZ` | `UTC` | The time zone of the timestamps in the log, for example `Europe/Berlin`. |
 | `ASPIA_LOG_LEVEL` | `1` | The minimum log level: `0` TRACE, `1` INFO, `2` WARNING, `3` ERROR, `4` FATAL. |
 | `ASPIA_IMAGE` | `aspia-server:3.0.21` | The image that `docker compose` runs. The default is the name of a local build. |
 
-Some settings have no variable: the Router port for Relays (`router.conf`, `[relay] port`) and the listen addresses (`listen_interface`). Edit `router.conf` or `relay.conf` for them. The container never overwrites such a change. There is also no variable for the password of `admin` (see [First login](#first-login)).
+Some settings have no variable: the Router port for Relays (`[relay] port` in `router.conf`) and the listen addresses (`listen_interface`). Edit `router.conf` or `relay.conf` for them. The container never overwrites such a change. There is also no variable for the password of `admin` (see [First login](#first-login)).
 
-`ASPIA_ROUTER_CONFIG_FILE`, `ASPIA_ROUTER_DB_FILE` and `ASPIA_RELAY_CONFIG_FILE` are variables of the Aspia programs. This image does not support them yet. If one of them is set, the container does not start.
+`ASPIA_ROUTER_CONFIG_FILE`, `ASPIA_ROUTER_DB_FILE` and `ASPIA_RELAY_CONFIG_FILE` are variables of the Aspia programs. The compose files do not pass them to the container, so they have no effect in `.env`. This image does not support them yet. If you set one of them in the container yourself (`docker run` or Podman), the container does not start.
 
 ## Updating
 
@@ -188,60 +185,39 @@ The image never updates itself. You update by hand when you decide to.
 
 1. Read the [Aspia changelog](https://aspia.org/changelog).
 2. Make a backup (see [Backup and restore](#backup-and-restore)). A new version can convert the database, and an older version may not read it after that.
-3. In `.env`, the line with the image looks like this:
+3. In `.env`, replace the version in the tag of `ASPIA_IMAGE` with the new version.
+4. Download the image and create the container again, then check the status and the log, as in steps 4 and 5 of the [Quick start](#quick-start).
 
-    ```shell
-    ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.0.21
-    ```
-
-    Replace the version in the tag with the new version.
-
-4. Download the image and create the container again:
-
-    ```shell
-    docker compose pull
-    docker compose up -d
-    ```
-
-5. Check the status and the log:
-
-    ```shell
-    docker compose ps
-    docker compose logs aspia-server
-    ```
-
-To go back, put the old tag into `.env` and run `docker compose up -d`. If the new version has converted the data, restore the backup too.
+To return to the old version, put the old tag into `.env` and run `docker compose up -d`. If the new version has converted the data, restore the backup too.
 
 Do not run `aspia_router --check-update` or `aspia_router --install-update` in the container. An update that is installed in the container is lost when the container is created again.
 
+If the Router runs from `compose.router.yml`, the service and the container are named `aspia-router` instead of `aspia-server`. Use that name in the commands of this document (see [Running a Relay on a separate host](#running-a-relay-on-a-separate-host)).
+
 ### Tags and digests
 
-| Tag | Changes? |
-|---|---|
-| `3.0.21` | Yes. The image is built again every week with the Debian security updates. The tag then points to the new build. |
-| `3.0.21-YYYYMMDD`, for example `3.0.21-20261005` | No. Each weekly build gets its own dated tag. |
+The tag `3.0.21` moves with every publish: a push to `main` that changes the image, a manual run, and the weekly rebuild with the Debian security updates. The tag `3.0.21-YYYYMMDD`, for example `3.0.21-20261005`, never moves. Only the weekly rebuild, or a manual run with a dated tag, creates it. Short tags such as `3.0` move too. Do not use them on a server. [docs/ci.md](docs/ci.md) has the details and shows how to verify the signature of the image.
 
-The image also has short tags without the full version, for example `3.0`. Do not use them on a server: they change on the next pull.
-
-For an image that never changes, use its digest. Show the digest of the image that you have downloaded:
+For an image that never changes, use its digest. Show the digests of the image that you have downloaded:
 
 ```shell
-docker image inspect --format '{{index .RepoDigests 0}}' ghcr.io/<owner>/aspia-server:3.0.21
+docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' ghcr.io/<owner>/aspia-server:3.0.21
 ```
 
-The command prints a reference such as `ghcr.io/<owner>/aspia-server@sha256:...`. Put this reference into `.env`:
+If you pulled the image from both registries, the list also has a line that starts with `docker.io`. Use the line that starts with `ghcr.io`. It looks like `ghcr.io/<owner>/aspia-server@sha256:...`. Put it into `.env`:
 
 ```shell
+# .env
 ASPIA_IMAGE=ghcr.io/<owner>/aspia-server@sha256:2ff06f77e1e364bf03245bc5453646a62313a4b4dba0ae086c89446d4558d4a0
 ```
 
-The digest in this example is only an example. The summary of each publish run on GitHub also shows the digest. [docs/ci.md](docs/ci.md) shows how to verify the signature of the image.
+The digest in this example is only an example. The summary of each publish run on GitHub shows it too.
 
 ## Upgrading from 2.x
 
-This section is for a server that runs `paprikkafox/aspia-server:2.7.0` with a `docker-compose.yml` and a `data` directory. The image 3.0.21 keeps your users, Hosts and keys.
+This section is for a server that runs the old image `paprikkafox/aspia-server` (version 2.7.0, usually with the tag `latest`) with a `docker-compose.yml` and a `data` directory. The image 3.0.21 keeps your users, Hosts and keys. The official [migration guide](https://aspia.org/docs/migration) covers the order of the updates, the Console, the address books and two-factor authentication.
 
-1. Go to the directory of the old installation and stop the container:
+1. Go to the directory of the old installation. Write down `EXTERNAL_IP` from the old `docker-compose.yml`: the old file sets it in the `environment:` list. Then stop the container:
 
     ```shell
     docker compose down
@@ -251,102 +227,62 @@ This section is for a server that runs `paprikkafox/aspia-server:2.7.0` with a `
 
     ```shell
     sudo tar -czf aspia-2.7.0-backup.tar.gz data docker-compose.yml
+    sudo chmod 600 aspia-2.7.0-backup.tar.gz
     ```
 
-3. Download the new files. The new `docker-compose.yml` replaces the old one:
+3. Download the new files. The new `docker-compose.yml` replaces the old one, which is now in the backup:
 
     ```shell
     curl -fsSLO https://raw.githubusercontent.com/<owner>/aspia-server-docker/main/docker-compose.yml
     curl -fsSL -o .env https://raw.githubusercontent.com/<owner>/aspia-server-docker/main/.env.example
     ```
 
-4. In `.env`, set `EXTERNAL_IP` to the value from your old `docker-compose.yml`, and set the image:
-
-    ```shell
-    EXTERNAL_IP=203.0.113.10
-    ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.0.21
-    ```
-
-5. Start the new version:
-
-    ```shell
-    docker compose pull
-    docker compose up -d
-    docker compose logs aspia-server
-    ```
-
-6. Open the new ports in your firewall: 8061/tcp, 8062/tcp and 8065/udp. Keep 8060/tcp open for the Hosts of Aspia 2.x.
+4. Do steps 2 to 5 of the [Quick start](#quick-start). In `.env`, use the `EXTERNAL_IP` from step 1. Keep 8060/tcp open for the Hosts of Aspia 2.x.
 
 What happens on the first start:
 
 - The container copies `router.json`, `relay.json` and `router.db3` to files with the suffix `.pre-3.0.21-<time>`, next to the originals.
 - Aspia converts `router.json` to `router.conf` and `relay.json` to `relay.conf`. It renames the old files to `router.json.bak` and `relay.json.bak`.
 - Aspia upgrades the database `router.db3`. Aspia 2.7.0 may not read it after that.
-- The Router keeps its key. Hosts that use the key from `router.pub` keep working. The container copies `router.pub` to `host.pub` and `relay.pub`, the file names of Aspia 3.x. The log shows the key as `Public key for hosts`. It is the same key as in `router.pub`.
+- The Router keeps its key, so Hosts that use the key from `router.pub` keep working. The container copies `router.pub` to `host.pub` and `relay.pub`, the file names of Aspia 3.x.
 - Two settings are not carried over: the administrator allow-list (`AdminWhiteList`; Aspia 3.x has no such setting) and the Relay statistics settings.
+- Only `EXTERNAL_IP`, `ASPIA_ROUTER_LEGACY_PORT` and the three `*_ALLOWED_IPS` variables take effect on the first start. All other variables take effect from the second start. Run `docker compose restart` after the first start.
 
-Also read the official [migration guide](https://aspia.org/docs/migration). It says:
-
-- Hosts of version 2.6.0 and later keep working. They connect on port 8060. You can update them later.
-- The recommended order is: Router, then Relay, then Clients and Hosts.
-- The Console is removed. The Client of Aspia 3.x manages the Router, the address book and the groups of computers. Old address books (`.aab` files) are imported by hand in the Client.
-- Two-factor authentication is mandatory. Every user sets it up at the first connection.
-
-To go back to 2.7.0, restore the backup from step 2 and start the old version:
-
-```shell
-docker compose down
-sudo mv data data.3x
-sudo tar -xzf aspia-2.7.0-backup.tar.gz
-docker compose up -d
-```
+To return to 2.7.0, stop the container, restore the backup from step 2 as in [Backup and restore](#backup-and-restore), and start the old version. The backup contains the old `docker-compose.yml`.
 
 ## Backup and restore
 
 The directory `data` holds everything: the configuration, the keys and the database. Stop the container before the backup, so that the database files are complete.
 
-The files in `data` belong to root (or to `PUID`, if you set it), so the commands use `sudo`.
-
-Back up:
+The files in `data` belong to root (or to `PUID`, if you set it), so the commands use `sudo`. The archive contains private keys. The command `umask 077` makes the archive readable only by you:
 
 ```shell
 docker compose stop
-sudo tar -czf aspia-backup-$(date +%Y%m%d-%H%M%S).tar.gz data .env docker-compose.yml
+(umask 077; sudo tar -czf aspia-backup-$(date +%Y%m%d-%H%M%S).tar.gz data .env docker-compose.yml)
 docker compose start
 ```
 
-Restore. Use the name of your backup file:
+If you use `compose.router.yml`, add it to the list of files. Restore. Use the name of your backup file:
 
 ```shell
 docker compose down
-sudo mv data data.old
+sudo mv data data.old-$(date +%Y%m%d-%H%M%S)
 sudo tar -xzf aspia-backup-20261002-114739.tar.gz
 docker compose up -d
 ```
 
-Store the backup on another machine. It contains the private keys of the Router.
+Store the backup on another machine.
 
 ## Running a Relay on a separate host
 
-The same image can run the Router alone (`ASPIA_ROLE=router`) or a Relay alone (`ASPIA_ROLE=relay`). A Relay on another server can be closer to a group of users. It also takes the relayed traffic away from the server of the Router. One Router accepts at most five Relays at the same time.
-
-Without `ASPIA_ROLE` nothing changes: the default `all` runs the Router and the Relay in one container.
-
-Which port must be open, and from where:
-
-| Port | On | Reachable from |
-|---|---|---|
-| 8060/tcp, 8061/tcp | the Router server | Hosts (2.x on 8060, 3.x on 8061) |
-| 8062/tcp, 8065/udp | the Router server | Clients, and Hosts for STUN |
-| 8063/tcp | the Router server | only the Relay servers |
-| 8070/tcp | each Relay server | the Clients and the Hosts that use this Relay |
-
-```
-Clients, Hosts --8060-8062/tcp, 8065/udp--> Router server
-Clients, Hosts --8070/tcp-----------------> Relay server --8063/tcp (outgoing)--> Router server
-```
+The same image can run the Router alone (`ASPIA_ROLE=router`) or a Relay alone (`ASPIA_ROLE=relay`). A Relay on another server carries the relayed traffic instead of the Router server. One Router accepts at most five Relays at the same time. Without `ASPIA_ROLE` the default `all` runs the Router and the Relay in one container. The [Ports](#ports) table shows which port each server needs.
 
 ### On the Router server
+
+Choose one setup first:
+
+- Router only: use `compose.router.yml`. Do steps 1 to 5.
+- Router and a local Relay, plus Relays on other servers: keep `docker-compose.yml`. Add `"8063:8063"` to its `ports:` list. Skip steps 1 and 2, and use `aspia-server` as the service name. In step 4 the list must also contain `127.0.0.1`. Then run `docker compose up -d`.
 
 1. Download `compose.router.yml` into the directory of the server. It uses the same `data` directory and the same `.env` as `docker-compose.yml`. The keys stay the same, so the Hosts and the Clients need no change.
 
@@ -354,36 +290,38 @@ Clients, Hosts --8070/tcp-----------------> Relay server --8063/tcp (outgoing)--
     curl -fsSLO https://raw.githubusercontent.com/<owner>/aspia-server-docker/main/compose.router.yml
     ```
 
-2. Stop the combined container and start the Router alone:
+2. Stop the combined container. Then make `compose.router.yml` the file that `docker compose` uses in this directory, and start the Router alone:
 
     ```shell
     docker compose down
-    docker compose -f compose.router.yml up -d
+    echo 'COMPOSE_FILE=compose.router.yml' >> .env
+    docker compose up -d
     ```
+
+    From now on the service and the container are named `aspia-router`. Plain `docker compose` commands act on `compose.router.yml`. Add this file to your backup.
 
 3. Get the public key for Relays. The Router prints it in the log as `Public key for relays`. It is also in the file `./data/config/relay.pub`.
 
     ```shell
-    docker compose -f compose.router.yml logs aspia-router | grep 'Public key for relays'
+    docker compose logs aspia-router | grep 'Public key for relays'
     ```
 
-    This is not the key for Hosts. After an upgrade from 2.x both keys are the old `router.pub`.
+    On a new installation this key differs from the key for Hosts. After an upgrade from 2.x both keys are the old `router.pub`.
 
 4. Allow only your Relays. In `.env`, set the addresses of the Relays as the Router sees them. A Relay behind NAT has the public address of its NAT. Then apply the change:
 
     ```shell
+    # .env
     ASPIA_ROUTER_RELAY_ALLOWED_IPS=203.0.113.20
     ```
 
     ```shell
-    docker compose -f compose.router.yml up -d
+    docker compose up -d
     ```
 
     Without this variable the Router accepts a Relay from any address that can reach port 8063 and has the key from step 3. The log of the Router shows a `WARNING` about this until you set the variable.
 
 5. In the firewall, allow 8063/tcp only from the Relay servers.
-
-To keep a Relay on the Router server too, keep `docker-compose.yml` instead of `compose.router.yml`. Add `"8063:8063"` to its `ports:` list. Then `ASPIA_ROUTER_RELAY_ALLOWED_IPS` must also contain `127.0.0.1`.
 
 ### On each Relay server
 
@@ -398,6 +336,7 @@ To keep a Relay on the Router server too, keep `docker-compose.yml` instead of `
 2. Create a file `.env` in this directory with these lines. Use the address of your Router, the public address of this Relay server and the key from step 3 above:
 
     ```shell
+    # .env
     ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.0.21
     EXTERNAL_IP=203.0.113.20
     ASPIA_RELAY_ROUTER_ADDRESS=203.0.113.10
@@ -413,9 +352,9 @@ To keep a Relay on the Router server too, keep `docker-compose.yml` instead of `
     docker compose -f compose.relay.yml up -d
     ```
 
-    If a required setting is missing, the container stops with a message that names it.
+    If a required setting is missing, the start fails with a message that names it. The container then restarts again and again.
 
-4. In the firewall, allow 8070/tcp from the Clients and the Hosts. The Relay connects out to port 8063/tcp of the Router.
+4. In the firewall, allow 8070/tcp from the Clients and the Hosts.
 
 ### Check that the Relay is registered
 
@@ -431,7 +370,7 @@ The status is `(healthy)` when the Relay listens on 8070 and is connected to the
 On the Router server:
 
 ```shell
-docker compose -f compose.router.yml logs aspia-router | grep -E 'New relay session|Received key pool'
+docker compose logs aspia-router | grep -E 'New relay session|Received key pool'
 ```
 
 The log shows the address of the Relay, for example `New relay session: "203.0.113.20"`.
@@ -443,14 +382,14 @@ If the Relay does not connect, it tries again every 15 seconds. Its log shows th
 | `ACCESS_DENIED` | Wrong key. Use `relay.pub` of the Router, not `host.pub`. |
 | `SPECIFIED_HOST_NOT_FOUND` | The DNS name of the Router does not resolve. |
 | `CONNECTION_REFUSED` | Nothing listens on that address and port. Check that port 8063 is published on the Router server. |
-| `SOCKET_TIMEOUT`, after 30 seconds | A firewall drops the packets. |
-| `REMOTE_HOST_CLOSED`, right after the connection | The Router refused the Relay: its address is not in `ASPIA_ROUTER_RELAY_ALLOWED_IPS`, or five Relays are already connected. |
+| `SOCKET_TIMEOUT` | A firewall drops the packets. The message comes after 30 seconds. |
+| `REMOTE_HOST_CLOSED` | The Router refused the Relay. The message comes immediately after the connection. The address of the Relay is not in `ASPIA_ROUTER_RELAY_ALLOWED_IPS`, or five Relays are already connected. |
 
-A connected Relay can still be unused. If the Router does not accept the public address of the Relay, only the Router log shows it: `Ignoring key pool with invalid peer endpoint`. The container checks the format of the address before it starts, so this should not happen with a valid `EXTERNAL_IP`.
+A connected Relay can still stay unused. If the Router does not accept the public address of the Relay, only the Router log shows it: `Ignoring key pool with invalid peer endpoint`.
 
 ## Podman
 
-To run the server under Podman as a systemd service (Quadlet), read [podman/README.md](podman/README.md). It needs Podman 4.5 or later. It covers installation as root and as a normal user, the network, the firewall, updating, and a Relay on its own server.
+To run the server under Podman as a systemd service (Quadlet), read [podman/README.md](podman/README.md).
 
 ## Building locally
 
@@ -462,51 +401,44 @@ cd aspia-server-docker
 cp .env.example .env
 ```
 
-Set `EXTERNAL_IP` in `.env`, and leave `ASPIA_IMAGE` unset. Then build and start:
+Set `EXTERNAL_IP` in `.env`, and leave `ASPIA_IMAGE` unset. Then build and start. The image gets the name `aspia-server:3.0.21`:
 
 ```shell
 docker compose up -d --build
 ```
 
-The image gets the name `aspia-server:3.0.21`. To build the image without starting it:
-
-```shell
-docker build -t aspia-server:3.0.21 .
-```
-
-To update a local build, get the new version of the repository and build again:
-
-```shell
-git pull
-docker compose up -d --build
-```
-
-Two things to know about `docker-compose.yml` in a copy of the repository:
-
-- With `ASPIA_IMAGE` set, do not add `--build`. Docker Compose then builds the image locally and gives it the name of the published image.
-- If `docker compose pull` fails, for example because of a wrong image name, `docker compose up -d` builds the image locally under that name. Check the output of `docker compose pull` for errors.
+To update a local build, run `git pull` and then the same command again. Do not use `--build` when `ASPIA_IMAGE` is set, and check the output of `docker compose pull` for errors: if the pull fails, `docker compose up -d` builds the image locally under the name of the published image.
 
 The tests and the CI are described in [docs/ci.md](docs/ci.md).
 
 ## Troubleshooting
 
+If the Router runs from `compose.router.yml`, use `aspia-router` instead of `aspia-server` in the commands.
+
 | Symptom | What to do |
 |---|---|
-| The container stops at once. The log says `ERROR: ASPIA_RELAY_PUBLIC_ADDRESS is not set`. | Set `EXTERNAL_IP` in `.env`. Then run `docker compose up -d`. |
-| The container stops at once. The log names another variable. | Correct the value of that variable in `.env`. Then run `docker compose up -d`. |
+| The container restarts again and again (status `Restarting`). The log says `ERROR: ASPIA_RELAY_PUBLIC_ADDRESS is not set`. | Set `EXTERNAL_IP` in `.env`. Then run `docker compose up -d`. |
+| The container restarts again and again. The log names another variable. | Correct the value of that variable in `.env`. Then run `docker compose up -d`. |
 | `docker compose pull` says `no matching manifest for linux/arm64`. | The server has an ARM processor. The image exists only for x86_64. |
-| `EXTERNAL_IP=auto` stops the container with an error about the detection. | The server cannot reach the internet services that report its address. Set the address by hand. |
-| The log shows `sd_login_monitor_new failed` or `Unable to install signal handler for SIGKILL`. | Nothing. These lines are normal in a container. |
+| `EXTERNAL_IP=auto` stops the start with an error about the detection. | The server cannot reach the internet services that report its address. Set the address by hand. |
+| The log shows `sd_login_monitor_new failed` or `Unable to install signal handler for SIGKILL`. | No action needed. These lines are normal in a container. |
 | The status is `(unhealthy)`. | Read the log: `docker compose logs aspia-server`. Healthy means that the Router listens on its ports and the Relay is connected to the Router. |
 | A Host does not connect. | Check that port 8061/tcp (8060/tcp for Aspia 2.x) is open. Check that the Host uses the key from `host.pub`, not from `relay.pub`. |
 | The Client does not connect to the Router. | Check that port 8062/tcp is open. If `ASPIA_ROUTER_CLIENT_ALLOWED_IPS` is set, check that it contains the address of the Client. |
-| Sessions work only in the local network, or relayed sessions fail. | Check that port 8070/tcp is open and that `EXTERNAL_IP` is the public address of the server. The port on the server must be the same as in the container. |
-| A user lost the authenticator app. | Reset the two-factor authentication of that user, then restart: `docker compose exec aspia-server aspia_router --reset-otp admin` and `docker compose restart`. Replace `admin` with the user name. |
+| Sessions work only in the local network, or relayed sessions fail. | Check that port 8070/tcp is open and that `EXTERNAL_IP` is the public address of the server, not the example address. The port on the server must be the same as in the container. |
+| A user lost the authenticator app. | Reset the two-factor authentication of that user (see below). |
 | You forgot the password of `admin`. | Another administrator can change it in the Client. Aspia 3.x has no command to set a password. |
 | The Aspia 2.x Console does not work with the new Router. | The Console is removed in Aspia 3.x. Use the Client of Aspia 3.x. |
 | The time in the log is wrong. | Set `TZ` in `.env`, for example `TZ=Europe/Berlin`. Then run `docker compose up -d`. |
-| `Permission denied` when you read files in `data`. | The files belong to root. Use `sudo`. |
+| `Permission denied` when you read files in `data`. | The files belong to root (or to `PUID`). Use `sudo`. |
 | A Relay on another server does not register. | See [Check that the Relay is registered](#check-that-the-relay-is-registered). |
+
+To reset the two-factor authentication of a user, run these commands. Replace `admin` with the user name:
+
+```shell
+docker compose exec aspia-server aspia_router --reset-otp admin
+docker compose restart
+```
 
 ## Licence and credits
 

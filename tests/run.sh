@@ -581,7 +581,7 @@ scenario_upgrade() {
         || fail "the fixture host is missing after the upgrade"
     ok "database after the upgrade: integrity ok, user admin and the fixture host present"
 
-    # The rollback documented in README.md: restore the backups, remove the 3.x files, run 2.7.0.
+    # Roll back: copy the *.pre-3.0.21-* backups over the 3.x-converted files, remove the 3.x files, run 2.7.0.
     # shellcheck disable=SC2016 # expanded by sh inside the helper container
     helper_rw "${cfg}" "${db}" sh -ec '
         for f in /etc/aspia/router.json /etc/aspia/relay.json /var/lib/aspia/router.db3; do

@@ -28,7 +28,7 @@ comment in exactly this form (the full 40-character hash):
 <!-- canonical: README.md 0123456789abcdef0123456789abcdef01234567 -->
 ```
 
-Take the hash of the last commit that changed `README.md`:
+Take the hash of the last commit that changed the text of `README.md`:
 
 ```shell
 git log -1 --format=%H -- README.md
@@ -41,7 +41,16 @@ a translation is missing, compare that revision with the current one:
 git diff 0123456789abcdef0123456789abcdef01234567 HEAD -- README.md
 ```
 
-When you carry the changes over, update the hash in the first line in the same commit.
+To update a translation: carry every change over, in the same places, and set the new hash in the
+first line in the same commit. If you cannot update a translation, leave the old hash: readers and
+maintainers can then see that it is behind.
+
+Two cases:
+
+- A commit that only raises the version (`scripts/versions.sh bump` rewrites `README.md` and every
+  `docs/README.*.md` together) needs no change of the hash.
+- After a rebase or an amend the commit hashes change. Take the hash again, or it points to a
+  commit that no longer exists.
 
 ## How to add a language
 
@@ -85,11 +94,12 @@ When you carry the changes over, update the hash in the first line in the same c
 - Anchors: the headings are translated, so the anchors change. Links inside the translation point
   to the translated headings. Links from other files (for example `podman/README.md`) point to the
   canonical `README.md` and are not changed.
-- Relative links: the translation lives in `docs/`, so links to files in the repository root get
-  `../` (`LICENSE` becomes `../LICENSE`, `podman/README.md` becomes `../podman/README.md`), and
-  links to `docs/` lose it (`docs/ci.md` becomes `ci.md`). The badge links
-  (`../../actions/...`) are relative to the repository page on GitHub; in `docs/` they need one more
-  `../`.
+- Relative links: the translation lives in `docs/`, so:
+  - links to files in the repository root get `../` (`LICENSE` becomes `../LICENSE`,
+    `podman/README.md` becomes `../podman/README.md`);
+  - links to files in `docs/` lose `docs/` (`docs/ci.md` becomes `ci.md`);
+  - the badge links (`../../actions/...`) are relative to the repository page on GitHub, so they
+    need one more `../`.
 - Example values stay as they are: addresses from `203.0.113.0/24`, the example key and digest,
   the version tag. `scripts/versions.sh check` (run by `tests/lint.sh` and CI) also checks the image
   tags in `docs/README.*.md`, and `scripts/versions.sh bump` updates them.
@@ -99,10 +109,13 @@ When you carry the changes over, update the hash in the first line in the same c
 Before you commit a translation:
 
 ```shell
-# headings, code fences and table rows: the numbers must be the same
+# headings (outside code fences, where "#" starts a comment), code fences and table rows:
+# the numbers must be the same
 for f in README.md docs/README.ru.md; do
-  printf '%s: headings %s, fences %s, table rows %s\n' "$f" \
-    "$(grep -c '^#' "$f")" "$(grep -c '^ *```' "$f")" "$(grep -c '^|' "$f")"
+  awk -v f="$f" '/^ *```/ { fences++; infence = !infence; next }
+       !infence && /^#/ { headings++ }
+       /^\|/ { rows++ }
+       END { printf "%s: headings %d, fences %d, table rows %d\n", f, headings, fences, rows }' "$f"
 done
 
 # the image tags still match versions.env
@@ -111,13 +124,3 @@ scripts/versions.sh check
 
 Also check by eye that the code blocks are identical to the canonical ones except for the
 comments, and that every relative link opens on GitHub.
-
-## Updating a translation
-
-1. Read the first line of the translation to find its canonical revision.
-2. Run `git diff <that hash> HEAD -- README.md`.
-3. Carry every change over, in the same places.
-4. Update the hash in the first line.
-
-If you cannot update a translation, leave the old hash. Readers and maintainers can then see that
-it is behind.

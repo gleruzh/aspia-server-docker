@@ -23,8 +23,8 @@ GitHub Container Registry, Debian, ufw, STUN, NAT, DNS, CI, the content of code,
 of people and accounts, and log messages quoted from the container.
 
 Inflection: in languages with grammatical cases, the five component names are not declined when
-that would change their spelling. Use a noun before them where needed (Russian: "к Router",
-"на сервере Router", "у Host", "в Client").
+that would change their spelling. Put a noun before them, and decline the noun (Russian: "к серверу
+Router", "на сервере Router", "подключение к Router", "на компьютере с Host", "в программе Client").
 
 ## Terms
 
@@ -40,11 +40,12 @@ that would change their spelling. Use a noun before them where needed (Russian: 
 | dated tag | тег с датой | |
 | digest | дайджест | |
 | pin (to a version or digest) | закрепить | "pin by digest" = "закрепить по дайджесту". |
-| pull (an image) | загрузить | The command stays `docker compose pull`. |
+| download (a file, for example with `curl`) | скачать | Same word as for an image. |
+| pull (an image) | скачать | Same word as "download": "скачать образ". The command stays `docker compose pull`. |
 | publish (an image) | опубликовать | |
 | publish (a port) | опубликовать | "a published port" = "опубликованный порт". |
 | port | порт | |
-| open to the internet | открыть в интернет | |
+| open to the internet | открыть для доступа из интернета | Table header: "Открыт для доступа из интернета". |
 | firewall | межсетевой экран | Not "файрвол" or "брандмауэр". |
 | allow-list | список разрешённых адресов | Matches the `*_ALLOWED_IPS` variables. |
 | volume | том | A Docker or Podman volume. |

@@ -243,23 +243,34 @@ Decisions on earlier items:
 
 New:
 
-- **Language switcher link.** `README.md` links `docs/README.ru.md`, which does not exist until the Russian
-  translation is committed. Do not merge PR 6 without it.
 - **`podman/README.md` is English only.** Translating it too would double the work for every change; decide
   whether translations cover it.
 - **Download URLs point at `main`.** The quick start, the 2.x upgrade and the Relay steps download the compose
   files from `raw.githubusercontent.com/<owner>/aspia-server-docker/main/...`. A compose file on `main` can be
   newer than the image tag a user pins. Repository release tags (for example `v3.0.21-1`) would let the README
   pin the files as well as the image.
-- **Published image and `ASPIA_ROLE`.** The image published before PR 5 is merged has no roles. The Relay
-  steps in the README were run with a local build (`aspia-server:3.0.21` from this branch), not with a pulled
-  image; run them once with the published image after PR 5's publish.
 - **Badges in translations.** The badge links are relative (`../../actions/...`); a translation in `docs/`
   needs one more `../`. Check that both render on GitHub, and on Docker Hub (where the description sync
   rewrites relative links).
 - **`docs/README.*.md` and `scripts/versions.sh`.** Already covered: `pinned_files` takes every `*.md` outside
   `docs/dev/`, so a translation's image tags are checked and bumped like the README's. Nothing to do; noted so
   nobody adds it twice.
-- **Not verified with a GUI.** The README steps for the Client (adding the Router, 2FA enrolment, changing the
-  password, approving a Host) and for the Host (Router tab) come from aspia.org and were not run here. Only the
-  server side was checked: the key in the log and in `host.pub`, and `aspia_router --reset-otp`.
+- **Not verified with a GUI.** The Client and Host steps in the README come from aspia.org and were not run;
+  see notes section 20 for what was and was not checked.
+- **Repository release tag for the compose files.** README downloads `docker-compose.yml` and `.env.example`
+  from `main`. A release tag of the repository (for example `v3.0.21-1`) per image version would let the README
+  pin the files as well as the image. Covered above in "Download URLs point at `main`"; the decision is the owner's.
+- **The example `EXTERNAL_IP` in `.env.example`.** `203.0.113.10` (a documentation address) looks like a real
+  value to readers, and the container then starts with a wrong public address. Decision for the owner: comment
+  the line out (the container then stops with a clear error until it is set) or use `auto`.
+- **One name for the public address.** `EXTERNAL_IP` and `ASPIA_RELAY_PUBLIC_ADDRESS` mean the same; both are
+  documented. Pick one for the README and the compose files, keep the other as a silent alias.
+- **Clearing a list from the environment.** An empty `ASPIA_ROUTER_*_ALLOWED_IPS` counts as unset, so the file
+  value stays. There is no way to say "empty list" through the environment; a special value (for example `none`)
+  would be needed.
+- **Lint check for translation hashes.** `git merge-base --is-ancestor <hash> HEAD`, for the hash in the first
+  line of every `docs/README.*.md`, would catch a hash lost in a rebase or an amend (see TRANSLATING.md). Not
+  implemented.
+- **The Docker Hub description is a separate file.** `docs/dockerhub.md` (short, because Docker Hub cuts a
+  description at 25,000 bytes) is not generated from `README.md`. Keep its tags, ports and credits in sync by hand.
+  `scripts/versions.sh check` already covers its image tag.

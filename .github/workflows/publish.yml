@@ -323,7 +323,7 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
   dockerhub-description:
-    name: Docker Hub description from README.md
+    name: Docker Hub description from docs/dockerhub.md
     needs: [prepare, publish]
     if: needs.prepare.outputs.dockerhub == 'true'
     runs-on: ubuntu-24.04
@@ -348,5 +348,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ steps.repo.outputs.repository }}
           short-description: Aspia Router and Aspia Relay in one container (linux/amd64)
-          readme-filepath: ./README.md
+          # A short file, not README.md: Docker Hub cuts a description at 25,000 bytes and the action
+          # truncates without an error. Links in it are written relative to the repository root.
+          readme-filepath: ./docs/dockerhub.md
           enable-url-completion: true

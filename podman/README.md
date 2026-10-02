@@ -65,8 +65,8 @@ sudo podman logs aspia-server                # the Router's public key for hosts
 sudo podman exec aspia-server cat /etc/aspia/host.pub   # the same key, any time
 ```
 
-Stop with `sudo systemctl stop aspia-server.service`. The first start prints the initial administrator login
-(`admin`/`admin`): change it in the Client (see the main README, [First login](../README.md#first-login)).
+Stop with `sudo systemctl stop aspia-server.service`. For the first login (the administrator account and the public
+key for Hosts) see [First login](../README.md#first-login) in the main README.
 
 ## 3. Install rootless (a normal user)
 
