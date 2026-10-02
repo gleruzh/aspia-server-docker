@@ -175,7 +175,7 @@ Candidates from the PR 3 task that were deliberately left out, with the reason:
 - **Under PUID/PGID, DAC_OVERRIDE is needed only by the health check** (root reads the 0600 config of PUID). It could
   run through `setpriv` as PUID instead. Root on volumes of another uid still needs DAC_OVERRIDE.
 - **Ports below 1024 under Docker with host networking** need `--cap-add NET_BIND_SERVICE` (the compose files
-  use a bridge network, where Docker allows them; the Quadlet units carry it). The README says so; nothing checks it.
+  use a bridge network, where Docker allows them; the Quadlet units do not add it either). The README says so; nothing checks it.
 
 ## From the PR 1 review (codex, agy and four cleanup reviewers)
 

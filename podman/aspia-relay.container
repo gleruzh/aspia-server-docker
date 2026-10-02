@@ -29,9 +29,9 @@ Volume=aspia-relay-config.volume:/etc/aspia
 # uncomment this line, and set ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE=/run/aspia/router-relay.pub.
 #Volume=/etc/aspia-relay/router-relay.pub:/run/aspia/router-relay.pub:ro,Z
 
-# Least privilege (README "Security settings"); NET_BIND_SERVICE: Podman keeps ports < 1024 privileged.
+# Least privilege, as in the compose files (README "Security settings").
 DropCapability=ALL
-AddCapability=CHOWN DAC_OVERRIDE SETUID SETGID KILL NET_BIND_SERVICE
+AddCapability=CHOWN DAC_OVERRIDE SETUID SETGID KILL
 NoNewPrivileges=true
 ReadOnly=true
 # PidsLimit= needs Podman 4.7; --read-only-tmpfs=false: no tmpfs on /tmp, /run (as in compose).

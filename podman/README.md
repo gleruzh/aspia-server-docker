@@ -163,6 +163,7 @@ written to the configuration file on every start, an unset one leaves the file a
 
 Podman reads this file itself, not systemd: one `VAR=value` per line, no quotes, no trailing comments.
 A changed port variable needs the matching `PublishPort=` line (see the comments in the unit).
+The default ports are all above 1024; for a port below 1024 also add `AddCapability=NET_BIND_SERVICE` to the unit.
 
 ## 7. Firewall
 

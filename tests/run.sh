@@ -1335,15 +1335,15 @@ scenario_compose_hardening() {
     [[ "${out}" == "${expected}"$'\n'"${expected}"$'\n'"${expected}" ]] || fail "compose files: ${out}, expected ${expected} three times"
     ok "docker-compose.yml, compose.router.yml, compose.relay.yml: ${expected}"
 
-    # The Quadlet units: the same set plus NET_BIND_SERVICE (Podman keeps ports < 1024 privileged).
+    # The Quadlet units: the same set.
     for unit in podman/aspia-server.container podman/aspia-relay.container; do
-        [[ "$(sed -n 's/^AddCapability=//p' "${unit}")" == "${CAPS[*]} NET_BIND_SERVICE" ]] || fail "${unit}: AddCapability= is not ${CAPS[*]} NET_BIND_SERVICE"
+        [[ "$(sed -n 's/^AddCapability=//p' "${unit}")" == "${CAPS[*]}" ]] || fail "${unit}: AddCapability= is not ${CAPS[*]}"
         for line in DropCapability=ALL NoNewPrivileges=true ReadOnly=true; do
             grep -qxF -- "${line}" "${unit}" || fail "${unit} has no line ${line}"
         done
         [[ "$(grep '^PodmanArgs=' "${unit}")" == "PodmanArgs=--pids-limit=${PIDS_LIMIT} --read-only-tmpfs=false" ]] || fail "${unit}: PodmanArgs= is not --pids-limit=${PIDS_LIMIT} --read-only-tmpfs=false"
     done
-    ok "both Podman units: AddCapability= ${CAPS[*]} NET_BIND_SERVICE, DropCapability=ALL, NoNewPrivileges, ReadOnly, pids ${PIDS_LIMIT}"
+    ok "both Podman units: AddCapability= ${CAPS[*]}, DropCapability=ALL, NoNewPrivileges, ReadOnly, pids ${PIDS_LIMIT}"
 
     readme="$(sed -n '/^### Security settings/,/^### Running a Relay/p' README.md)"
     for line in "--cap-drop ALL" "--security-opt no-new-privileges:true" "--read-only" "--pids-limit ${PIDS_LIMIT} "; do

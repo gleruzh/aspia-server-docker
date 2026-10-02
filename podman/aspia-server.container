@@ -32,9 +32,9 @@ PublishPort=8070:8070/tcp
 Volume=aspia-config.volume:/etc/aspia
 Volume=aspia-data.volume:/var/lib/aspia
 
-# Least privilege (README "Security settings"); NET_BIND_SERVICE: Podman keeps ports < 1024 privileged.
+# Least privilege, as in the compose files (README "Security settings").
 DropCapability=ALL
-AddCapability=CHOWN DAC_OVERRIDE SETUID SETGID KILL NET_BIND_SERVICE
+AddCapability=CHOWN DAC_OVERRIDE SETUID SETGID KILL
 NoNewPrivileges=true
 ReadOnly=true
 # PidsLimit= needs Podman 4.7; --read-only-tmpfs=false: no tmpfs on /tmp, /run (as in compose).
