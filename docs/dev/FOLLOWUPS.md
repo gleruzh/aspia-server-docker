@@ -156,6 +156,23 @@ Candidates from the PR 3 task that were deliberately left out, with the reason:
   `10.213.47.0/24` (scenario 21 pins two Relay addresses). A machine that already uses that subnet fails at
   `docker network create`; change `SPLIT_SUBNET` there.
 
+## From PR 5b (hardening)
+
+- **Non-root by default is possible.** The whole container as `--user 1000:1000` with no capability at all runs
+  and stops cleanly on volumes owned by 1000 (notes section 20). It would drop all five capabilities, but needs
+  the volumes owned by that uid first (a one-time `chown` for existing installs) and a change to `aspia_start`
+  (it refuses PUID/PGID with `--user`, and `mkdir -p` of the volume paths). A breaking change: its own PR.
+- **A tighter set for the simplest setup.** Without PUID/PGID and with root-owned volumes no capability is needed
+  (notes section 20). Not shipped as a variant: a user who later sets PUID/PGID, or mounts a host directory owned
+  by a user, would get a failing start. The README names the override.
+- **`PidsLimit=` in the Quadlet units** once the minimum Podman is 4.7 or later; until then `PodmanArgs=--pids-limit=`.
+- **The Podman fallback without Quadlet** (podman/README.md, section 9, `podman run` for Podman < 4.5) does not
+  carry the hardening flags. Not tested on Podman 3.4/4.4 with the real image (section 18: stand-in only).
+- **Native amd64 pid counts.** The pids limit (128) was sized from runs under Rosetta, which adds a thread per
+  process; native counts are lower. CI (amd64) runs `tests/run.sh` with the limit.
+- **Ports below 1024 under Docker with host networking** need `--cap-add NET_BIND_SERVICE` (the compose files
+  use a bridge network, where Docker allows them; the Quadlet units carry it). The README says so; nothing checks it.
+
 ## From the PR 1 review (codex, agy and four cleanup reviewers)
 
 Correctness points not fixed in PR 1, each small and open for discussion:
