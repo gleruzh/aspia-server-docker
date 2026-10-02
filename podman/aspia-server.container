@@ -1,10 +1,5 @@
-# Aspia server (Router + Relay) as a Podman Quadlet unit. Setup, both install variants
-# (system-wide and rootless), updating and troubleshooting: podman/README.md.
-#
-# Copy this file, aspia-server.env (from aspia-server.env.example), aspia-config.volume and
-# aspia-data.volume to /etc/containers/systemd/ (as root) or ~/.config/containers/systemd/ (rootless),
-# then: systemctl daemon-reload && systemctl start aspia-server.service
-# (for rootless: systemctl --user ...).
+# Aspia server (Router + Relay) as a Podman Quadlet unit. Install, both variants (system-wide and
+# rootless), updating and troubleshooting: podman/README.md.
 
 [Unit]
 Description=Aspia server (Router and Relay)
@@ -12,11 +7,9 @@ Wants=network-online.target
 After=network-online.target
 
 [Container]
-# THE IMAGE: the one line to edit if you use a published image. The default is the name that
-# "podman build -t aspia-server:3.0.21 ." gives (see podman/README.md). A published image lives
-# under its publisher's name, e.g. ghcr.io/<owner>/aspia-server:3.0.21; set that here instead,
-# or pin by digest: ghcr.io/<owner>/aspia-server@sha256:<digest>. Always an exact version, never
-# latest. To update by hand: change the tag, systemctl daemon-reload, systemctl restart.
+# The image (podman/README.md, section 1). localhost/aspia-server:3.0.21 is the name a local
+# "podman build" gives (that needs Podman 5.1 or later); you usually change it to the published
+# image: an exact tag or an @sha256 digest, never latest.
 Image=localhost/aspia-server:3.0.21
 
 ContainerName=aspia-server
@@ -30,6 +23,11 @@ PublishPort=8061:8061/tcp
 PublishPort=8062:8062/tcp
 PublishPort=8065:8065/udp
 PublishPort=8070:8070/tcp
+# Host networking instead of published ports (podman/README.md, "Network=host"):
+# delete the PublishPort= lines above and uncomment the two lines below.
+#Network=host
+#Environment=ASPIA_ROUTER_RELAY_ALLOWED_IPS=127.0.0.1
+# (An Environment= line wins over the same variable in aspia-server.env: tested on Podman 4.9.3 and 5.8.7.)
 
 # Configuration, keys and database. Named volumes, created by the .volume units next to this file.
 Volume=aspia-config.volume:/etc/aspia
