@@ -12,7 +12,7 @@ Run the Aspia Router and Relay as a systemd service on a machine that has Podman
 |---|---|
 | `aspia-server.container` | The Quadlet unit: image, ports, volumes, environment, health check, restart policy. |
 | `aspia-config.volume`, `aspia-data.volume` | Named volumes for `/etc/aspia` (configuration and keys) and `/var/lib/aspia` (database). |
-| `aspia-server.env.example` | The environment file. Copy it to `aspia-server.env`. The variables are the ones in the [main README](../README.md#configuration). |
+| `aspia-server.env.example` | The environment file. Copy it to `aspia-server.env`. The variables are the ones in the [main README](../README.md#environment-variables). |
 | `aspia-relay.container`, `aspia-relay-config.volume`, `aspia-relay.env.example` | A Relay on its own, connected to a Router on another machine (section 11). |
 
 ## 1. Choose the image (one line)
@@ -66,7 +66,7 @@ sudo podman exec aspia-server cat /etc/aspia/host.pub   # the same key, any time
 ```
 
 Stop with `sudo systemctl stop aspia-server.service`. The first start prints the initial administrator login
-(`admin`/`admin`): change it in the Client (see the main README).
+(`admin`/`admin`): change it in the Client (see the main README, [First login](../README.md#first-login)).
 
 ## 3. Install rootless (a normal user)
 
@@ -158,7 +158,7 @@ of `:Z` itself was not tested. Rootless: use directories inside the user's home.
 
 Edit `aspia-server.env` (next to the `.container` file), then `sudo systemctl restart aspia-server.service`
 (rootless: `systemctl --user restart ...`). Every variable and its default is in the table in the
-[main README](../README.md#configuration); the rules there apply unchanged: a variable that is set is
+[main README](../README.md#environment-variables); the rules there apply unchanged: a variable that is set is
 written to the configuration file on every start, an unset one leaves the file alone.
 
 Podman reads this file itself, not systemd: one `VAR=value` per line, no quotes, no trailing comments.
@@ -193,7 +193,7 @@ The unit has no `io.containers.autoupdate` label; do not enable `podman-auto-upd
 4. `sudo systemctl restart aspia-server.service`
 
 Rootless: the same without `sudo`, and `systemctl --user ...`. The files are in `~/.config/containers/systemd/`,
-not `/etc/containers/systemd/`. The first start of a new image may convert the database; see the main README.
+not `/etc/containers/systemd/`. The first start of a new image may convert the database; see the main README, [Updating](../README.md#updating).
 To go back, put the old tag in the unit and repeat steps 3 and 4 (the data may not go back with it, which is
 why step 1 is there). Remove an unused old image with `podman image rm`.
 
