@@ -79,3 +79,7 @@ Router" only for the machine, as in "On the Router server".
 | unofficial packaging | неофициальная сборка | |
 | rootless | rootless (без прав root) | Podman term; the first use gets the explanation in parentheses. |
 | unit (systemd, Quadlet) | юнит | Declined normally: "в юните", "файл юнита". "unit systemd" = "юнит systemd". |
+| capability (Linux) | capability, мн. ч. capabilities | The Linux term stays in Latin and is not declined; the first use gets "(отдельные права root)". The names (`CHOWN`, `KILL`, ...) are code. |
+| privileges | привилегии | "gain new privileges" = "получить новые привилегии"; "few privileges" = "минимальные привилегии". |
+| security settings | параметры безопасности | Section title: "Параметры безопасности". |
+| read-only | только для чтения | "доступны только для чтения". |

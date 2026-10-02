@@ -1,4 +1,4 @@
-<!-- canonical: README.md 2017dc376fa48e62624780fa9447b3879668f242 -->
+<!-- canonical: README.md 695bf173cc34a25bf36897f55999635b08141c17 -->
 [English](../README.md) | **Русский**
 
 # Aspia Server в Docker (Router + Relay)
@@ -182,6 +182,41 @@ docker compose up -d
 У некоторых параметров нет переменной: порт Router для Relay (`[relay] port` в `router.conf`) и адреса прослушивания (`listen_interface`). Для них отредактируйте `router.conf` или `relay.conf`. Контейнер никогда не перезаписывает такое изменение. Нет и переменной для пароля `admin` (см. [Первый вход](#первый-вход)).
 
 `ASPIA_ROUTER_CONFIG_FILE`, `ASPIA_ROUTER_DB_FILE` и `ASPIA_RELAY_CONFIG_FILE` — переменные программ Aspia. Файлы compose не передают их в контейнер, поэтому в `.env` они не действуют. Этот образ пока их не поддерживает. Если вы зададите одну из них в контейнере сами (`docker run` или Podman), контейнер не запустится.
+
+## Параметры безопасности
+
+Файлы compose и юниты Podman запускают контейнер с минимальными привилегиями:
+
+- Все capabilities Linux (отдельные права root) отключены, кроме пяти. Их список ниже.
+- Ни один процесс не может получить новые привилегии. Программы с битом setuid не работают. Юниты Podman этого не задают (см. ниже).
+- Файлы образа доступны только для чтения. Контейнер пишет только в свои два тома.
+- В контейнере может быть не больше 128 процессов и потоков. Он использует меньше 30.
+
+Пять capabilities, которые остаются:
+
+- `CHOWN`: сделать `PUID`/`PGID` владельцем томов и сохранить владельца резервной копии.
+- `DAC_OVERRIDE`: читать и записывать файлы другого пользователя, например в каталоге пользователя на сервере или после прежнего запуска с `PUID`/`PGID`. С `PUID`/`PGID` она нужна проверке состояния, чтобы прочитать конфигурацию.
+- `SETUID`: переключиться на пользователя `PUID`.
+- `SETGID`: переключиться на группу `PGID`.
+- `KILL`: передать сигнал остановки процессам, которые работают от имени `PUID`/`PGID`.
+
+Те же параметры с `docker run`:
+
+```shell
+docker run -d --name aspia-server --restart unless-stopped \
+  --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETUID --cap-add SETGID --cap-add KILL \
+  --security-opt no-new-privileges:true --read-only --pids-limit 128 \
+  -e EXTERNAL_IP=203.0.113.10 \
+  -p 8060:8060 -p 8061:8061 -p 8062:8062 -p 8065:8065/udp -p 8070:8070 \
+  -v "$PWD/data/config:/etc/aspia" -v "$PWD/data/database:/var/lib/aspia" \
+  ghcr.io/<owner>/aspia-server:3.0.21
+```
+
+В простейшей установке ни одна из пяти capabilities не нужна: `PUID` и `PGID` не заданы, а тома принадлежат root. В этом случае можно убрать флаги `--cap-add` или `cap_add:` в файле compose.
+
+Все порты по умолчанию выше 1024. Порту ниже 1024 нужна capability `NET_BIND_SERVICE`. Docker она нужна только тогда, когда контейнер использует сеть сервера: добавьте `--cap-add NET_BIND_SERVICE`. Podman она нужна всегда: добавьте `AddCapability=NET_BIND_SERVICE` в юнит.
+
+Юниты Podman не задают `NoNewPrivileges`. На Ubuntu 24.04 AppArmor тогда блокирует сигнал остановки, и контейнер не останавливается корректно. Docker это не касается. Замеры описаны в [docs/dev/UPSTREAM-3.x-NOTES.md](dev/UPSTREAM-3.x-NOTES.md), раздел 21.
 
 ## Обновление
 

@@ -1,4 +1,4 @@
-<!-- canonical: podman/README.md 0e1ac861dfffeb0fe04da328acfe3be03d541dde -->
+<!-- canonical: podman/README.md 695bf173cc34a25bf36897f55999635b08141c17 -->
 [English](README.md) | **Русский**
 
 # Сервер Aspia под Podman (systemd, Quadlet)
@@ -166,6 +166,8 @@ sudo install -d /var/lib/aspia-server/config /var/lib/aspia-server/data
 
 Этот файл читает сам Podman, а не systemd: одна строка `VAR=value` на переменную, без кавычек и без комментариев в конце строки.
 Для изменённой переменной порта нужна соответствующая строка `PublishPort=` (см. комментарии в юните).
+Все порты по умолчанию выше 1024; для порта ниже 1024 добавьте в юнит ещё и `AddCapability=NET_BIND_SERVICE`.
+Юниты не задают `NoNewPrivileges`: на Ubuntu 24.04 (AppArmor, профиль crun) он мешает корректной остановке. Файлы compose сохраняют `no-new-privileges`; Docker это не касается.
 
 ## 7. Межсетевой экран
 
