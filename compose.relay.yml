@@ -1,0 +1,51 @@
+# Aspia Relay only (ASPIA_ROLE=relay), on a machine other than the Router's. Up to five Relays can
+# serve one Router. README.md, "Running a Relay on a separate host", has the steps for both sides.
+#
+#   docker compose -f compose.relay.yml up -d --build
+#
+# Required in .env (the container exits with a message naming what is missing):
+#   ASPIA_RELAY_ROUTER_ADDRESS        the Router's address, as seen from this machine
+#   ASPIA_RELAY_ROUTER_PUBLIC_KEY     the Router's relay key: the content of its /etc/aspia/relay.pub,
+#                                     printed in its log as "Public key for relays"
+#                                     (or ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE, see below)
+#   EXTERNAL_IP or ASPIA_RELAY_PUBLIC_ADDRESS   this Relay's public address, announced to clients and hosts
+# Optional: ASPIA_RELAY_ROUTER_PORT (default 8063) and the ASPIA_RELAY_* settings of .env.example.
+#
+# Network paths:
+#   this machine -> Router 8063/tcp   outgoing; the Relay connects to the Router (nothing to publish here)
+#   clients and hosts -> 8070/tcp     incoming, the port published below
+services:
+  aspia-relay:
+    # Built from this repository by default; set ASPIA_IMAGE in .env to run a published image,
+    # pinned to a version or a digest (see docker-compose.yml).
+    image: ${ASPIA_IMAGE:-aspia-server:3.0.21}
+    build: .
+    container_name: aspia-relay
+    hostname: aspia-relay
+    environment:
+      - ASPIA_ROLE=relay
+      - ASPIA_RELAY_ROUTER_ADDRESS
+      - ASPIA_RELAY_ROUTER_PORT
+      - ASPIA_RELAY_ROUTER_PUBLIC_KEY
+      - ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE
+      # No ":?" here: the container itself checks it (see docker-compose.yml for why).
+      - EXTERNAL_IP=${EXTERNAL_IP:-${ASPIA_RELAY_PUBLIC_ADDRESS:-}}
+      - ASPIA_RELAY_PUBLIC_ADDRESS=${ASPIA_RELAY_PUBLIC_ADDRESS:-}
+      - ASPIA_RELAY_PEER_PORT
+      - ASPIA_RELAY_IDLE_TIMEOUT
+      - ASPIA_RELAY_MAX_PEERS
+      - ASPIA_LOG_LEVEL
+      - TZ
+      - PUID
+      - PGID
+    volumes:
+      # Only relay.conf lives here; it is rewritten from the variables on every start. A volume of
+      # its own: the container refuses a Router's configuration volume.
+      - ./data/relay-config:/etc/aspia:rw
+      # Instead of ASPIA_RELAY_ROUTER_PUBLIC_KEY: copy the Router's relay.pub next to this file,
+      # uncomment the line below, and set ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE=/run/aspia/router-relay.pub
+      #- ./router-relay.pub:/run/aspia/router-relay.pub:ro
+    # Host port = container port, from the same variable: the Relay announces this port.
+    ports:
+      - "${ASPIA_RELAY_PEER_PORT:-8070}:${ASPIA_RELAY_PEER_PORT:-8070}"             # clients and hosts
+    restart: unless-stopped

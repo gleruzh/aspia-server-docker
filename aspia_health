@@ -2,12 +2,13 @@
 #
 # aspia_health: container healthcheck of the Aspia Server image.
 #
-# Healthy means:
-#   - the Router is listening on every port in router.conf: host/legacy_port, host/port,
-#     client/port, relay/port (TCP) and, when STUN is enabled, stun/port (UDP);
-#   - the Relay is listening on peer/port from relay.conf;
-#   - the Relay is connected to the Router: an ESTABLISHED TCP socket whose remote port is
-#     router/port from relay.conf.
+# What is checked depends on ASPIA_ROLE, the same variable aspia_start reads (aspia_common.sh,
+# role_services): all (the default) checks both parts, router only the Router, relay only the Relay.
+#   - Router: listening on every port in router.conf: host/legacy_port, host/port, client/port,
+#     relay/port (TCP) and, when STUN is enabled, stun/port (UDP);
+#   - Relay: listening on peer/port from relay.conf, and connected to the Router: an ESTABLISHED
+#     TCP socket whose remote port is router/port from relay.conf. With ASPIA_ROLE=relay that
+#     Router is on another machine; the check is the same.
 #
 # Only /proc/net/{tcp,tcp6,udp,udp6} are read. No connection is opened to the Router, so the
 # check neither fills the Router log nor counts against its connection limits.
@@ -28,7 +29,8 @@ readonly RELAY_CONF=/etc/aspia/relay.conf
 FAILED=0
 fail() { echo "unhealthy: $*"; FAILED=1; }
 
-# expect <what> <tcp|udp> <state> <local|remote> <file> <section> <key> <default port>
+# expect <what> <tcp|udp> <state> <local|remote> <file> <section> <key> <default port> [hint function]
+# The hint function runs only when the check fails; its output is appended to the message.
 expect() {
     local what="$1" proto="$2" state="$3" side="$4" file="$5" section="$6" key="$7" port
     port="$(ini_get "${file}" "${section}" "${key}" "$8")"
@@ -36,7 +38,7 @@ expect() {
     if ! [[ "${port}" =~ ^[0-9]+$ ]] || ((10#${port} < 1 || 10#${port} > 65535)); then
         fail "${file}: [${section}] ${key} is not a valid port: '${port}'"
     elif ! socket_state "${proto}" "${state}" "${side}" "${port}"; then
-        fail "${what} (${port}/${proto}, [${section}] ${key} in ${file})"
+        fail "${what} (${port}/${proto}, [${section}] ${key} in ${file})${9:+; $("$9")}"
     fi
 }
 
@@ -51,14 +53,26 @@ check_router() {
     fi
 }
 
+# Where to look when the Relay is not connected. With ASPIA_ROLE=relay the Router is on another machine.
+router_hint() {
+    echo "the Router is at $(ini_get "${RELAY_CONF}" router address 127.0.0.1); the container log says why:" \
+        "ACCESS_DENIED (wrong Router key), SPECIFIED_HOST_NOT_FOUND, CONNECTION_REFUSED or SOCKET_TIMEOUT" \
+        "(Router not reachable); the Relay retries every 15 s"
+}
+
 check_relay() {
     [[ -s "${RELAY_CONF}" ]] || { fail "${RELAY_CONF} does not exist yet"; return; }
     expect "the Relay is not listening for peers" tcp "${TCP_LISTEN}" local "${RELAY_CONF}" peer port 8070
-    expect "the Relay is not connected to the Router" tcp "${TCP_ESTABLISHED}" remote "${RELAY_CONF}" router port 8063
+    expect "the Relay is not connected to the Router" tcp "${TCP_ESTABLISHED}" remote "${RELAY_CONF}" router port 8063 router_hint
 }
 
-check_router
-check_relay
+if ! SERVICES="$(role_services "${ROLE}")"; then
+    echo "unhealthy: ASPIA_ROLE='${ROLE}' is not all, router or relay"
+    exit 1
+fi
+for service in ${SERVICES}; do
+    "check_${service}"
+done
 
 ((FAILED == 0)) || exit 1
 echo "healthy"

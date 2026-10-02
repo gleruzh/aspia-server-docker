@@ -1,0 +1,47 @@
+# Aspia Relay only, connected to a Router on another machine, as a Podman Quadlet unit. Install it
+# like aspia-server.container (podman/README.md, sections 2 and 3, with the file names of section
+# 11); the Router side and the firewall: README.md, "Running a Relay on a separate host".
+
+[Unit]
+Description=Aspia Relay (connected to a remote Aspia Router)
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+# The image: podman/README.md, section 1 (the same image as aspia-server.container). The default is
+# the name a local build gives; for the published image use an exact tag or an @sha256 digest.
+Image=localhost/aspia-server:3.0.21
+
+ContainerName=aspia-relay
+Environment=ASPIA_ROLE=relay
+# The Router's address and key, and this Relay's public address: set them in this file.
+EnvironmentFile=aspia-relay.env
+
+# Clients and hosts connect to this port, one-to-one (host port = container port), because the
+# Relay tells them its own port. If you change ASPIA_RELAY_PEER_PORT, change it here too. The
+# connection to the Router (its port 8063) is outgoing: nothing to publish for it.
+PublishPort=8070:8070/tcp
+
+# relay.conf only; it is rewritten from aspia-relay.env on every start. A volume of its own: the
+# container refuses a Router's configuration volume.
+Volume=aspia-relay-config.volume:/etc/aspia
+# Instead of ASPIA_RELAY_ROUTER_PUBLIC_KEY: put a copy of the Router's relay.pub at the host path,
+# uncomment this line, and set ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE=/run/aspia/router-relay.pub.
+#Volume=/etc/aspia-relay/router-relay.pub:/run/aspia/router-relay.pub:ro,Z
+
+# Healthy = listening on 8070 and connected to the Router (podman/README.md, section 11).
+HealthCmd=/usr/bin/aspia_health
+HealthInterval=30s
+HealthTimeout=10s
+HealthRetries=3
+HealthStartPeriod=60s
+
+# No auto-update label on purpose: this project never updates a running container.
+
+[Service]
+Restart=always
+RestartSec=10
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target
