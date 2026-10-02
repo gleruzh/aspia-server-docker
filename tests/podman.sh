@@ -173,7 +173,7 @@ wait_healthy() { wait_until "${HEALTHY_TIMEOUT}" is_healthy; }
 # check_hardening UNIT_FILE CONTAINER: the running container has what the shipped unit asks for.
 check_hardening() {
     local unit=$1 container=$2 cap mask=0 caps pids status host
-    local -A bit=([CHOWN]=0 [DAC_OVERRIDE]=1 [KILL]=5 [SETGID]=6 [SETUID]=7)
+    local -A bit=([CHOWN]=0 [DAC_OVERRIDE]=1 [KILL]=5 [SETGID]=6 [SETUID]=7 [NET_BIND_SERVICE]=10)
     caps="$(sed -n 's/^AddCapability=//p' "podman/${unit}")"
     pids="$(sed -n 's/^PodmanArgs=--pids-limit=//p' "podman/${unit}")"
     [[ -n "${caps}" && -n "${pids}" ]] || die "podman/${unit} has no AddCapability= or PodmanArgs=--pids-limit= line"
