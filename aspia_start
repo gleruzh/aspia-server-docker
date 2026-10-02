@@ -104,6 +104,13 @@ replace_file() {
     mv -f "$2" "$1"
 }
 
+# copy_file <source> <dest>: like cp -a, but sets mode and times while root still owns the copy, so
+# CAP_FOWNER is not needed when the source belongs to another uid (docs/dev/UPSTREAM-3.x-NOTES.md, 20).
+copy_file() {
+    cp --preserve=mode,timestamps -- "$1" "$2"
+    chown --reference="$1" -- "$2"
+}
+
 # ini_set <file> <section> <key> <value>: sets one key; the rest of the file is kept as it is.
 # The caller validates <value> (no newlines, no backslashes).
 ini_set() {
@@ -152,7 +159,7 @@ backup() {
             [[ -e "${dest}" ]] || break
             dest="${file}${BACKUP_SUFFIX}.${n}"
         done
-        cp -a -- "${file}" "${dest}"
+        copy_file "${file}" "${dest}"
         BACKED_UP[${file}]=1
         log "Backup: ${file} -> ${dest}"
     done
@@ -175,7 +182,7 @@ adopt_legacy_key() {
     [[ -n "$(read_key "${ROUTER_PUB}")" ]] || return 0
     for file in "${HOST_PUB}" "${RELAY_PUB}"; do
         [[ -e "${file}" ]] && continue
-        cp -a -- "${ROUTER_PUB}" "${file}"
+        copy_file "${ROUTER_PUB}" "${file}"
         log "Router: created ${file} from the Aspia 2.x key ${ROUTER_PUB}."
     done
 }
