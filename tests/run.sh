@@ -48,6 +48,10 @@
 #  23. one process: docker stop is clean, and the process dying stops the container non-zero
 #  24. ASPIA_ROLE=all given explicitly behaves as the default; relay-only variables are ignored;
 #      a remote Relay can register with the combined container too
+# Hardening (PR 5b). Every server container above starts with HARDENING, the settings the compose files ship.
+#   0e. the three compose files carry exactly those settings
+#  25. a running container has exactly the expected capabilities, no-new-privileges, a read-only root
+#      and the pids limit; with PUID/PGID the Aspia processes have no capabilities at all
 # Lint (hadolint, shellcheck) is in tests/lint.sh.
 
 set -euo pipefail
@@ -64,6 +68,12 @@ readonly IP_OLD=203.0.113.10   # EXTERNAL_IP given to 2.7.0
 readonly IP_NEW=203.0.113.11   # EXTERNAL_IP given to the new image
 readonly HEALTH_TIMEOUT=180    # seconds; generous because CI or emulation may be slow
 IMAGE="${ASPIA_TEST_IMAGE:-aspia-server:test}"
+# The hardening the compose files and Quadlet units ship (scenario 0e checks the compose files against it).
+readonly CAPS=(CHOWN DAC_OVERRIDE SETUID SETGID KILL)
+readonly PIDS_LIMIT=128
+HARDENING=(--cap-drop ALL --security-opt no-new-privileges:true --read-only --pids-limit "${PIDS_LIMIT}")
+for cap in "${CAPS[@]}"; do HARDENING+=(--cap-add "${cap}"); done
+readonly HARDENING
 ASPIA_VERSION="$(sed -n 's/^ASPIA_VERSION=//p' versions.env)"   # the single source of the version
 readonly ASPIA_VERSION
 
@@ -108,7 +118,7 @@ new_volume() { docker volume create --label "aspia-test=${RUN_ID}" "${RUN_ID}-$1
 run_new() {
     local name="${RUN_ID}-$1" cfg="$2" db="$3"
     shift 3
-    docker run -d --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" --name "${name}" \
+    docker run -d --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" --name "${name}" "${HARDENING[@]}" \
         -v "${cfg}:/etc/aspia" -v "${db}:/var/lib/aspia" "$@" "${IMAGE}" >/dev/null
     CURRENT_CONTAINER="${name}"
 }
@@ -321,7 +331,7 @@ scenario_command() {
     local out
     log "0b. A command given to docker run runs instead of the server, under tini"
     # No EXTERNAL_IP: if the server started instead, it would exit 1 with an error.
-    out="$(docker run --rm --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" "${IMAGE}" \
+    out="$(docker run --rm --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" "${HARDENING[@]}" "${IMAGE}" \
         sh -c 'cat /proc/1/comm; aspia_router --version 2>/dev/null')" \
         || fail "the command exited non-zero: ${out}"
     [[ "$(head -n 1 <<<"${out}")" == tini ]] || fail "PID 1 is not tini: ${out}"
@@ -1289,11 +1299,79 @@ scenario_role_all_explicit() {
 }
 
 # ---------------------------------------------------------------------------------------------
+# Hardening (PR 5b)
+
+# jq_img <args...>: jq from the image under test (the host may not have it).
+jq_img() { docker run --rm -i --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" --entrypoint jq "${IMAGE}" "$@"; }
+
+scenario_compose_hardening() {
+    local file expected out
+    log "0e. The compose files carry the hardening settings that the scenarios run with"
+    # shellcheck disable=SC2016  # $pids is a jq variable
+    expected="$(printf '%s\n' "${CAPS[@]}" | jq_img -cRn --argjson pids "${PIDS_LIMIT}" \
+        '{cap_drop: ["ALL"], cap_add: [inputs], security_opt: ["no-new-privileges:true"], read_only: true, pids_limit: $pids, tmpfs: null}')"
+    for file in docker-compose.yml compose.router.yml compose.relay.yml; do
+        out="$(EXTERNAL_IP="${IP_NEW}" compose_file_config "${file}" --format json \
+            | jq_img -c '.services[] | {cap_drop, cap_add, security_opt, read_only, pids_limit, tmpfs}')"
+        [[ "${out}" == "${expected}" ]] || fail "${file}: ${out}, expected ${expected}"
+    done
+    ok "docker-compose.yml, compose.router.yml, compose.relay.yml: ${expected}"
+}
+
+# cap_mask <capability>...: the CapEff bit mask of these capabilities, as /proc/<pid>/status prints it.
+cap_mask() {
+    local -A bit=([CHOWN]=0 [DAC_OVERRIDE]=1 [KILL]=5 [SETGID]=6 [SETUID]=7)
+    local cap mask=0
+    for cap in "$@"; do mask=$((mask | (1 << ${bit[${cap}]}))); done
+    printf '%016x\n' "${mask}"
+}
+
+# proc_status <container>: "<name> <CapEff> <NoNewPrivs>" for every process in the container.
+proc_status() {
+    # shellcheck disable=SC2016  # expanded by sh inside the container
+    docker exec "$1" sh -c 'for p in /proc/[0-9]*; do
+        printf "%s %s %s\n" "$(cat "$p/comm")" "$(awk "/^CapEff:/ {print \$2}" "$p/status")" "$(awk "/^NoNewPrivs:/ {print \$2}" "$p/status")"
+    done 2>/dev/null' | grep -vE '^(sh|awk|cat) '
+}
+
+scenario_hardening() {
+    local cfg db name expected status host
+    log "25. A running container has exactly the expected capabilities, no-new-privileges, a read-only root, the pids limit"
+    expected="$(cap_mask "${CAPS[@]}")"
+    cfg="$(new_volume s25-config)"
+    db="$(new_volume s25-db)"
+    run_new s25 "${cfg}" "${db}" -e "EXTERNAL_IP=${IP_NEW}"
+    name="${CURRENT_CONTAINER}"
+    wait_healthy "${name}"
+    status="$(proc_status "${name}")"
+    [[ "$(awk '{print $2}' <<<"${status}" | sort -u)" == "${expected}" ]] || fail "CapEff is not ${expected} in every process: ${status}"
+    [[ "$(awk '{print $3}' <<<"${status}" | sort -u)" == 1 ]] || fail "NoNewPrivs is not 1 in every process: ${status}"
+    ok "CapEff ${expected} (${CAPS[*]}) and NoNewPrivs 1 in tini, aspia_start, aspia_router, aspia_relay"
+    host="$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.PidsLimit}}' "${name}")"
+    [[ "${host}" == "true ${PIDS_LIMIT}" ]] || fail "ReadonlyRootfs and PidsLimit are '${host}'"
+    [[ "$(docker exec "${name}" cat /sys/fs/cgroup/pids.max)" == "${PIDS_LIMIT}" ]] || fail "pids.max is not ${PIDS_LIMIT}"
+    if docker exec "${name}" touch /usr/bin/aspia_start 2>/dev/null; then fail "the root filesystem is writable"; fi
+    ok "read-only root filesystem (a write to /usr/bin fails), pids.max ${PIDS_LIMIT}; peak so far: $(docker exec "${name}" cat /sys/fs/cgroup/pids.peak)"
+    docker rm -fv "${name}" >/dev/null
+
+    # PUID/PGID: setpriv leaves the Aspia processes without capabilities; tini keeps the set (it forwards signals).
+    run_new s25-puid "${cfg}" "${db}" -e "EXTERNAL_IP=${IP_NEW}" -e PUID=1000 -e PGID=1000
+    name="${CURRENT_CONTAINER}"
+    wait_healthy "${name}"
+    status="$(proc_status "${name}")"
+    [[ "$(grep -E '^(aspia_start|aspia_router|aspia_relay) ' <<<"${status}" | awk '{print $2}' | sort -u)" == 0000000000000000 ]] \
+        || fail "with PUID/PGID an Aspia process has capabilities: ${status}"
+    ok "PUID/PGID: aspia_start, aspia_router and aspia_relay have CapEff 0; peak pids: $(docker exec "${name}" cat /sys/fs/cgroup/pids.peak)"
+    stop_check "${name}" 2   # tini signals uid 1000: needs KILL
+}
+
+# ---------------------------------------------------------------------------------------------
 
 scenario_build
 scenario_command
 scenario_compose
 scenario_compose_roles
+scenario_compose_hardening
 scenario_clean_start
 scenario_restart
 scenario_new_external_ip
@@ -1321,5 +1399,6 @@ scenario_router_allow_list
 scenario_relay_invalid
 scenario_single_process
 scenario_role_all_explicit
+scenario_hardening
 
 log "All scenarios passed (image ${IMAGE})"
