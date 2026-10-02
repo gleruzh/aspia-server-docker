@@ -159,16 +159,21 @@ Candidates from the PR 3 task that were deliberately left out, with the reason:
 ## From PR 5b (hardening)
 
 - **Non-root by default is possible.** The whole container as `--user 1000:1000` with no capability at all runs
-  and stops cleanly on volumes owned by 1000 (notes section 20). It would drop all five capabilities, but needs
+  and stops cleanly on volumes owned by 1000 (notes section 21). It would drop all five capabilities, but needs
   the volumes owned by that uid first (a one-time `chown` for existing installs) and a change to `aspia_start`
   (it refuses PUID/PGID with `--user`, and `mkdir -p` of the volume paths). A breaking change: its own PR.
 - **A tighter set for the simplest setup.** Without PUID/PGID and with root-owned volumes no capability is needed
-  (notes section 20). Not shipped as a variant: a user who later sets PUID/PGID, or mounts a host directory owned
+  (notes section 21). Not shipped as a variant: a user who later sets PUID/PGID, or mounts a host directory owned
   by a user, would get a failing start. The README names the override.
-- **`NoNewPrivileges=` back in the Podman units** once Ubuntu's crun AppArmor profile no longer stacks with no-new-privileges (notes section 20). Re-test with the per-flag diagnostic (diag/podman-signal branch, `tests/diag-signal.sh`).
+- **`NoNewPrivileges=` back in the Podman units** once Ubuntu's crun AppArmor profile no longer stacks with no-new-privileges (notes section 21). Re-test with the per-flag diagnostic (diag/podman-signal branch, `tests/diag-signal.sh`).
 - **`PidsLimit=` in the Quadlet units** once the minimum Podman is 4.7 or later; until then `PodmanArgs=--pids-limit=`.
 - **The Podman fallback without Quadlet** (podman/README.md, section 9, `podman run` for Podman < 4.5) does not
   carry the hardening flags. Not tested on Podman 3.4/4.4 with the real image (section 18: stand-in only).
+  A unit for Podman 3.4.4 now exists and runs a real 2.7.0 -> 3.0.21 migration on Ubuntu 22.04 (owner's server,
+  2026-10-02: migration, keys, healthy). Put it into section 9: `--replace --sdnotify=conmon --stop-timeout=30`,
+  the hardening flags (no no-new-privileges), `TimeoutStartSec=300`, `TimeoutStopSec=60`, and an explicit
+  `--health-cmd=/usr/bin/aspia_health ...`: Podman 3.4.4 does not read the HEALTHCHECK of a BuildKit-built image
+  (no `container_config` in the image config; verified with a test image in OCI and Docker formats).
 - **Native amd64 pid counts.** The pids limit (128) was sized from runs under Rosetta, which adds a thread per
   process; native counts are lower. CI (amd64) runs `tests/run.sh` with the limit.
 - **`aspia_health` falls back to the default ports when it cannot read the config** (an unreadable 0600 file), so it
@@ -244,3 +249,57 @@ Correctness points not fixed in PR 1, each small and open for discussion:
     architecture its own checksum entries, and run tests/run.sh on arm64 too.
   - Not pursued: building Router and Relay from source ourselves. That would ship binaries upstream never
     released, and the vcpkg and Qt build is heavy.
+
+## From PR 6 (canonical English README)
+
+Decisions on earlier items:
+
+- **Published image vs. local build in one compose file** (PR 1 / PR 2 item "Published image"). Kept one
+  `docker-compose.yml` with `image:` and `build:`. The README quick start downloads only `docker-compose.yml`
+  and `.env.example` into an empty directory and sets `ASPIA_IMAGE`; there is no Dockerfile there, so a failed
+  pull fails loudly instead of building under the published name (checked with Compose v5.5.1: `failed to read
+  dockerfile`). In a checkout the silent local build still happens (checked: `error from registry: denied`,
+  then `Building`); "Building locally" in the README says so and says not to combine `ASPIA_IMAGE` with
+  `--build`. A separate `compose.build.yaml` is still an option if this keeps confusing people.
+- **`HEALTHCHECK --start-interval` and Docker Engine 25** (PR 1 review item): the README requirements now say
+  Docker Engine 25.0 or later (Docker's Dockerfile reference: "This option requires Docker Engine version 25.0
+  or later"). What an older engine does with it was not tested.
+- **README** (PR 1 item, Russian half; PR 4 item, Podman text): the Russian half is gone from `README.md`;
+  `docs/README.ru.md` is the translation (PR 6, second step). The Podman text is not folded into the main
+  README: the README links to `podman/README.md`, as the PR 6 task asks.
+
+New:
+
+- **Download URLs point at `main`.** The quick start, the 2.x upgrade and the Relay steps download the compose
+  files from `raw.githubusercontent.com/<owner>/aspia-server-docker/main/...`. A compose file on `main` can be
+  newer than the image tag a user pins. Repository release tags (for example `v3.0.21-1`) would let the README
+  pin the files as well as the image.
+- **Badges in translations.** The badge links are relative (`../../actions/...`); a translation in `docs/`
+  needs one more `../`. Check that both render on GitHub. (`docs/dockerhub.md` has no badges.)
+- **Not verified with a GUI.** The Client and Host steps in the README come from aspia.org and were not run;
+  see notes section 20 for what was and was not checked.
+- **The example `EXTERNAL_IP` in `.env.example`.** `203.0.113.10` (a documentation address) looks like a real
+  value to readers, and the container then starts with a wrong public address. Decision for the owner: comment
+  the line out (the container then stops with a clear error until it is set) or use `auto`.
+- **One name for the public address.** `EXTERNAL_IP` and `ASPIA_RELAY_PUBLIC_ADDRESS` mean the same; both are
+  documented. Pick one for the README and the compose files, keep the other as a silent alias.
+- **Clearing a list from the environment.** An empty `ASPIA_ROUTER_*_ALLOWED_IPS` counts as unset, so the file
+  value stays. There is no way to say "empty list" through the environment; a special value (for example `none`)
+  would be needed.
+- **Lint check for translation hashes.** `git merge-base --is-ancestor <hash> HEAD`, for the hash in the first
+  line of every `docs/README.*.md`, would catch a hash lost in a rebase or an amend (see TRANSLATING.md). Not
+  implemented.
+- **`docs/dockerhub.md` reaches Docker Hub only when an image is published.** The description sync is a job of
+  `publish.yml`, so a merge that changes only the docs is synced at the next weekly or manual publish.
+- **Entrypoint message names the wrong variable.** A missing public address stops the start with
+  `ERROR: ASPIA_RELAY_PUBLIC_ADDRESS is not set`, but the documented name is `EXTERNAL_IP`. The message
+  should name `EXTERNAL_IP` (or both).
+- **Apply all variables in the same start after a 2.x migration.** The Router ports (`ASPIA_ROUTER_CLIENT_PORT`,
+  `ASPIA_ROUTER_HOST_PORT`, `ASPIA_ROUTER_STUN_PORT`) and `ASPIA_ROUTER_STUN_ENABLED` have no 2.x field to preseed,
+  so they apply from the second start, and the README tells the user to run `docker compose restart`. Applying
+  them after the binary has written `router.conf`, in the same start, would remove the extra restart.
+- **`*_CONFIG_FILE` and `*_DB_FILE` make the container refuse to start.** `ASPIA_ROUTER_CONFIG_FILE`,
+  `ASPIA_ROUTER_DB_FILE` and `ASPIA_RELAY_CONFIG_FILE` stop the start with an error. Ignoring them with a
+  warning may be friendlier (the compose files never pass them, so only `docker run` and Podman users meet this).
+- **One service and container name in all compose files.** The service is `aspia-server`, `aspia-router` or
+  `aspia-relay` by file, which is why the README needs a service-name note. One name everywhere would remove it.

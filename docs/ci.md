@@ -81,7 +81,7 @@ an error: the run logs "Docker Hub skipped" or "Quay.io skipped" and continues.
 3. Add the secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. If the Docker Hub repository is not
    `<GitHub owner>/aspia-server`, add the variable `DOCKERHUB_IMAGE`.
 4. Run a publish manually (below). The run copies the tested image to Docker Hub with the same
-   digest, signs it there, and a separate job replaces the Docker Hub description with `README.md`.
+   digest, signs it there, and a separate job replaces the Docker Hub description with `docs/dockerhub.md`: a short page (Docker Hub cuts a description at 25,000 bytes, and the action truncates without an error) that links to the full `README.md` on GitHub. Its links are relative to the repository root, and the action completes them. Keep it in sync with `README.md` by hand.
 
 ## Enabling Quay.io
 

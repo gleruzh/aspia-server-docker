@@ -593,7 +593,7 @@ scenario_upgrade() {
         || fail "the fixture host is missing after the upgrade"
     ok "database after the upgrade: integrity ok, user admin and the fixture host present"
 
-    # The rollback documented in README.md: restore the backups, remove the 3.x files, run 2.7.0.
+    # Roll back: copy the *.pre-3.0.21-* backups over the 3.x-converted files, remove the 3.x files, run 2.7.0.
     # shellcheck disable=SC2016 # expanded by sh inside the helper container
     helper_rw "${cfg}" "${db}" sh -ec '
         for f in /etc/aspia/router.json /etc/aspia/relay.json /var/lib/aspia/router.db3; do
@@ -1341,13 +1341,13 @@ scenario_compose_hardening() {
         for line in DropCapability=ALL ReadOnly=true; do
             grep -qxF -- "${line}" "${unit}" || fail "${unit} has no line ${line}"
         done
-        # Absent on purpose: AppArmor on Ubuntu 24.04 then blocks tini's SIGTERM (notes, section 20).
-        ! grep -q '^NoNewPrivileges=' "${unit}" || fail "${unit} sets NoNewPrivileges= (breaks the stop on Ubuntu 24.04, notes section 20)"
+        # Absent on purpose: AppArmor on Ubuntu 24.04 then blocks tini's SIGTERM (notes, section 21).
+        ! grep -q '^NoNewPrivileges=' "${unit}" || fail "${unit} sets NoNewPrivileges= (breaks the stop on Ubuntu 24.04, notes section 21)"
         [[ "$(grep '^PodmanArgs=' "${unit}")" == "PodmanArgs=--pids-limit=${PIDS_LIMIT} --read-only-tmpfs=false" ]] || fail "${unit}: PodmanArgs= is not --pids-limit=${PIDS_LIMIT} --read-only-tmpfs=false"
     done
     ok "both Podman units: AddCapability= ${CAPS[*]}, DropCapability=ALL, no NoNewPrivileges, ReadOnly, pids ${PIDS_LIMIT}"
 
-    readme="$(sed -n '/^### Security settings/,/^### Running a Relay/p' README.md)"
+    readme="$(sed -n '/^## Security settings$/,/^## Updating$/p' README.md)"
     for line in "--cap-drop ALL" "--security-opt no-new-privileges:true" "--read-only" "--pids-limit ${PIDS_LIMIT} "; do
         grep -qF -- "${line}" <<<"${readme}" || fail "the README docker run example has no '${line}'"
     done

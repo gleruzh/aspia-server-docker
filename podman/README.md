@@ -1,3 +1,5 @@
+**English** | [Русский](README.ru.md)
+
 # Aspia server under Podman (systemd, Quadlet)
 
 Run the Aspia Router and Relay as a systemd service on a machine that has Podman and no Docker
@@ -12,7 +14,7 @@ Run the Aspia Router and Relay as a systemd service on a machine that has Podman
 |---|---|
 | `aspia-server.container` | The Quadlet unit: image, ports, volumes, environment, health check, restart policy. |
 | `aspia-config.volume`, `aspia-data.volume` | Named volumes for `/etc/aspia` (configuration and keys) and `/var/lib/aspia` (database). |
-| `aspia-server.env.example` | The environment file. Copy it to `aspia-server.env`. The variables are the ones in the [main README](../README.md#configuration). |
+| `aspia-server.env.example` | The environment file. Copy it to `aspia-server.env`. The variables are in the tables [Ports](../README.md#ports) and [Environment variables](../README.md#environment-variables) of the main README. |
 | `aspia-relay.container`, `aspia-relay-config.volume`, `aspia-relay.env.example` | A Relay on its own, connected to a Router on another machine (section 11). |
 
 ## 1. Choose the image (one line)
@@ -65,8 +67,8 @@ sudo podman logs aspia-server                # the Router's public key for hosts
 sudo podman exec aspia-server cat /etc/aspia/host.pub   # the same key, any time
 ```
 
-Stop with `sudo systemctl stop aspia-server.service`. The first start prints the initial administrator login
-(`admin`/`admin`): change it in the Client (see the main README).
+Stop with `sudo systemctl stop aspia-server.service`. For the first login (the administrator account and the public
+key for Hosts) see [First login](../README.md#first-login) in the main README.
 
 ## 3. Install rootless (a normal user)
 
@@ -157,9 +159,9 @@ of `:Z` itself was not tested. Rootless: use directories inside the user's home.
 ## 6. Configuration
 
 Edit `aspia-server.env` (next to the `.container` file), then `sudo systemctl restart aspia-server.service`
-(rootless: `systemctl --user restart ...`). Every variable and its default is in the table in the
-[main README](../README.md#configuration); the rules there apply unchanged: a variable that is set is
-written to the configuration file on every start, an unset one leaves the file alone.
+(rootless: `systemctl --user restart ...`). Every variable and its default is in the tables
+[Ports](../README.md#ports) and [Environment variables](../README.md#environment-variables) of the main README.
+The rules there apply unchanged.
 
 Podman reads this file itself, not systemd: one `VAR=value` per line, no quotes, no trailing comments.
 A changed port variable needs the matching `PublishPort=` line (see the comments in the unit).
@@ -195,13 +197,13 @@ The unit has no `io.containers.autoupdate` label; do not enable `podman-auto-upd
 4. `sudo systemctl restart aspia-server.service`
 
 Rootless: the same without `sudo`, and `systemctl --user ...`. The files are in `~/.config/containers/systemd/`,
-not `/etc/containers/systemd/`. The first start of a new image may convert the database; see the main README.
+not `/etc/containers/systemd/`. The first start of a new image may convert the database; see the main README, [Updating](../README.md#updating).
 To go back, put the old tag in the unit and repeat steps 3 and 4 (the data may not go back with it, which is
 why step 1 is there). Remove an unused old image with `podman image rm`.
 
 ## 9. Older Podman: no Quadlet (fallback)
 
-Podman 4.4 and older cannot use the unit: Quadlet needs 4.4 and the health check keys need 4.5. On Debian 12
+Podman 4.4 and older cannot use the unit: its health check keys need 4.5 (Quadlet itself appeared in 4.4). On Debian 12
 (Podman 4.3), Ubuntu 22.04 (3.4) and RHEL 8 before 8.10 use `podman run`, then let Podman write a systemd
 unit, as root. Replace `<owner>` in the last line with the account that publishes the image (section 1; a local
 build is not possible on these versions). A Docker-built image moved over with `docker save | podman load`

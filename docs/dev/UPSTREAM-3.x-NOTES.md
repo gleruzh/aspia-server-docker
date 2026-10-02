@@ -641,7 +641,19 @@ Not verified in PR 5: a session (Client to Host) actually relayed through a Rela
 how the Router picks among several Relays; the Client's Relays view itself; `ASPIA_ROLE=router` under Podman; IPv6
 addresses for `ASPIA_RELAY_ROUTER_ADDRESS`.
 
-## 20. Verified while implementing PR 5b (hardening)
+## 20. Verified while writing PR 6
+
+Same legend. Docker Desktop 29.8.1 / Compose v5.5.1 on Apple Silicon, `DOCKER_DEFAULT_PLATFORM=linux/amd64`.
+
+| Fact | Verified by |
+|---|---|
+| `aspia_router --reset-otp <user>` on a running container prints `Two-factor authentication for user admin has been reset.`, `The next login of the user starts a new enrollment.`, `Restart the router service for the reset to take full effect.` and exits 0. It opens `/var/lib/aspia/router.db3` directly (no network). The effect on an enrolled user was not tested (needs a GUI Client). | [run] `docker compose exec aspia-server aspia_router --reset-otp admin`; [src] `router/main.cc` `resetOtp()` |
+| aspia.org documents the default `admin`/`admin` and says to change it with the Router management in the Client; the Client page has sections "Connection to a Router" (default port 8062 when omitted), "Unapproved hosts" and "Users"; the Host page has a "Router tab" (address and public key). | [doc] https://aspia.org/docs/router (section 3), https://aspia.org/docs/client (sections 6, 7.1, 7.5), https://aspia.org/docs/host (section 4.3), fetched 2026-10-02 |
+| [ci] On an arm64 machine without a platform override, `docker compose pull` of the amd64-only image fails with `no matching manifest for linux/arm64/v8`. | [run] |
+| [ci] With `image: ${ASPIA_IMAGE}` and `build: .`, a failed pull makes `docker compose up -d` build locally under the published name when a Dockerfile is present (`error from registry: denied`, then `Building`), and fail with `failed to read dockerfile` when it is not. | [run] Compose v5.5.1: in a checkout with `ASPIA_IMAGE=ghcr.io/<nonexistent>/aspia-server:3.0.21`; in a directory with only the compose file, with a pull that failed on the platform (row above) |
+| [doc] Not verified, no GUI available: every Client and Host step in the README (adding the Router, 2FA enrolment, changing the password, approving a Host, the Host "Router" tab). They follow aspia.org and link to it. Only the server side was run: the key in the log and in `host.pub`, and `aspia_router --reset-otp`. | [doc] |
+
+## 21. Verified while implementing PR 5b (hardening)
 
 Same legend. "Image" is this branch's image; every run started from `--cap-drop ALL --security-opt
 no-new-privileges:true`, and a capability was added back only after a run failed without it. Docker Desktop 29.8.1
