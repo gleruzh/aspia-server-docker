@@ -78,3 +78,4 @@ Router" only for the machine, as in "On the Router server".
 | credits, thanks | благодарности | |
 | unofficial packaging | неофициальная сборка | |
 | rootless | rootless (без прав root) | Podman term; the first use gets the explanation in parentheses. |
+| unit (systemd, Quadlet) | юнит | Declined normally: "в юните", "файл юнита". "unit systemd" = "юнит systemd". |
