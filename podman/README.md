@@ -249,14 +249,18 @@ The steps for both sides, the ports and how to confirm that the Relay registered
 **Relay host.** Install `aspia-relay.container`, `aspia-relay-config.volume` and `aspia-relay.env.example` (as
 `aspia-relay.env`) the way section 2 (or 3) installs the server files, set the `Image=` line (section 1), and set
 `ASPIA_RELAY_ROUTER_ADDRESS`, `ASPIA_RELAY_ROUTER_PUBLIC_KEY` (the Router's `relay.pub`) and `EXTERNAL_IP` in
-`aspia-relay.env`. Then `systemctl daemon-reload` and `systemctl start aspia-relay.service` (rootless:
+`aspia-relay.env` (the first two are commented out in the example, so uncomment them; instead of the key you can
+mount a copy of `relay.pub` at `/run/aspia/router-relay.pub` and set `ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE` to that
+path, as the commented `Volume=` line in the unit shows; not under `/etc/aspia`). Optional: `ASPIA_RELAY_ROUTER_PORT`. Then `systemctl daemon-reload` and `systemctl start aspia-relay.service` (rootless:
 `systemctl --user ...`). The unit sets `ASPIA_ROLE=relay`, publishes only 8070/tcp, and is healthy once the Relay is
 connected to the Router: `podman healthcheck run aspia-relay`. Open 8070/tcp in the firewall (section 7); the
 connection to the Router's 8063/tcp is outgoing.
 
 **Router host.** Keep `aspia-server.container`, set `ASPIA_ROLE=router` and `ASPIA_ROUTER_RELAY_ALLOWED_IPS` (your
 Relays' addresses) in `aspia-server.env`, add `PublishPort=8063:8063/tcp` to the unit, and open 8063/tcp to the
-Relay hosts only. A rootless Router on Podman 4.x sees every connection as coming from `10.0.2.100` (section 4,
+Relay hosts only. Also comment out `EXTERNAL_IP` in `aspia-server.env` (a Router-only container has no Relay, and
+leaves `WARNING: Ignored: EXTERNAL_IP` in the log at every start otherwise), and the `PublishPort=8070:8070/tcp` line
+can go from the unit for the same reason. A rootless Router on Podman 4.x sees every connection as coming from `10.0.2.100` (section 4,
 measured for clients; the published 8063 goes through the same forwarding), so the allow-list
 cannot tell them apart there: use root, Podman 5, or the firewall.
 

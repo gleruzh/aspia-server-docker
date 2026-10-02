@@ -29,7 +29,8 @@ readonly RELAY_CONF=/etc/aspia/relay.conf
 FAILED=0
 fail() { echo "unhealthy: $*"; FAILED=1; }
 
-# expect <what> <tcp|udp> <state> <local|remote> <file> <section> <key> <default port>
+# expect <what> <tcp|udp> <state> <local|remote> <file> <section> <key> <default port> [hint function]
+# The hint function runs only when the check fails; its output is appended to the message.
 expect() {
     local what="$1" proto="$2" state="$3" side="$4" file="$5" section="$6" key="$7" port
     port="$(ini_get "${file}" "${section}" "${key}" "$8")"
@@ -37,7 +38,7 @@ expect() {
     if ! [[ "${port}" =~ ^[0-9]+$ ]] || ((10#${port} < 1 || 10#${port} > 65535)); then
         fail "${file}: [${section}] ${key} is not a valid port: '${port}'"
     elif ! socket_state "${proto}" "${state}" "${side}" "${port}"; then
-        fail "${what} (${port}/${proto}, [${section}] ${key} in ${file})"
+        fail "${what} (${port}/${proto}, [${section}] ${key} in ${file})${9:+; $("$9")}"
     fi
 }
 
@@ -52,20 +53,19 @@ check_router() {
     fi
 }
 
-check_relay() {
-    local what="the Relay is not connected to the Router"
-    [[ -s "${RELAY_CONF}" ]] || { fail "${RELAY_CONF} does not exist yet"; return; }
-    expect "the Relay is not listening for peers" tcp "${TCP_LISTEN}" local "${RELAY_CONF}" peer port 8070
-    if [[ "${ROLE}" == relay ]]; then
-        # The Relay log says why: ACCESS_DENIED (wrong Router key), SPECIFIED_HOST_NOT_FOUND,
-        # CONNECTION_REFUSED or SOCKET_TIMEOUT (Router not reachable). It retries every 15 s.
-        what+=" at $(ini_get "${RELAY_CONF}" router address 127.0.0.1); see ACCESS_DENIED, CONNECTION_REFUSED,"
-        what+=" SPECIFIED_HOST_NOT_FOUND or SOCKET_TIMEOUT in the container log"
-    fi
-    expect "${what}" tcp "${TCP_ESTABLISHED}" remote "${RELAY_CONF}" router port 8063
+# Where to look when the Relay is not connected. With ASPIA_ROLE=relay the Router is on another machine.
+router_hint() {
+    echo "the Router is at $(ini_get "${RELAY_CONF}" router address 127.0.0.1); the container log says why:" \
+        "ACCESS_DENIED (wrong Router key), SPECIFIED_HOST_NOT_FOUND, CONNECTION_REFUSED or SOCKET_TIMEOUT" \
+        "(Router not reachable); the Relay retries every 15 s"
 }
 
-ROLE="${ASPIA_ROLE:-all}"
+check_relay() {
+    [[ -s "${RELAY_CONF}" ]] || { fail "${RELAY_CONF} does not exist yet"; return; }
+    expect "the Relay is not listening for peers" tcp "${TCP_LISTEN}" local "${RELAY_CONF}" peer port 8070
+    expect "the Relay is not connected to the Router" tcp "${TCP_ESTABLISHED}" remote "${RELAY_CONF}" router port 8063 router_hint
+}
+
 if ! SERVICES="$(role_services "${ROLE}")"; then
     echo "unhealthy: ASPIA_ROLE='${ROLE}' is not all, router or relay"
     exit 1

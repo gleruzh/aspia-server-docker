@@ -34,13 +34,17 @@
 #   0d. compose.router.yml / compose.relay.yml: role, pinned image, only the ports of the role
 #  17. a Router (role router) and a Relay (role relay) in two containers: both healthy, and the
 #      Router log shows the Relay registered; each container runs and stores only its part
-#  18. a second Relay (key from a mounted file): both Relays registered with the one Router
-#  19. a Relay with a wrong Router key: never healthy, and the log says ACCESS_DENIED
+#  18. a second Relay (key from a root-only mounted file, PUID/PGID set): both Relays registered
+#      with the one Router; the Relay's files belong to PUID/PGID
+#  19. a Relay with a wrong Router key: never healthy, and the log says ACCESS_DENIED; recreated on
+#      its volume with the right key and another Router address: relay.conf updated (with a backup)
+#      and healthy. The Relays of 19, 20 and 21 start together, so their 15 s retries overlap.
 #  20. a Relay whose Router is unreachable: keeps running and retrying, unhealthy, log says why;
 #      after the Router is back, it reconnects and is healthy again
 #  21. ASPIA_ROUTER_RELAY_ALLOWED_IPS in role router: the listed Relay registers, another is refused
-#  22. role relay with a required setting missing or invalid: one clear message, non-zero exit,
-#      nothing written; a Router's volume is refused
+#  22. role relay with a required setting missing or invalid (also a bad Router address, a key file
+#      inside the volumes with PUID/PGID): one clear message, non-zero exit, nothing written; a
+#      Router's volume is refused
 #  23. one process: docker stop is clean, and the process dying stops the container non-zero
 #  24. ASPIA_ROLE=all given explicitly behaves as the default; relay-only variables are ignored;
 #      a remote Relay can register with the combined container too
@@ -179,6 +183,13 @@ listening_ports() {
         | while read -r hex; do printf '%d\n' "0x${hex}"; done | sort -u
 }
 
+# count_tcp <container> <state hex: 01 established, 0A listening> <port>: how many TCP sockets are in
+# that state with that local port, read from /proc inside the container (IPv4 and IPv6).
+count_tcp() {
+    docker exec "$1" cat /proc/net/tcp /proc/net/tcp6 \
+        | awk -v state="$2" -v port="$(printf '%04X' "$3")" '$4 == state && $2 ~ (":" port "$") { n++ } END { print n + 0 }'
+}
+
 # pid_of <container> <process name>: prints the pid(s) of the process inside the container.
 pid_of() {
     docker exec "$1" bash -c '
@@ -210,6 +221,14 @@ wait_log() {
         sleep 1
     done
     fail "$1: fewer than $3 log line(s) matching '$2' after $4 s"
+}
+
+# health_says <container> <text>: aspia_health fails and its output contains <text>.
+health_says() {
+    local out code=0
+    out="$(docker exec "$1" /usr/bin/aspia_health)" || code=$?
+    [[ "${code}" != 0 ]] || fail "$1: aspia_health reports healthy: ${out}"
+    grep -qF -- "$2" <<<"${out}" || fail "$1: unexpected aspia_health output: ${out}"
 }
 
 # never_healthy <container> <seconds>: fails if the container stops or reports healthy within that time.
@@ -415,38 +434,43 @@ scenario_new_external_ip() {
     wait_healthy "${S1_NAME}"
 }
 
-scenario_stop() {
+# stop_check <container> <expected SIGTERM lines>: docker stop finishes in under 10 s with exit code
+# 0 or 143, and that many Aspia processes logged the forwarded SIGTERM (counting the new log lines
+# checks exactly that, independent of the order in which the lines reach docker logs).
+stop_check() {
     local start elapsed code n before
-    log "4. docker stop: under 10 s, exit code 0 or 143"
-    CURRENT_CONTAINER="${S1_NAME}"
-    before="$(sigterm_lines "${S1_NAME}")"
+    CURRENT_CONTAINER="$1"
+    before="$(sigterm_lines "$1")"
     start="$(date +%s)"
-    docker stop "${S1_NAME}" >/dev/null
+    docker stop "$1" >/dev/null
     elapsed=$(($(date +%s) - start))
-    code="$(state .State.ExitCode "${S1_NAME}")"
-    ((elapsed < 10)) || fail "docker stop took ${elapsed} s"
-    [[ "${code}" == 0 || "${code}" == 143 ]] || fail "exit code ${code} after docker stop"
-    ok "stopped in ${elapsed} s (whole seconds), exit code ${code}"
-    # Both Aspia processes must report the forwarded signal. Counting the new lines checks exactly
-    # that, independent of the order in which the lines reach docker logs.
-    n=$(($(sigterm_lines "${S1_NAME}") - before))
-    [[ "${n}" == 2 ]] || fail "expected both processes to log SIGTERM, found ${n}"
-    ok "both Aspia processes logged the forwarded SIGTERM and exited"
+    code="$(state .State.ExitCode "$1")"
+    ((elapsed < 10)) || fail "docker stop of $1 took ${elapsed} s"
+    [[ "${code}" == 0 || "${code}" == 143 ]] || fail "exit code ${code} after docker stop of $1"
+    n=$(($(sigterm_lines "$1") - before))
+    [[ "${n}" == "$2" ]] || fail "expected $2 process(es) to log SIGTERM in $1, found ${n}"
+    ok "$1: stopped in ${elapsed} s (whole seconds), exit code ${code}, $2 Aspia process(es) logged the forwarded SIGTERM"
 }
 
-# crash_one <process name> <signal>: the process dies on its own (nobody stopped the container).
+scenario_stop() {
+    log "4. docker stop: under 10 s, exit code 0 or 143, both Aspia processes got the signal"
+    stop_check "${S1_NAME}" 2
+}
+
+# crash_one <process name> <signal> [container, default the one of scenario 1]: the process dies on
+# its own (nobody stopped the container).
 crash_one() {
-    local pid code
-    docker start "${S1_NAME}" >/dev/null
-    CURRENT_CONTAINER="${S1_NAME}"
-    wait_healthy "${S1_NAME}"
-    pid="$(pid_of "${S1_NAME}" "$1")"
-    [[ "${pid}" =~ ^[0-9]+$ ]] || fail "expected one $1 process, found: '${pid}'"
-    send_signal "${S1_NAME}" "$2" "${pid}"
-    wait_exited "${S1_NAME}" 30
-    code="$(state .State.ExitCode "${S1_NAME}")"
-    [[ "${code}" != 0 ]] || fail "the container exited 0 after SIG$2 to $1"
-    ok "SIG$2 to $1 (pid ${pid}): the container exited with code ${code}"
+    local name="${3:-${S1_NAME}}" pid code
+    docker start "${name}" >/dev/null
+    CURRENT_CONTAINER="${name}"
+    wait_healthy "${name}"
+    pid="$(pid_of "${name}" "$1")"
+    [[ "${pid}" =~ ^[0-9]+$ ]] || fail "expected one $1 process in ${name}, found: '${pid}'"
+    send_signal "${name}" "$2" "${pid}"
+    wait_exited "${name}" 30
+    code="$(state .State.ExitCode "${name}")"
+    [[ "${code}" != 0 ]] || fail "${name} exited 0 after SIG$2 to $1"
+    ok "${name}: SIG$2 to $1 (pid ${pid}), the container exited with code ${code}"
 }
 
 scenario_crash() {
@@ -456,24 +480,16 @@ scenario_crash() {
 }
 
 scenario_relay_not_connected() {
-    local out code i
     log "8. Healthcheck: a Relay that cannot authenticate the Router is not healthy"
     # A wrong but well-formed Router key, set by hand; the entrypoint must leave it alone.
     helper_rw "${S1_CFG}" "${S1_DB}" sed -i \
         's/^public_key=.*/public_key=0000000000000000000000000000000000000000000000000000000000000001/' /etc/aspia/relay.conf
     docker start "${S1_NAME}" >/dev/null
     CURRENT_CONTAINER="${S1_NAME}"
-    for ((i = 0; i < HEALTH_TIMEOUT; i++)); do
-        log_has "${S1_NAME}" 'ACCESS_DENIED' && break
-        sleep 1
-    done
-    log_has "${S1_NAME}" 'ACCESS_DENIED' || fail "the Relay did not report ACCESS_DENIED"
+    wait_log "${S1_NAME}" 'ACCESS_DENIED' 1 "${HEALTH_TIMEOUT}"
     [[ "$(state .State.Running "${S1_NAME}")" == true ]] || fail "the container stopped"
-    code=0
-    out="$(docker exec "${S1_NAME}" /usr/bin/aspia_health)" || code=$?
-    [[ "${code}" != 0 ]] || fail "aspia_health reports healthy although the Relay is not connected: ${out}"
-    grep -q 'not connected to the Router' <<<"${out}" || fail "unexpected healthcheck output: ${out}"
-    ok "aspia_health exits ${code}: ${out}"
+    health_says "${S1_NAME}" 'not connected to the Router'
+    ok "aspia_health fails: $(docker exec "${S1_NAME}" /usr/bin/aspia_health || true)"
     log_has "${S1_NAME}" 'WARNING: \[router\] public_key' || fail "no warning about the differing key"
     [[ "$(helper "${S1_CFG}" "${S1_DB}" grep '^public_key=' /etc/aspia/relay.conf)" == "public_key=0000000000000000000000000000000000000000000000000000000000000001" ]] \
         || fail "the entrypoint overwrote a key set by hand"
@@ -928,6 +944,7 @@ scenario_compose_roles() {
         grep -q "\"published\": \"${port}\"" <<<"${out}" || fail "compose.router.yml does not publish ${port}: ${out}"
     done
     if grep -q '"published": "8070"' <<<"${out}"; then fail "compose.router.yml publishes the Relay port 8070"; fi
+    grep -A1 '"published": "8065"' <<<"${out}" | grep -q '"protocol": "udp"' || fail "compose.router.yml does not publish 8065 as udp: ${out}"
     ok "compose.router.yml publishes 8060-8063 and 8065/udp, and not the Relay port 8070"
 
     out="$(ASPIA_RELAY_PEER_PORT=19070 ASPIA_RELAY_ROUTER_ADDRESS=router.example.test compose_file_config compose.relay.yml --format json)"
@@ -941,26 +958,33 @@ scenario_compose_roles() {
     ok "compose.relay.yml publishes only the Relay port (host = container, from ASPIA_RELAY_PEER_PORT) and passes the Relay variables"
 }
 
-# start_relay <slug> <docker run options...>: an ASPIA_ROLE=relay container on SPLIT_NET, with its
-# own volumes ${RUN_ID}-<slug>-config and -db.
+# start_relay <slug> <router address> <router key> <external ip> [docker run options...]: an
+# ASPIA_ROLE=relay container on SPLIT_NET, with its own volumes ${RUN_ID}-<slug>-config and -db
+# (an existing slug reuses them). An empty key or external ip is not passed (the caller passes it
+# another way). It becomes CURRENT_CONTAINER.
 start_relay() {
+    local slug="$1" addr="$2" key="$3" ip="$4"
+    local -a args=(-e ASPIA_ROLE=relay --network "${SPLIT_NET}" -e "ASPIA_RELAY_ROUTER_ADDRESS=${addr}")
+    shift 4
+    [[ -z "${key}" ]] || args+=(-e "ASPIA_RELAY_ROUTER_PUBLIC_KEY=${key}")
+    [[ -z "${ip}" ]] || args+=(-e "EXTERNAL_IP=${ip}")
+    run_new "${slug}" "$(new_volume "${slug}-config")" "$(new_volume "${slug}-db")" "${args[@]}" "$@"
+}
+
+# relay_helper <slug> <command...>: helper on the volumes of start_relay <slug>.
+relay_helper() {
     local slug="$1"
     shift
-    run_new "${slug}" "$(new_volume "${slug}-config")" "$(new_volume "${slug}-db")" \
-        -e ASPIA_ROLE=relay --network "${SPLIT_NET}" "$@"
+    helper "${RUN_ID}-${slug}-config" "${RUN_ID}-${slug}-db" "$@"
 }
 
-# health_says <container> <text>: aspia_health fails and its output contains <text>.
-health_says() {
-    local out code=0
-    out="$(docker exec "$1" /usr/bin/aspia_health)" || code=$?
-    [[ "${code}" != 0 ]] || fail "$1: aspia_health reports healthy: ${out}"
-    grep -qF -- "$2" <<<"${out}" || fail "$1: unexpected aspia_health output: ${out}"
-}
-
-# established_8063 <container>: how many ESTABLISHED TCP connections have local port 8063 (hex 1F7F).
-established_8063() {
-    docker exec "$1" cat /proc/net/tcp /proc/net/tcp6 | awk '$4 == "01" && $2 ~ /:1F7F$/ { n++ } END { print n + 0 }'
+# expect_relay_refused <container> <log regex> [count, default 1]: the Relay logged the failure <count>
+# times, is still running and not healthy for a few seconds, and aspia_health says it is not connected.
+expect_relay_refused() {
+    CURRENT_CONTAINER="$1"
+    wait_log "$1" "$2" "${3:-1}" 60
+    never_healthy "$1" 3
+    health_says "$1" 'the Relay is not connected to the Router'
 }
 
 scenario_split() {
@@ -988,8 +1012,7 @@ scenario_split() {
     helper "${cfg}" "${db}" test ! -e /etc/aspia/relay.conf || fail "role router created relay.conf"
     ok "role router: only aspia_router runs, listening on ${ports}; no relay.conf"
 
-    start_relay s17-relay1 -e ASPIA_RELAY_ROUTER_ADDRESS=aspia-router -e "ASPIA_RELAY_ROUTER_PUBLIC_KEY=${ROUTER_KEY}" \
-        -e ASPIA_RELAY_PUBLIC_ADDRESS=relay1.example.test
+    start_relay s17-relay1 aspia-router "${ROUTER_KEY}" "" -e ASPIA_RELAY_PUBLIC_ADDRESS=relay1.example.test
     RELAY1_NAME="${CURRENT_CONTAINER}"
     wait_healthy "${RELAY1_NAME}"
     ip="$(ip_of "${RELAY1_NAME}")"
@@ -999,9 +1022,9 @@ scenario_split() {
     ok "Router log: $(grep -m1 -oE "Received key pool: [0-9]+ \\( \"${ip}\" \\)" <<<"$(docker logs "${ROUTER_NAME}" 2>&1)") -- the Relay registered"
     CURRENT_CONTAINER="${RELAY1_NAME}"
 
-    files="$(helper "${RUN_ID}-s17-relay1-config" "${RUN_ID}-s17-relay1-db" find /etc/aspia /var/lib/aspia -mindepth 1)"
+    files="$(relay_helper s17-relay1 find /etc/aspia /var/lib/aspia -mindepth 1)"
     [[ "${files}" == /etc/aspia/relay.conf ]] || fail "role relay wrote more than relay.conf: ${files}"
-    relay_conf="$(helper "${RUN_ID}-s17-relay1-config" "${RUN_ID}-s17-relay1-db" cat /etc/aspia/relay.conf)"
+    relay_conf="$(relay_helper s17-relay1 cat /etc/aspia/relay.conf)"
     [[ "$(ini_value "${relay_conf}" router address)" == aspia-router ]] || fail "relay.conf [router] address is not aspia-router"
     [[ "$(ini_value "${relay_conf}" router port)" == 8063 ]] || fail "relay.conf [router] port is not 8063"
     [[ "$(ini_value "${relay_conf}" router public_key)" == "${ROUTER_KEY}" ]] || fail "relay.conf [router] public_key is not the Router's relay.pub"
@@ -1020,56 +1043,88 @@ scenario_split() {
 }
 
 scenario_two_relays() {
-    local keyvol name ip
-    log "18. A second Relay, its Router key from a mounted file: both Relays registered with the one Router"
+    local keyvol name ip cfg_owner
+    log "18. A second Relay, its Router key from a root-only mounted file, PUID/PGID set: both Relays registered with the one Router"
     keyvol="$(new_volume s18-key)"
     # shellcheck disable=SC2016  # expanded by sh in the helper container
     docker run --rm --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" -v "${keyvol}:/k" "${HELPER_IMAGE}" \
-        sh -c 'printf "%s\n" "$1" > /k/router-relay.pub' _ "${ROUTER_KEY}"
-    start_relay s18-relay2 -v "${keyvol}:/run/aspia:ro" -e ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE=/run/aspia/router-relay.pub \
-        -e ASPIA_RELAY_ROUTER_ADDRESS=aspia-router -e EXTERNAL_IP=relay2.example.test
+        sh -c 'printf "%s\n" "$1" > /k/router-relay.pub && chmod 0400 /k/router-relay.pub' _ "${ROUTER_KEY}"
+    start_relay s18-relay2 aspia-router "" relay2.example.test -v "${keyvol}:/run/aspia:ro" \
+        -e ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE=/run/aspia/router-relay.pub -e PUID=1000 -e PGID=1000
     name="${CURRENT_CONTAINER}"
     wait_healthy "${name}"
+    cfg_owner="$(relay_helper s18-relay2 stat -c '%u:%g' /etc/aspia/relay.conf)"
+    [[ "${cfg_owner}" == 1000:1000 ]] || fail "relay.conf is owned by ${cfg_owner}, expected 1000:1000"
     ip="$(ip_of "${name}")"
     CURRENT_CONTAINER="${ROUTER_NAME}"
     wait_log "${ROUTER_NAME}" "Received key pool: [0-9]+ \\( \"${ip}\" \\)" 1 30
-    [[ "$(established_8063 "${ROUTER_NAME}")" == 2 ]] \
-        || fail "the Router has $(established_8063 "${ROUTER_NAME}") Relay connections on 8063, expected 2"
+    [[ "$(count_tcp "${ROUTER_NAME}" 01 8063)" == 2 ]] \
+        || fail "the Router has $(count_tcp "${ROUTER_NAME}" 01 8063) Relay connections on 8063, expected 2"
     docker exec "${RELAY1_NAME}" /usr/bin/aspia_health >/dev/null || fail "the first Relay is no longer healthy"
     ok "two Relays ($(ip_of "${RELAY1_NAME}"), ${ip}) registered: 2 ESTABLISHED connections on the Router's 8063, both healthy"
+    ok "the root-only (0400) key file worked with PUID/PGID=1000, and relay.conf is owned by ${cfg_owner}"
+}
+
+FAIL_WRONGKEY="" FAIL_NOHOST="" FAIL_NOPORT="" S21_ROUTER="" S21_RELAY_A="" S21_RELAY_B=""
+
+# start_failing_relays: starts the Relays of scenarios 19, 20 and 21 together, so that their 15 s
+# retry cycles run side by side: a wrong key, an unknown Router name, a closed Router port, and the
+# Router with an allow-list (where only one of two Relays is listed).
+start_failing_relays() {
+    local cfg db key
+    log "19-21 (setup). Start the Relays that must fail, and the Router with an allow-list, together"
+    start_relay s19-wrongkey aspia-router "${WRONG_KEY}" relay3.example.test
+    FAIL_WRONGKEY="${CURRENT_CONTAINER}"
+    start_relay s20-nohost no-such-router.invalid "${ROUTER_KEY}" relay4.example.test
+    FAIL_NOHOST="${CURRENT_CONTAINER}"
+    start_relay s20-noport aspia-router "${ROUTER_KEY}" relay5.example.test -e ASPIA_RELAY_ROUTER_PORT=8064
+    FAIL_NOPORT="${CURRENT_CONTAINER}"
+    cfg="$(new_volume s21-router-config)"
+    db="$(new_volume s21-router-db)"
+    # Without 127.0.0.1: allowed in role router (the check for it belongs to role all).
+    run_new s21-router "${cfg}" "${db}" -e ASPIA_ROLE=router -e "ASPIA_ROUTER_RELAY_ALLOWED_IPS=${RELAY_A_IP}" \
+        --network "${SPLIT_NET}" --network-alias aspia-router-b
+    S21_ROUTER="${CURRENT_CONTAINER}"
+    wait_healthy "${S21_ROUTER}"
+    key="$(helper "${cfg}" "${db}" cat /etc/aspia/relay.pub)"
+    start_relay s21-relay-a aspia-router-b "${key}" relay-a.example.test --ip "${RELAY_A_IP}"
+    S21_RELAY_A="${CURRENT_CONTAINER}"
+    start_relay s21-relay-b aspia-router-b "${key}" relay-b.example.test --ip "${RELAY_B_IP}"
+    S21_RELAY_B="${CURRENT_CONTAINER}"
 }
 
 scenario_relay_wrong_key() {
-    local name
+    local name="${FAIL_WRONGKEY}" router_ip conf
     log "19. A Relay with a wrong Router key: never healthy, and the log says why"
-    start_relay s19-wrongkey -e ASPIA_RELAY_ROUTER_ADDRESS=aspia-router -e "ASPIA_RELAY_ROUTER_PUBLIC_KEY=${WRONG_KEY}" \
-        -e EXTERNAL_IP=relay3.example.test
-    name="${CURRENT_CONTAINER}"
-    wait_log "${name}" 'Connection to the router has been lost: .*ACCESS_DENIED' 2 60   # two attempts: it retries
-    never_healthy "${name}" 5
-    health_says "${name}" 'the Relay is not connected to the Router at aspia-router'
+    # Two attempts: this is the one place that shows the Relay retries on its own (the reconnect in 20 does too).
+    expect_relay_refused "${name}" 'Connection to the router has been lost: .*ACCESS_DENIED' 2
+    health_says "${name}" 'the Router is at aspia-router'
     ok "ACCESS_DENIED logged on every attempt (retried every 15 s); still running, not healthy; aspia_health names the Router"
+
+    # The same volume, a different Router address and the right key: relay.conf follows the variables.
+    router_ip="$(ip_of "${ROUTER_NAME}")"
+    docker rm -fv "${name}" >/dev/null
+    start_relay s19-wrongkey "${router_ip}" "${ROUTER_KEY}" relay3.example.test
+    name="${CURRENT_CONTAINER}"
+    wait_healthy "${name}"
+    conf="$(relay_helper s19-wrongkey cat /etc/aspia/relay.conf)"
+    [[ "$(ini_value "${conf}" router address)" == "${router_ip}" ]] || fail "relay.conf [router] address was not updated to ${router_ip}"
+    [[ "$(ini_value "${conf}" router public_key)" == "${ROUTER_KEY}" ]] || fail "relay.conf [router] public_key was not updated"
+    # shellcheck disable=SC2016  # expanded by sh inside the helper container
+    relay_helper s19-wrongkey sh -c 'grep -q "^public_key=$1" /etc/aspia/relay.conf.pre-*' _ "${WRONG_KEY}" \
+        || fail "no relay.conf.pre-* backup with the old key"
+    ok "recreated on its volume with ${router_ip} and the right key: relay.conf updated, backup relay.conf.pre-* has the old key, healthy"
     docker rm -fv "${name}" >/dev/null
 }
 
 scenario_relay_unreachable() {
-    local nohost noport name
+    local name
     log "20. A Relay whose Router is unreachable: keeps running and retrying, unhealthy, the log says why"
-    start_relay s20-nohost -e ASPIA_RELAY_ROUTER_ADDRESS=no-such-router.invalid -e "ASPIA_RELAY_ROUTER_PUBLIC_KEY=${ROUTER_KEY}" \
-        -e EXTERNAL_IP=relay4.example.test
-    nohost="${CURRENT_CONTAINER}"
-    start_relay s20-noport -e ASPIA_RELAY_ROUTER_ADDRESS=aspia-router -e ASPIA_RELAY_ROUTER_PORT=8064 \
-        -e "ASPIA_RELAY_ROUTER_PUBLIC_KEY=${ROUTER_KEY}" -e EXTERNAL_IP=relay5.example.test
-    noport="${CURRENT_CONTAINER}"
-    wait_log "${nohost}" 'Connection to the router has been lost: .*SPECIFIED_HOST_NOT_FOUND' 2 60
-    wait_log "${noport}" 'Connection to the router has been lost: .*CONNECTION_REFUSED' 2 60
-    for name in "${nohost}" "${noport}"; do
-        CURRENT_CONTAINER="${name}"
-        never_healthy "${name}" 3
-        health_says "${name}" 'the Relay is not connected to the Router'
-    done
-    ok "unknown Router name: SPECIFIED_HOST_NOT_FOUND; closed Router port: CONNECTION_REFUSED; both retried, running, not healthy"
-    docker rm -fv "${nohost}" "${noport}" >/dev/null
+    expect_relay_refused "${FAIL_NOHOST}" 'Connection to the router has been lost: .*SPECIFIED_HOST_NOT_FOUND'
+    health_says "${FAIL_NOHOST}" 'the Router is at no-such-router.invalid'
+    expect_relay_refused "${FAIL_NOPORT}" 'Connection to the router has been lost: .*CONNECTION_REFUSED'
+    ok "unknown Router name: SPECIFIED_HOST_NOT_FOUND; closed Router port: CONNECTION_REFUSED; both running, not healthy"
+    docker rm -fv "${FAIL_NOHOST}" "${FAIL_NOPORT}" >/dev/null
 
     # The Router goes away and comes back: the Relay stays up and reconnects by itself.
     CURRENT_CONTAINER="${RELAY1_NAME}"
@@ -1086,114 +1141,121 @@ scenario_relay_unreachable() {
 }
 
 scenario_router_allow_list() {
-    local cfg db router key relay_a relay_b
     log "21. ASPIA_ROUTER_RELAY_ALLOWED_IPS with ASPIA_ROLE=router: the listed Relay registers, another is refused"
-    cfg="$(new_volume s21-router-config)"
-    db="$(new_volume s21-router-db)"
-    # Without 127.0.0.1: allowed in role router (the check for it belongs to role all).
-    run_new s21-router "${cfg}" "${db}" -e ASPIA_ROLE=router -e "ASPIA_ROUTER_RELAY_ALLOWED_IPS=${RELAY_A_IP}" \
-        --network "${SPLIT_NET}" --network-alias aspia-router-b
-    router="${CURRENT_CONTAINER}"
-    wait_healthy "${router}"
-    log_has "${router}" "Relays accepted from: +${RELAY_A_IP} " || fail "the Router does not log its Relay allow-list"
-    if log_has "${router}" 'accepted from ANY address'; then fail "the Router warns about an empty allow-list although one is set"; fi
+    CURRENT_CONTAINER="${S21_ROUTER}"
+    log_has "${S21_ROUTER}" "Relays accepted from: +${RELAY_A_IP} " || fail "the Router does not log its Relay allow-list"
+    if log_has "${S21_ROUTER}" 'accepted from ANY address'; then fail "the Router warns about an empty allow-list although one is set"; fi
     ok "role router starts with an allow-list that does not include 127.0.0.1, and logs it"
-    key="$(helper "${cfg}" "${db}" cat /etc/aspia/relay.pub)"
-    start_relay s21-relay-a --ip "${RELAY_A_IP}" -e ASPIA_RELAY_ROUTER_ADDRESS=aspia-router-b \
-        -e "ASPIA_RELAY_ROUTER_PUBLIC_KEY=${key}" -e EXTERNAL_IP=relay-a.example.test
-    relay_a="${CURRENT_CONTAINER}"
-    start_relay s21-relay-b --ip "${RELAY_B_IP}" -e ASPIA_RELAY_ROUTER_ADDRESS=aspia-router-b \
-        -e "ASPIA_RELAY_ROUTER_PUBLIC_KEY=${key}" -e EXTERNAL_IP=relay-b.example.test
-    relay_b="${CURRENT_CONTAINER}"
-    CURRENT_CONTAINER="${relay_a}"
-    wait_healthy "${relay_a}"
-    wait_log "${router}" "New relay session: \"${RELAY_A_IP}\"" 1 30
-    CURRENT_CONTAINER="${relay_b}"
-    wait_log "${relay_b}" 'Connection to the router has been lost: .*REMOTE_HOST_CLOSED' 2 60
-    health_says "${relay_b}" 'the Relay is not connected to the Router'
-    if log_has "${router}" "New relay session: \"${RELAY_B_IP}\""; then fail "the Router accepted the Relay that is not on its list"; fi
-    ok "${RELAY_A_IP} registered; ${RELAY_B_IP} was closed on every attempt (REMOTE_HOST_CLOSED in its log), not healthy"
-    docker rm -fv "${router}" "${relay_a}" "${relay_b}" >/dev/null
+    CURRENT_CONTAINER="${S21_RELAY_A}"
+    wait_healthy "${S21_RELAY_A}"
+    wait_log "${S21_ROUTER}" "New relay session: \"${RELAY_A_IP}\"" 1 30
+    expect_relay_refused "${S21_RELAY_B}" 'Connection to the router has been lost: .*REMOTE_HOST_CLOSED'
+    if log_has "${S21_ROUTER}" "New relay session: \"${RELAY_B_IP}\""; then fail "the Router accepted the Relay that is not on its list"; fi
+    ok "${RELAY_A_IP} registered; ${RELAY_B_IP} was closed (REMOTE_HOST_CLOSED in its log), not healthy"
+    docker rm -fv "${S21_ROUTER}" "${S21_RELAY_A}" "${S21_RELAY_B}" >/dev/null
+}
+
+# run_invalid_relay <slug> <expected message> <omitted variables, space separated> [docker run options...]:
+# run_invalid_env for a complete, valid ASPIA_ROLE=relay environment (Router address, key, own public
+# address) without the omitted variables and with the options added.
+run_invalid_relay() {
+    local slug="$1" expect="$2" omit=" $3 " pair
+    local -a args=()
+    shift 3
+    for pair in ASPIA_ROLE=relay ASPIA_RELAY_ROUTER_ADDRESS=router.example.test "ASPIA_RELAY_ROUTER_PUBLIC_KEY=${ROUTER_KEY}" \
+        "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}"; do
+        [[ "${omit}" == *" ${pair%%=*} "* ]] || args+=(-e "${pair}")
+    done
+    run_invalid_env "${slug}" "${expect}" "${args[@]}" "$@"
+}
+
+# router_address_verdicts <value>...: "valid <value>" or "invalid <value>" per value, from
+# is_valid_router_address of the image under test (aspia_start without its final call of main).
+router_address_verdicts() {
+    docker run --rm --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" --entrypoint bash "${IMAGE}" -c '
+        source <(sed "\$d" /usr/bin/aspia_start)
+        for v in "$@"; do
+            if is_valid_router_address "$v"; then echo "valid $v"; else echo "invalid $v"; fi
+        done' _ "$@"
 }
 
 scenario_relay_invalid() {
-    local cfg db
+    local cfg db value verdicts label63 label64 name253 name254
     log "22. ASPIA_ROLE=relay with a required setting missing or invalid: one clear message, non-zero exit, nothing written"
-    local -a key=(-e "ASPIA_RELAY_ROUTER_PUBLIC_KEY=${ROUTER_KEY}") addr=(-e ASPIA_RELAY_ROUTER_ADDRESS=router.example.test)
-    local -a pub=(-e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}")
-    run_invalid_env relay-none 'not set: ASPIA_RELAY_ROUTER_ADDRESS .*; ASPIA_RELAY_ROUTER_PUBLIC_KEY or ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE .*; ASPIA_RELAY_PUBLIC_ADDRESS or its alias EXTERNAL_IP' \
-        -e ASPIA_ROLE=relay
+    run_invalid_relay relay-none 'not set: ASPIA_RELAY_ROUTER_ADDRESS .*; ASPIA_RELAY_ROUTER_PUBLIC_KEY or ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE .*; ASPIA_RELAY_PUBLIC_ADDRESS or its alias EXTERNAL_IP' \
+        'ASPIA_RELAY_ROUTER_ADDRESS ASPIA_RELAY_ROUTER_PUBLIC_KEY ASPIA_RELAY_PUBLIC_ADDRESS'
     ok "the message: $(grep -m1 -o 'ASPIA_ROLE=relay needs.*' <<<"$(docker logs "${CURRENT_CONTAINER}" 2>&1)")"
-    run_invalid_env relay-noaddr 'ASPIA_ROLE=relay needs these settings, which are not set: ASPIA_RELAY_ROUTER_ADDRESS [^;]*\. See' \
-        -e ASPIA_ROLE=relay "${key[@]}" "${pub[@]}"
-    run_invalid_env relay-nokey 'which are not set: ASPIA_RELAY_ROUTER_PUBLIC_KEY or ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE [^;]*\. See' \
-        -e ASPIA_ROLE=relay "${addr[@]}" "${pub[@]}"
-    run_invalid_env relay-nopub 'which are not set: ASPIA_RELAY_PUBLIC_ADDRESS or its alias EXTERNAL_IP [^;]*\. See' \
-        -e ASPIA_ROLE=relay "${addr[@]}" "${key[@]}"
-    run_invalid_env relay-badkey "ASPIA_RELAY_ROUTER_PUBLIC_KEY='abc' is not a key" \
-        -e ASPIA_ROLE=relay "${addr[@]}" "${pub[@]}" -e ASPIA_RELAY_ROUTER_PUBLIC_KEY=abc
-    run_invalid_env relay-nokeyfile "ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE='/run/aspia/missing.pub': no readable file" \
-        -e ASPIA_ROLE=relay "${addr[@]}" "${pub[@]}" -e ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE=/run/aspia/missing.pub
-    run_invalid_env relay-twokeys "Both ASPIA_RELAY_ROUTER_PUBLIC_KEY and ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE are set" \
-        -e ASPIA_ROLE=relay "${addr[@]}" "${pub[@]}" "${key[@]}" -e ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE=/etc/hostname
-    run_invalid_env relay-badaddr "ASPIA_RELAY_ROUTER_ADDRESS='router address!' is not an IP address or a host name" \
-        -e ASPIA_ROLE=relay "${key[@]}" "${pub[@]}" -e 'ASPIA_RELAY_ROUTER_ADDRESS=router address!'
-    run_invalid_env relay-badport "ASPIA_RELAY_ROUTER_PORT='0' is not a valid port" \
-        -e ASPIA_ROLE=relay "${addr[@]}" "${key[@]}" "${pub[@]}" -e ASPIA_RELAY_ROUTER_PORT=0
-    run_invalid_env badrole "ASPIA_ROLE='both' is not one of: all" -e ASPIA_ROLE=both "${pub[@]}"
+    run_invalid_relay relay-noaddr 'ASPIA_ROLE=relay needs these settings, which are not set: ASPIA_RELAY_ROUTER_ADDRESS [^;]*\. See' \
+        ASPIA_RELAY_ROUTER_ADDRESS
+    run_invalid_relay relay-nokey 'which are not set: ASPIA_RELAY_ROUTER_PUBLIC_KEY or ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE [^;]*\. See' \
+        ASPIA_RELAY_ROUTER_PUBLIC_KEY
+    run_invalid_relay relay-nopub 'which are not set: ASPIA_RELAY_PUBLIC_ADDRESS or its alias EXTERNAL_IP [^;]*\. See' \
+        ASPIA_RELAY_PUBLIC_ADDRESS
+    run_invalid_relay relay-badkey "ASPIA_RELAY_ROUTER_PUBLIC_KEY='abc' is not a key" \
+        ASPIA_RELAY_ROUTER_PUBLIC_KEY -e ASPIA_RELAY_ROUTER_PUBLIC_KEY=abc
+    run_invalid_relay relay-nokeyfile "ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE='/run/aspia/missing.pub': no readable file" \
+        ASPIA_RELAY_ROUTER_PUBLIC_KEY -e ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE=/run/aspia/missing.pub
+    run_invalid_relay relay-twokeys "Both ASPIA_RELAY_ROUTER_PUBLIC_KEY and ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE are set" \
+        "" -e ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE=/etc/hostname
+    run_invalid_relay relay-badaddr "ASPIA_RELAY_ROUTER_ADDRESS='router address!' is not an IP address or a host name" \
+        ASPIA_RELAY_ROUTER_ADDRESS -e 'ASPIA_RELAY_ROUTER_ADDRESS=router address!'
+    run_invalid_relay relay-octal "ASPIA_RELAY_ROUTER_ADDRESS='010.0.0.1' is not an IP address or a host name" \
+        ASPIA_RELAY_ROUTER_ADDRESS -e ASPIA_RELAY_ROUTER_ADDRESS=010.0.0.1
+    run_invalid_relay relay-badport "ASPIA_RELAY_ROUTER_PORT='0' is not a valid port" "" -e ASPIA_RELAY_ROUTER_PORT=0
+    run_invalid_relay badrole "ASPIA_ROLE='both' is not one of: all" ASPIA_ROLE -e ASPIA_ROLE=both
+
+    # The Router address check, value by value in one container: only IP literals and DNS names.
+    label63="$(printf 'a%.0s' {1..63})"
+    label64="${label63}a"
+    name253="${label63}.${label63}.${label63}.$(printf 'b%.0s' {1..61})"   # 63+1+63+1+63+1+61
+    name254="${name253}b"
+    verdicts="$(router_address_verdicts 192.168.1.300 1.2.3.4.5 10.1 -router. ...a 010.0.0.1 router..example.com \
+        a-.example.com -a.example.com . "" "router address" "${label64}.example.com" "${name254}" \
+        192.168.1.30 2001:db8::1 router.example.com router.example.com. localhost my_router-1 \
+        "${label63}.example.com" "${name253}")"
+    for value in 192.168.1.300 1.2.3.4.5 10.1 -router. ...a 010.0.0.1 router..example.com a-.example.com -a.example.com . "" \
+        "router address" "${label64}.example.com" "${name254}"; do
+        grep -qxF "invalid ${value}" <<<"${verdicts}" || fail "the Router address '${value}' is accepted: ${verdicts}"
+    done
+    for value in 192.168.1.30 2001:db8::1 router.example.com router.example.com. localhost my_router-1 \
+        "${label63}.example.com" "${name253}"; do
+        grep -qxF "valid ${value}" <<<"${verdicts}" || fail "the Router address '${value}' is refused: ${verdicts}"
+    done
+    ok "ASPIA_RELAY_ROUTER_ADDRESS: 192.168.1.300, 1.2.3.4.5, 10.1, 010.0.0.1, -router., ...a, empty labels, 64-character labels and names over 253 are refused; IPv4, IPv6, FQDN (also with a trailing dot) and 253 characters are accepted"
 
     # A Router's configuration volume mounted on a Relay: refused before anything is written.
     cfg="$(new_volume s22-config)"
     db="$(new_volume s22-db)"
     helper_rw "${cfg}" "${db}" sh -c 'printf "[relay]\nport=8063\n" > /etc/aspia/router.conf'
     refused_unchanged s22 "${cfg}" "${db}" "role relay on a Router's configuration volume" \
-        -e ASPIA_ROLE=relay "${addr[@]}" "${key[@]}"
+        -e ASPIA_ROLE=relay -e ASPIA_RELAY_ROUTER_ADDRESS=router.example.test -e "ASPIA_RELAY_ROUTER_PUBLIC_KEY=${ROUTER_KEY}"
     log_has "${CURRENT_CONTAINER}" 'ASPIA_ROLE=relay, but the volumes hold a Router' || fail "no clear message for a Router's volume"
     ok "the message names the Router's files and says to use ASPIA_ROLE=router or all"
+
+    # A key file inside the volumes, with PUID/PGID: the chown of the volumes would reach it.
+    cfg="$(new_volume s22b-config)"
+    db="$(new_volume s22b-db)"
+    # shellcheck disable=SC2016  # expanded by sh inside the helper container
+    helper_rw "${cfg}" "${db}" sh -c 'printf "%s\n" "$1" > /etc/aspia/relay.pub' _ "${ROUTER_KEY}"
+    refused_unchanged s22b "${cfg}" "${db}" "role relay with PUID/PGID and the key file in /etc/aspia" \
+        -e ASPIA_ROLE=relay -e ASPIA_RELAY_ROUTER_ADDRESS=router.example.test -e PUID=1000 -e PGID=1000 \
+        -e ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE=/etc/aspia/relay.pub
+    log_has "${CURRENT_CONTAINER}" 'Mount the key file somewhere else' || fail "no clear message for a key file inside the volumes"
+    ok "the message says to mount the key file somewhere else"
 }
 
-# stop_one <container>: docker stop finishes in under 10 s, exit code 0 or 143, and the one Aspia
-# process logged the forwarded SIGTERM.
+# stop_one <container>: stop_check for a container with one Aspia process, which exits cleanly.
 stop_one() {
-    local start elapsed code n before
-    CURRENT_CONTAINER="$1"
-    before="$(sigterm_lines "$1")"
-    start="$(date +%s)"
-    docker stop "$1" >/dev/null
-    elapsed=$(($(date +%s) - start))
-    code="$(state .State.ExitCode "$1")"
-    ((elapsed < 10)) || fail "docker stop of $1 took ${elapsed} s"
-    [[ "${code}" == 0 || "${code}" == 143 ]] || fail "exit code ${code} after docker stop of $1"
-    n=$(($(sigterm_lines "$1") - before))
-    [[ "${n}" == 1 ]] || fail "expected one process to log SIGTERM in $1, found ${n}"
+    stop_check "$1" 1
     log_has "$1" 'All processes have exited; exit code 0' || fail "$1 did not log a clean exit"
-    ok "$1: stopped in ${elapsed} s (whole seconds), exit code ${code}, its one process logged SIGTERM"
-}
-
-# crash_alone <container> <process> <signal>: the only process dies on its own; the container exits non-zero.
-crash_alone() {
-    local pid code i
-    CURRENT_CONTAINER="$1"
-    docker start "$1" >/dev/null
-    for ((i = 0; i < 60; i++)); do
-        pid="$(pid_of "$1" "$2")"
-        [[ -n "${pid}" ]] && break
-        sleep 1
-    done
-    [[ "${pid}" =~ ^[0-9]+$ ]] || fail "expected one $2 process in $1, found: '${pid}'"
-    send_signal "$1" "$3" "${pid}"
-    wait_exited "$1" 30
-    code="$(state .State.ExitCode "$1")"
-    [[ "${code}" != 0 ]] || fail "$1 exited 0 after SIG$3 to $2"
-    ok "$1: SIG$3 to $2 (pid ${pid}), the container exited with code ${code}"
 }
 
 scenario_single_process() {
     log "23. One process per container: docker stop is clean, and the process dying stops the container non-zero"
     stop_one "${RELAY1_NAME}"
+    crash_one aspia_relay KILL "${RELAY1_NAME}"
     stop_one "${ROUTER_NAME}"
-    crash_alone "${RELAY1_NAME}" aspia_relay KILL
-    crash_alone "${ROUTER_NAME}" aspia_router TERM   # a clean exit 0 is still a failure of the container
+    crash_one aspia_router TERM "${ROUTER_NAME}"   # a clean exit 0 is still a failure of the container
 }
 
 scenario_role_all_explicit() {
@@ -1215,14 +1277,13 @@ scenario_role_all_explicit() {
     ok "healthy, the Relay connects to 127.0.0.1, the summary is the role all one; the remote-Router variable is ignored with a warning"
 
     # The combined container can serve a Relay on another machine as well (README: keep the local Relay).
-    start_relay s24-relay -e ASPIA_RELAY_ROUTER_ADDRESS=aspia-all -e EXTERNAL_IP=relay6.example.test \
-        -e "ASPIA_RELAY_ROUTER_PUBLIC_KEY=$(helper "${cfg}" "${db}" cat /etc/aspia/relay.pub)"
+    start_relay s24-relay aspia-all "$(helper "${cfg}" "${db}" cat /etc/aspia/relay.pub)" relay6.example.test
     relay="${CURRENT_CONTAINER}"
     wait_healthy "${relay}"
     ip="$(ip_of "${relay}")"
     CURRENT_CONTAINER="${name}"
     wait_log "${name}" "Received key pool: [0-9]+ \\( \"${ip}\" \\)" 1 30
-    [[ "$(established_8063 "${name}")" == 2 ]] || fail "expected the local and the remote Relay on 8063, found $(established_8063 "${name}")"
+    [[ "$(count_tcp "${name}" 01 8063)" == 2 ]] || fail "expected the local and the remote Relay on 8063, found $(count_tcp "${name}" 01 8063)"
     docker exec "${name}" /usr/bin/aspia_health >/dev/null || fail "the combined container is no longer healthy"
     ok "a remote Relay (${ip}) registered with the combined container next to its own Relay; both connected, healthy"
 }
@@ -1253,6 +1314,7 @@ scenario_env_empty_allowlist
 scenario_puid_pgid_refused
 scenario_split
 scenario_two_relays
+start_failing_relays
 scenario_relay_wrong_key
 scenario_relay_unreachable
 scenario_router_allow_list

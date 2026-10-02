@@ -11,12 +11,16 @@
 # shellcheck disable=SC2034  # used by the scripts that source this file
 readonly TCP_ESTABLISHED=01 TCP_LISTEN=0A UDP_BOUND=07
 
+# ROLE: what this container runs, from ASPIA_ROLE; unset or empty means all. The only place that
+# applies the default, for aspia_start and aspia_health alike.
+# shellcheck disable=SC2034  # used by the scripts that source this file
+readonly ROLE="${ASPIA_ROLE:-all}"
+
 # role_services <role>: prints the processes that ASPIA_ROLE=<role> runs, in start order, and fails
-# for an unknown role. Empty means all. aspia_start starts these and aspia_health checks these, so
-# the two always agree.
+# for an unknown role. aspia_start starts these and aspia_health checks these, so the two always agree.
 role_services() {
     case "$1" in
-        "" | all) echo "router relay" ;;
+        all) echo "router relay" ;;
         router) echo "router" ;;
         relay) echo "relay" ;;
         *) return 1 ;;

@@ -16,7 +16,8 @@ EnvironmentFile=aspia-server.env
 
 # Network: published ports, one-to-one (host port = container port), because the Relay tells
 # clients its own port. If you change a port in aspia-server.env, change it here too.
-# 8063 (Router <-> Relay) stays inside the container.
+# 8063 (Router <-> Relay) stays inside the container (role all; for ASPIA_ROLE=router see
+# podman/README.md, section 11).
 PublishPort=8060:8060/tcp
 PublishPort=8061:8061/tcp
 PublishPort=8062:8062/tcp

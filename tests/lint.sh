@@ -35,15 +35,16 @@ docker run --rm -v "${PWD}:/repo:ro" -w /repo "${ACTIONLINT}" -no-color || statu
 # ASPIA_ROLE and the Router's ASPIA_ROUTER_*. Names are the lines "NAME=" or "#NAME=".
 env_names() { sed -nE 's/^#?([A-Z][A-Z0-9_]*)=.*/\1/p' "$1" | sort -u; }
 
-echo "podman/aspia-server.env.example variables match .env.example"
-diff --label ".env.example" --label "podman/aspia-server.env.example" \
-    <(env_names .env.example | grep -vE '^(ASPIA_IMAGE|ASPIA_RELAY_ROUTER_.*)$') \
-    <(env_names podman/aspia-server.env.example) || status=1
+# check_env_example FILE EXCLUDED_REGEX: FILE lists the variables of .env.example except those matching the regex.
+check_env_example() {
+    echo "$1 variables match .env.example"
+    diff --label ".env.example" --label "$1" \
+        <(env_names .env.example | grep -vE "$2") \
+        <(env_names "$1") || status=1
+}
 
-echo "podman/aspia-relay.env.example variables match .env.example"
-diff --label ".env.example" --label "podman/aspia-relay.env.example" \
-    <(env_names .env.example | grep -vE '^(ASPIA_IMAGE|ASPIA_ROLE|ASPIA_ROUTER_.*)$') \
-    <(env_names podman/aspia-relay.env.example) || status=1
+check_env_example podman/aspia-server.env.example '^(ASPIA_IMAGE|ASPIA_RELAY_ROUTER_.*)$'
+check_env_example podman/aspia-relay.env.example '^(ASPIA_IMAGE|ASPIA_ROLE|ASPIA_ROUTER_.*)$'
 
 echo "scripts/versions.sh check"
 scripts/versions.sh check || status=1
