@@ -16,7 +16,7 @@ services:
   aspia-router:
     # Built from this repository by default; set ASPIA_IMAGE in .env to run a published image,
     # pinned to a version or a digest (see docker-compose.yml).
-    image: ${ASPIA_IMAGE:-aspia-server:3.0.21}
+    image: ${ASPIA_IMAGE:-aspia-server:3.0.22}
     build: .
     container_name: aspia-router
     hostname: aspia-router
