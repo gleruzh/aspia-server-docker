@@ -173,7 +173,7 @@ All other capabilities are dropped, no process can gain privileges (setuid progr
 - `KILL`: pass `docker stop` on to the processes running as `PUID`/`PGID`.
 - `NET_BIND_SERVICE` (Podman units only): Podman treats ports below 1024 as privileged; with Docker and `--network host`, such a port needs `--cap-add NET_BIND_SERVICE`.
 
-For the simplest setup (no `PUID`/`PGID`, volumes owned by root) none of the five is needed: remove the `--cap-add` lines (`cap_add:` in a compose file). Details and measurements: [docs/dev/UPSTREAM-3.x-NOTES.md](docs/dev/UPSTREAM-3.x-NOTES.md), section 20.
+For the simplest setup (no `PUID`/`PGID`, volumes owned by root) none of the five is needed: remove the `--cap-add` flags (`cap_add:` in a compose file). Details and measurements: [docs/dev/UPSTREAM-3.x-NOTES.md](docs/dev/UPSTREAM-3.x-NOTES.md), section 20.
 
 ### Running a Relay on a separate host
 
