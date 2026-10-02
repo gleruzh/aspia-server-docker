@@ -1383,7 +1383,8 @@ check_hardening() {
     for name in tini aspia_router aspia_relay; do
         grep -q "^${name} " <<<"${status}" || fail "$1: no ${name} in the process list: ${status}"
     done
-    [[ -z "$(awk -v m="$2" -v f="${full}" '$1 ~ /^(tini|aspia_start|aspia_router|aspia_relay)$/ && ($3 != 1 || $2 != ($1 == "tini" ? f : m))' <<<"${status}")" ]] \
+    # "" forces a string comparison: awk reads 00000000000000e3 as the number 0e3 = 0.
+    [[ -z "$(awk -v m="$2" -v f="${full}" '$1 ~ /^(tini|aspia_start|aspia_router|aspia_relay)$/ && ($3 != 1 || $2"" != ($1 == "tini" ? f : m)"")' <<<"${status}")" ]] \
         || fail "$1: expected NoNewPrivs 1 and CapEff $2 (tini ${full}), got:"$'\n'"${status}"
     host="$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.PidsLimit}}' "$1")"
     [[ "${host}" == "true ${PIDS_LIMIT}" ]] || fail "$1: ReadonlyRootfs and PidsLimit are '${host}'"
