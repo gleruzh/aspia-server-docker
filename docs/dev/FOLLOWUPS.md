@@ -169,6 +169,11 @@ Candidates from the PR 3 task that were deliberately left out, with the reason:
 - **`PidsLimit=` in the Quadlet units** once the minimum Podman is 4.7 or later; until then `PodmanArgs=--pids-limit=`.
 - **The Podman fallback without Quadlet** (podman/README.md, section 9, `podman run` for Podman < 4.5) does not
   carry the hardening flags. Not tested on Podman 3.4/4.4 with the real image (section 18: stand-in only).
+  A unit for Podman 3.4.4 now exists and runs a real 2.7.0 -> 3.0.21 migration on Ubuntu 22.04 (owner's server,
+  2026-10-02: migration, keys, healthy). Put it into section 9: `--replace --sdnotify=conmon --stop-timeout=30`,
+  the hardening flags (no no-new-privileges), `TimeoutStartSec=300`, `TimeoutStopSec=60`, and an explicit
+  `--health-cmd=/usr/bin/aspia_health ...`: Podman 3.4.4 does not read the HEALTHCHECK of a BuildKit-built image
+  (no `container_config` in the image config; verified with a test image in OCI and Docker formats).
 - **Native amd64 pid counts.** The pids limit (128) was sized from runs under Rosetta, which adds a thread per
   process; native counts are lower. CI (amd64) runs `tests/run.sh` with the limit.
 - **`aspia_health` falls back to the default ports when it cannot read the config** (an unreadable 0600 file), so it
