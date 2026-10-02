@@ -7,11 +7,12 @@
 #
 # For each variant it installs the files as the README says (the unit's Image= line is replaced by
 # ASPIA_TEST_IMAGE, the one edit the README asks for; the test asserts that nothing else differs),
-# runs the Quadlet generator in dry-run mode, starts the service, and checks: the unit is generated without errors; the service starts and the
-# container becomes healthy ("podman healthcheck run" succeeds); the unit is wanted by
-# default.target (so it starts at boot); "systemctl stop" finishes quickly and cleanly; the keys are
-# the same after "systemctl restart"; and systemd restarts the container after it was killed. It also
-# applies the Network=host edit that the unit file describes in a comment and checks it.
+# runs the Quadlet generator in dry-run mode, starts the service, and checks: the unit is generated
+# without errors; the service starts and the container becomes healthy ("podman healthcheck run"
+# succeeds); the unit is wanted by default.target (so it starts at boot); "systemctl stop" finishes
+# quickly and cleanly; the keys are the same after "systemctl restart"; and systemd restarts the
+# container after it was killed. It also applies the Network=host edit that the unit file describes
+# in a comment and checks it.
 # Everything it installed is removed at the end, and nothing it did not install is touched.
 #
 # "guard" checks that safety: it creates a volume and a unit that look like a user's own install,
@@ -23,8 +24,8 @@
 #
 # Environment:
 #   ASPIA_TEST_IMAGE    (required) the image to test. Used as it is when Podman already has it;
-#                       else taken from Docker's image store ("docker save | podman load"); else
-#                       pulled.
+#                       else taken from Docker's image store ("docker save | podman load"; not for
+#                       a digest reference, which Docker cannot save); else pulled.
 #   ASPIA_TEST_USER     rootless user when this script runs as root (default aspia-podman-test;
 #                       created, and removed again, if it does not exist). An existing user is never
 #                       modified: it must already have ranges in /etc/subuid and /etc/subgid. When
@@ -165,17 +166,15 @@ check_free() {
 # load_image: makes ASPIA_TEST_IMAGE exist in the current Podman store (root's or the rootless
 # user's). Only names this run added are removed later, never a user's image.
 load_image() {
-    local loaded
     if run podman image exists "${ASPIA_TEST_IMAGE}"; then
         return 0
-    elif command -v docker > /dev/null && docker image inspect "${ASPIA_TEST_IMAGE}" > /dev/null 2>&1; then
-        loaded="$(docker save "${ASPIA_TEST_IMAGE}" | run podman load -q | sed -n 's/^Loaded image[^:]*: //p' | head -n 1)" || die "docker save | podman load failed"
-        [[ -n "${loaded}" ]] || die "could not load the image into Podman"
-        CREATED_TAGS+=("${loaded}")
+    elif [[ "${ASPIA_TEST_IMAGE}" != *@* ]] && command -v docker > /dev/null \
+        && docker image inspect "${ASPIA_TEST_IMAGE}" > /dev/null 2>&1; then
+        docker save "${ASPIA_TEST_IMAGE}" | run podman load -q > /dev/null || die "docker save | podman load failed"
     else
         run podman pull -q "${ASPIA_TEST_IMAGE}" > /dev/null || die "could not pull ${ASPIA_TEST_IMAGE}"
-        CREATED_TAGS+=("${ASPIA_TEST_IMAGE}")
     fi
+    CREATED_TAGS+=("${ASPIA_TEST_IMAGE}")
     run podman image exists "${ASPIA_TEST_IMAGE}" || die "${ASPIA_TEST_IMAGE} is not in Podman's store after loading"
 }
 
@@ -197,7 +196,12 @@ setup_rootless_user() {
         as_root usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "${RL_USER}"
     fi
     if ! grep -q "^${RL_USER}:" /etc/subuid 2> /dev/null || ! grep -q "^${RL_USER}:" /etc/subgid 2> /dev/null; then
-        echo "${RL_USER} has no subordinate ID ranges, and this script does not modify an existing user. Add them (e.g. 'usermod --add-subuids 100000-165535 --add-subgids 100000-165535 ${RL_USER}') or set ASPIA_TEST_USER to another name." >&2
+        echo "${RL_USER} has no subordinate ID ranges, and this script does not modify an existing user. Add them (e.g. 'usermod --add-subuids 100000-165535 --add-subgids 100000-165535 ${RL_USER}')." >&2
+        if ((EUID == 0)); then
+            echo "Or set ASPIA_TEST_USER to another name; the script creates that user if it does not exist." >&2
+        else
+            echo "Or run the script as root (e.g. 'sudo --preserve-env=ASPIA_TEST_IMAGE tests/podman.sh'): it then creates a throwaway user." >&2
+        fi
         exit 2
     fi
     uid="$(id -u "${RL_USER}")"
@@ -331,7 +335,7 @@ guard_check() {
     run mkdir -p "${UNIT_DIR}"
     run podman volume create systemd-aspia-config > /dev/null
     printf '# a unit that is not ours\n' | run tee "${UNIT_DIR}/aspia-server.container" > /dev/null
-    out="$("${REPO}/tests/podman.sh" system 2>&1)" || status=$?
+    out="$(GITHUB_STEP_SUMMARY='' "${REPO}/tests/podman.sh" system 2>&1)" || status=$?
     run podman volume exists systemd-aspia-config && volume_kept=1
     run grep -q 'not ours' "${UNIT_DIR}/aspia-server.container" && unit_kept=1
     quiet run podman volume rm -f systemd-aspia-config
