@@ -1,0 +1,50 @@
+# Aspia Router only (ASPIA_ROLE=router), for a setup with Relays on other machines (compose.relay.yml).
+# README.md, "Running a Relay on a separate host", has the steps for both sides.
+#
+#   docker compose -f compose.router.yml up -d --build
+#
+# Same image, volumes and .env as docker-compose.yml: switching an existing combined installation
+# to this file keeps its keys, so hosts and clients need no change. Stop the combined container
+# first (docker compose -f docker-compose.yml down); both publish the same Router ports.
+#
+# Who must reach which port of this machine:
+#   8060/tcp, 8061/tcp   Aspia hosts (2.x on 8060, 3.x on 8061)
+#   8062/tcp             Aspia clients (address book, Router management)
+#   8065/udp             hosts and clients (built-in STUN server)
+#   8063/tcp             only the Relay machines. Restrict it: firewall and ASPIA_ROUTER_RELAY_ALLOWED_IPS.
+services:
+  aspia-router:
+    # Built from this repository by default; set ASPIA_IMAGE in .env to run a published image,
+    # pinned to a version or a digest (see docker-compose.yml).
+    image: ${ASPIA_IMAGE:-aspia-server:3.0.21}
+    build: .
+    container_name: aspia-router
+    hostname: aspia-router
+    environment:
+      - ASPIA_ROLE=router
+      # Who may register as a Relay: the public addresses of your Relay machines (comma-separated
+      # IPs or subnets). Unset or empty = any address (the Router's default); the startup log
+      # warns about it.
+      - ASPIA_ROUTER_RELAY_ALLOWED_IPS
+      - ASPIA_ROUTER_CLIENT_PORT
+      - ASPIA_ROUTER_HOST_PORT
+      - ASPIA_ROUTER_LEGACY_PORT
+      - ASPIA_ROUTER_STUN_ENABLED
+      - ASPIA_ROUTER_STUN_PORT
+      - ASPIA_ROUTER_CLIENT_ALLOWED_IPS
+      - ASPIA_ROUTER_HOST_ALLOWED_IPS
+      - ASPIA_LOG_LEVEL
+      - TZ
+      - PUID
+      - PGID
+    volumes:
+      - ./data/config:/etc/aspia:rw
+      - ./data/database:/var/lib/aspia:rw
+    # Host port = container port, both from the same variable, as in docker-compose.yml.
+    ports:
+      - "${ASPIA_ROUTER_LEGACY_PORT:-8060}:${ASPIA_ROUTER_LEGACY_PORT:-8060}"       # hosts of Aspia 2.x
+      - "${ASPIA_ROUTER_HOST_PORT:-8061}:${ASPIA_ROUTER_HOST_PORT:-8061}"           # hosts of Aspia 3.x
+      - "${ASPIA_ROUTER_CLIENT_PORT:-8062}:${ASPIA_ROUTER_CLIENT_PORT:-8062}"       # clients
+      - "${ASPIA_ROUTER_STUN_PORT:-8065}:${ASPIA_ROUTER_STUN_PORT:-8065}/udp"       # STUN
+      - "8063:8063"                                                                 # Relays (router.conf [relay] port)
+    restart: unless-stopped
