@@ -32,13 +32,13 @@ PublishPort=8070:8070/tcp
 Volume=aspia-config.volume:/etc/aspia
 Volume=aspia-data.volume:/var/lib/aspia
 
-# Least privilege (README.md, "Security settings"). NET_BIND_SERVICE: Podman keeps ports < 1024
-# privileged, and a port variable may be set below 1024. PodmanArgs: PidsLimit= needs Podman 4.7.
+# Least privilege (README "Security settings"); NET_BIND_SERVICE: Podman keeps ports < 1024 privileged.
 DropCapability=ALL
 AddCapability=CHOWN DAC_OVERRIDE SETUID SETGID KILL NET_BIND_SERVICE
 NoNewPrivileges=true
 ReadOnly=true
-PodmanArgs=--pids-limit=128
+# PidsLimit= needs Podman 4.7; --read-only-tmpfs=false: no tmpfs on /tmp, /run (as in compose).
+PodmanArgs=--pids-limit=128 --read-only-tmpfs=false
 
 # The health check is set here explicitly, so it does not depend on how the image was built or pulled.
 HealthCmd=/usr/bin/aspia_health
