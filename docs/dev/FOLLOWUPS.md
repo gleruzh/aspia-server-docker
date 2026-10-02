@@ -222,3 +222,44 @@ Correctness points not fixed in PR 1, each small and open for discussion:
     architecture its own checksum entries, and run tests/run.sh on arm64 too.
   - Not pursued: building Router and Relay from source ourselves. That would ship binaries upstream never
     released, and the vcpkg and Qt build is heavy.
+
+## From PR 6 (canonical English README)
+
+Decisions on earlier items:
+
+- **Published image vs. local build in one compose file** (PR 1 / PR 2 item "Published image"). Kept one
+  `docker-compose.yml` with `image:` and `build:`. The README quick start downloads only `docker-compose.yml`
+  and `.env.example` into an empty directory and sets `ASPIA_IMAGE`; there is no Dockerfile there, so a failed
+  pull fails loudly instead of building under the published name (checked with Compose v5.5.1: `failed to read
+  dockerfile`). In a checkout the silent local build still happens (checked: `error from registry: denied`,
+  then `Building`); "Building locally" in the README says so and says not to combine `ASPIA_IMAGE` with
+  `--build`. A separate `compose.build.yaml` is still an option if this keeps confusing people.
+- **`HEALTHCHECK --start-interval` and Docker Engine 25** (PR 1 review item): the README requirements now say
+  Docker Engine 25.0 or later (Docker's Dockerfile reference: "This option requires Docker Engine version 25.0
+  or later"). What an older engine does with it was not tested.
+- **README** (PR 1 item, Russian half; PR 4 item, Podman text): the Russian half is gone from `README.md`;
+  `docs/README.ru.md` is the translation (PR 6, second step). The Podman text is not folded into the main
+  README: the README links to `podman/README.md`, as the PR 6 task asks.
+
+New:
+
+- **Language switcher link.** `README.md` links `docs/README.ru.md`, which does not exist until the Russian
+  translation is committed. Do not merge PR 6 without it.
+- **`podman/README.md` is English only.** Translating it too would double the work for every change; decide
+  whether translations cover it.
+- **Download URLs point at `main`.** The quick start, the 2.x upgrade and the Relay steps download the compose
+  files from `raw.githubusercontent.com/<owner>/aspia-server-docker/main/...`. A compose file on `main` can be
+  newer than the image tag a user pins. Repository release tags (for example `v3.0.21-1`) would let the README
+  pin the files as well as the image.
+- **Published image and `ASPIA_ROLE`.** The image published before PR 5 is merged has no roles. The Relay
+  steps in the README were run with a local build (`aspia-server:3.0.21` from this branch), not with a pulled
+  image; run them once with the published image after PR 5's publish.
+- **Badges in translations.** The badge links are relative (`../../actions/...`); a translation in `docs/`
+  needs one more `../`. Check that both render on GitHub, and on Docker Hub (where the description sync
+  rewrites relative links).
+- **`docs/README.*.md` and `scripts/versions.sh`.** Already covered: `pinned_files` takes every `*.md` outside
+  `docs/dev/`, so a translation's image tags are checked and bumped like the README's. Nothing to do; noted so
+  nobody adds it twice.
+- **Not verified with a GUI.** The README steps for the Client (adding the Router, 2FA enrolment, changing the
+  password, approving a Host) and for the Host (Router tab) come from aspia.org and were not run here. Only the
+  server side was checked: the key in the log and in `host.pub`, and `aspia_router --reset-otp`.
