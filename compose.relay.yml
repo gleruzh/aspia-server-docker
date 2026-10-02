@@ -48,4 +48,10 @@ services:
     # Host port = container port, from the same variable: the Relay announces this port.
     ports:
       - "${ASPIA_RELAY_PEER_PORT:-8070}:${ASPIA_RELAY_PEER_PORT:-8070}"             # clients and hosts
+    # Least privilege; why each capability: README.md, "Security settings".
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID, KILL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    pids_limit: 128
     restart: unless-stopped
