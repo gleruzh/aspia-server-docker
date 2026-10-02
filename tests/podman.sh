@@ -12,7 +12,8 @@
 # succeeds); the unit is wanted by default.target (so it starts at boot); "systemctl stop" finishes
 # quickly and cleanly; the keys are the same after "systemctl restart"; and systemd restarts the
 # container after it was killed. It also applies the Network=host edit that the unit file describes
-# in a comment and checks it.
+# in a comment and checks it. Both units: the container has exactly the capabilities of AddCapability=,
+# no-new-privileges, a read-only root filesystem and the --pids-limit of PodmanArgs=.
 # Everything it installed is removed at the end, and nothing it did not install is touched.
 #
 # "guard" checks that safety: it creates a volume and a unit that look like a user's own install,
@@ -168,6 +169,25 @@ is_healthy() {
 }
 
 wait_healthy() { wait_until "${HEALTHY_TIMEOUT}" is_healthy; }
+
+# check_hardening UNIT_FILE CONTAINER: the running container has what the shipped unit asks for.
+check_hardening() {
+    local unit=$1 container=$2 cap mask=0 caps pids status host
+    local -A bit=([CHOWN]=0 [DAC_OVERRIDE]=1 [KILL]=5 [SETGID]=6 [SETUID]=7)
+    caps="$(sed -n 's/^AddCapability=//p' "podman/${unit}")"
+    pids="$(sed -n 's/^PodmanArgs=--pids-limit=//p' "podman/${unit}")"
+    [[ -n "${caps}" && -n "${pids}" ]] || die "podman/${unit} has no AddCapability= or PodmanArgs=--pids-limit= line"
+    for cap in ${caps}; do
+        [[ -n "${bit[${cap}]:-}" ]] || die "check_hardening does not know ${cap}"
+        mask=$((mask | (1 << ${bit[${cap}]})))
+    done
+    status="$(run podman exec "${container}" grep -E '^(CapEff|NoNewPrivs):' /proc/1/status | tr -s ' \t\n' ' ')"
+    [[ "${status}" == "CapEff: $(printf '%016x' "${mask}") NoNewPrivs: 1 " ]] || die "${container}: PID 1 has '${status}', expected CapEff $(printf '%016x' "${mask}") (${caps}) and NoNewPrivs 1"
+    host="$(run podman inspect --format '{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.PidsLimit}}' "${container}")"
+    [[ "${host}" == "true ${pids}" ]] || die "${container}: ReadonlyRootfs and PidsLimit are '${host}', expected 'true ${pids}'"
+    if run podman exec "${container}" touch /usr/bin/aspia_start 2> /dev/null; then die "${container}: the root filesystem is writable"; fi
+    ok "${container}: capabilities ${caps} only, no-new-privileges, read-only root, pids limit ${pids} (pids.max $(run podman exec "${container}" cat /sys/fs/cgroup/pids.max 2>&1))"
+}
 
 # restart_seen N: systemd has restarted the unit more than N times.
 restart_seen() { (($(sctl show "${UNIT}" -p NRestarts --value) > $1)); }
@@ -339,6 +359,7 @@ run_variant() {
     sctl start "${UNIT}" || die "systemctl start failed"
     wait_healthy || die "the container did not become healthy within ${HEALTHY_TIMEOUT} s"
     ok "service started; podman healthcheck run reports healthy"
+    check_hardening aspia-server.container "${CONTAINER}"
 
     say "Starts at boot"
     sctl list-dependencies default.target --plain 2> /dev/null | grep -q "${UNIT}" || die "${UNIT} is not wanted by default.target"
@@ -452,6 +473,7 @@ run_relay_variant() {
     wait_until "${HEALTHY_TIMEOUT}" relay_healthy || die "the Relay did not become healthy within ${HEALTHY_TIMEOUT} s"
     wait_until 60 relay_registered || die "the Router did not log the Relay's key pool"
     ok "healthy; Router log: $(grep -m1 -o 'Received key pool.*' <<< "$(as_root podman logs "${TEST_ROUTER}" 2>&1)")"
+    check_hardening aspia-relay.container "${RELAY_CONTAINER}"
     sctl list-dependencies default.target --plain 2> /dev/null | grep -q "${RELAY_UNIT}" || die "${RELAY_UNIT} is not wanted by default.target"
     ok "${RELAY_UNIT} is wanted by default.target"
 
