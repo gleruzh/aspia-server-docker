@@ -2,6 +2,12 @@
 #
 # aspia_start: entrypoint of the Aspia Server image (Aspia Router and Aspia Relay in one container).
 #
+# ASPIA_ROLE selects what runs: all (the default: the Router and its own Relay, exactly as before
+# the variable existed), router (only the Router; Relays connect from other machines), or relay
+# (only a Relay, connected to a Router on another machine: ASPIA_RELAY_ROUTER_ADDRESS,
+# ASPIA_RELAY_ROUTER_PORT, ASPIA_RELAY_ROUTER_PUBLIC_KEY or ..._FILE). Every phase below runs only
+# for the processes of the role (SERVICES).
+#
 #   1. Check the settings and the data on the volumes. Nothing is changed if a check fails.
 #   2. Prepare the configuration:
 #        - empty volumes:  create it with the binaries' own --create-config;
@@ -23,6 +29,7 @@
 # variable scheme for every documented router.conf/relay.conf key (ports, allow-lists, STUN,
 # Relay timeout/limit), stricter address/port/list validation, EXTERNAL_IP=auto (detected with
 # curl, added back to the image for this only), and PUID/PGID to run both processes as non-root.
+# PR 5 added ASPIA_ROLE and the ASPIA_RELAY_ROUTER_* variables for a Relay on its own.
 
 # SC2329: validate_*, prepare_* and start_* are called by name through SERVICES, on_signal by trap.
 # shellcheck disable=SC2329
@@ -46,9 +53,11 @@ readonly ROUTER_PUB="${CONFIG_DIR}/router.pub"   # 2.x: one key for hosts and re
 # How long to wait for a started process to open its port before moving on.
 readonly LISTEN_TIMEOUT_SECONDS=60
 
-# The processes this container runs, in start order. This is the only place that decides it:
-# every phase below runs validate_<name>, prepare_<name> and start_<name> for each entry.
-readonly SERVICES=(router relay)
+# The processes this container runs, in start order, set from ASPIA_ROLE by resolve_role (through
+# role_services in aspia_common.sh, which aspia_health uses too). This is the only place that
+# decides it: every phase below runs validate_<name>, prepare_<name> and start_<name> for each entry.
+ROLE=""
+SERVICES=()
 
 # IPv6 literal, without zone id: https://stackoverflow.com/questions/53497 (public domain snippet).
 readonly RE_IPV6='^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))$'
@@ -65,6 +74,8 @@ ROUTER_STATE=""   # new | migrate | existing
 RELAY_STATE=""    # new | migrate | existing
 PEER_PUBLIC_ADDRESS=""   # resolved in validate_relay: ASPIA_RELAY_PUBLIC_ADDRESS, its alias
                           # EXTERNAL_IP, or the result of "auto" detection.
+ROUTER_KEY=""            # ASPIA_ROLE=relay: the remote Router's relay key, resolved in validate_relay
+                          # from ASPIA_RELAY_ROUTER_PUBLIC_KEY or the file ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE.
 
 declare -A CHILDREN=()   # pid -> process name
 declare -A BACKED_UP=()  # file -> 1 once copied (or created) in this start; backup() skips it
@@ -356,6 +367,77 @@ detect_public_address() {
 }
 
 # ---------------------------------------------------------------------------------------------
+# Roles (ASPIA_ROLE)
+
+# resolve_role: sets ROLE and SERVICES from ASPIA_ROLE; an unknown value is fatal.
+resolve_role() {
+    local services
+    ROLE="${ASPIA_ROLE:-all}"
+    services="$(role_services "${ROLE}")" \
+        || die "ASPIA_ROLE='${ROLE}' is not one of: all (the default: Router and Relay), router, relay. Nothing was changed."
+    read -ra SERVICES <<<"${services}"
+}
+
+# has_service <name>: this role runs that process.
+has_service() { [[ " ${SERVICES[*]} " == *" $1 "* ]]; }
+
+# warn_ignored: names every variable that is set but has no effect in this role, so that a .env
+# file shared between roles does not look like it applies. Once per start (not again after the
+# PUID/PGID re-exec). Empty values count as unset, as everywhere else.
+warn_ignored() {
+    [[ -z "${_ASPIA_PRIVDROP_DONE:-}" ]] || return 0
+    local name pattern why
+    local -a ignored=()
+    case "${ROLE}" in
+        router)
+            pattern='^(EXTERNAL_IP|ASPIA_RELAY_.*)$'
+            why="this container runs no Relay (ASPIA_ROLE=router)"
+            ;;
+        relay)
+            pattern='^ASPIA_ROUTER_.*$'
+            why="this container runs no Router (ASPIA_ROLE=relay); they belong to the Router's container"
+            ;;
+        *)
+            pattern='^ASPIA_RELAY_ROUTER_.*$'
+            why="the Relay in this container always uses the Router in this container (ASPIA_ROLE=all); they are for ASPIA_ROLE=relay"
+            ;;
+    esac
+    while IFS= read -r name; do
+        [[ "${name}" =~ ${pattern} && -n "${!name:-}" ]] && ignored+=("${name}")
+    done < <(compgen -e)
+    ((${#ignored[@]} == 0)) || warn "Ignored: ${ignored[*]}: ${why}."
+}
+
+# is_valid_router_address: what ASPIA_RELAY_ROUTER_ADDRESS accepts: an IP literal, or a DNS name
+# (letters, digits, '.', '-' and '_', at most 253 characters). The Relay resolves a name itself on
+# every connection attempt; an unknown name is logged as SPECIFIED_HOST_NOT_FOUND and retried.
+is_valid_router_address() {
+    is_valid_ip "$1" && return 0
+    ((${#1} >= 1 && ${#1} <= 253)) && [[ "$1" =~ ^[A-Za-z0-9._-]+$ && "$1" =~ [A-Za-z0-9] ]]
+}
+
+# resolve_router_key: sets ROUTER_KEY from ASPIA_RELAY_ROUTER_PUBLIC_KEY or from the file named by
+# ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE (one of them, not both), and checks that it is 64 hex digits.
+resolve_router_key() {
+    local value="${ASPIA_RELAY_ROUTER_PUBLIC_KEY:-}" file="${ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE:-}"
+    if [[ -n "${value}" && -n "${file}" ]]; then
+        die "Both ASPIA_RELAY_ROUTER_PUBLIC_KEY and ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE are set. Set one of them. Nothing was changed."
+    fi
+    if [[ -n "${file}" ]]; then
+        [[ -f "${file}" && -r "${file}" ]] || die "ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE='${file}': no readable file at that" \
+            "path in the container. Mount the Router's relay.pub there (read-only is enough). Nothing was changed."
+        ROUTER_KEY="$(read_key "${file}")"
+        [[ -n "${ROUTER_KEY}" ]] || die "ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE='${file}' does not hold a key (64 hex digits)." \
+            "It must be a copy of the Router's /etc/aspia/relay.pub. Nothing was changed."
+    else
+        ROUTER_KEY="$(trim "${value}")"
+        [[ "${ROUTER_KEY}" =~ ^[0-9A-Fa-f]{64}$ ]] || die "ASPIA_RELAY_ROUTER_PUBLIC_KEY='${value}' is not a key (64 hex digits)." \
+            "Use the content of the Router's /etc/aspia/relay.pub (the Router prints it at startup as" \
+            "'Public key for relays'). Nothing was changed."
+    fi
+}
+
+# ---------------------------------------------------------------------------------------------
 # Phase 0: run as PUID:PGID instead of root, if requested. A no-op when neither is set.
 #
 # Split in two so that ownership is never touched before every validate_* has passed ("nothing was
@@ -392,12 +474,23 @@ drop_privileges() {
     [[ -z "${puid}" && -z "${pgid}" ]] && return 0
 
     chown -R "${puid}:${pgid}" "${CONFIG_DIR}" "${DATA_DIR}"
-    log "PUID/PGID set: running the Router and the Relay as uid=${puid} gid=${pgid}."
+    if [[ "${ROLE}" == all ]]; then
+        log "PUID/PGID set: running the Router and the Relay as uid=${puid} gid=${pgid}."
+    else
+        log "PUID/PGID set: running ${SERVICES[*]} as uid=${puid} gid=${pgid}."
+    fi
     export _ASPIA_PRIVDROP_DONE=1
-    # Both names, already resolved: "auto" is not queried twice, and validate_relay does not log a
-    # spurious "set to different values" the second time around when only one of them was given.
-    export ASPIA_RELAY_PUBLIC_ADDRESS="${PEER_PUBLIC_ADDRESS}"
-    export EXTERNAL_IP="${PEER_PUBLIC_ADDRESS}"
+    if has_service relay; then
+        # Both names, already resolved: "auto" is not queried twice, and validate_relay does not log a
+        # spurious "set to different values" the second time around when only one of them was given.
+        export ASPIA_RELAY_PUBLIC_ADDRESS="${PEER_PUBLIC_ADDRESS}"
+        export EXTERNAL_IP="${PEER_PUBLIC_ADDRESS}"
+    fi
+    if [[ "${ROLE}" == relay ]]; then
+        # The key as read by root: the file may not be readable by PUID.
+        export ASPIA_RELAY_ROUTER_PUBLIC_KEY="${ROUTER_KEY}"
+        unset ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE
+    fi
     exec setpriv --reuid="${puid}" --regid="${pgid}" --clear-groups --no-new-privs -- "$0" "$@"
 }
 
@@ -419,7 +512,8 @@ validate_router() {
     # in relay.conf). Excluding it from relay/white_list would silently lock out the co-located Relay:
     # it looks like it starts (the port opens), but every connection is closed immediately and the
     # container never becomes healthy. Catch it here instead of a several-minute unexplained timeout.
-    if [[ -n "${ASPIA_ROUTER_RELAY_ALLOWED_IPS:-}" ]] \
+    # Only when that Relay exists (ASPIA_ROLE=all): with ASPIA_ROLE=router every Relay is remote.
+    if has_service relay && [[ -n "${ASPIA_ROUTER_RELAY_ALLOWED_IPS:-}" ]] \
         && ! allowed_ips_covers_ipv4 "${ASPIA_ROUTER_RELAY_ALLOWED_IPS}" 127.0.0.1; then
         die "ASPIA_ROUTER_RELAY_ALLOWED_IPS='${ASPIA_ROUTER_RELAY_ALLOWED_IPS}' does not cover 127.0.0.1." \
             "In this image the Router and its own co-located Relay always connect over the loopback" \
@@ -457,6 +551,41 @@ validate_router() {
     fi
 }
 
+# validate_remote_relay: ASPIA_ROLE=relay only. Every missing required setting is named in one
+# message; then the values and the volume are checked.
+validate_remote_relay() {
+    local file list
+    local -a missing=() found=()
+    [[ -n "$(trim "${ASPIA_RELAY_ROUTER_ADDRESS:-}")" ]] \
+        || missing+=("ASPIA_RELAY_ROUTER_ADDRESS (the address of the Router)")
+    [[ -n "$(trim "${ASPIA_RELAY_ROUTER_PUBLIC_KEY:-}")" || -n "${ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE:-}" ]] \
+        || missing+=("ASPIA_RELAY_ROUTER_PUBLIC_KEY or ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE (the Router's relay.pub)")
+    [[ -n "$(trim "${ASPIA_RELAY_PUBLIC_ADDRESS:-${EXTERNAL_IP:-}}")" ]] \
+        || missing+=("ASPIA_RELAY_PUBLIC_ADDRESS or its alias EXTERNAL_IP (the address clients and hosts use to reach this Relay)")
+    if ((${#missing[@]})); then
+        list="$(printf '; %s' "${missing[@]}")"
+        die "ASPIA_ROLE=relay needs these settings, which are not set: ${list#; }." \
+            "See \"Running a Relay on a separate host\" in README.md. Nothing was changed."
+    fi
+
+    is_valid_router_address "${ASPIA_RELAY_ROUTER_ADDRESS}" \
+        || die "ASPIA_RELAY_ROUTER_ADDRESS='${ASPIA_RELAY_ROUTER_ADDRESS}' is not an IP address or a host name. Nothing was changed."
+    require_port ASPIA_RELAY_ROUTER_PORT
+    resolve_router_key
+
+    # A Router's (or a 2.x) configuration volume mounted here by mistake: this start would rewrite
+    # that installation's relay.conf. A Relay on its own needs a volume of its own. relay.pub is
+    # allowed: it may be the Router's key, mounted for ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE.
+    for file in "${ROUTER_CONF}" "${ROUTER_JSON}" "${RELAY_JSON}" "${ROUTER_PUB}" "${HOST_PUB}" "${ROUTER_DB}"; do
+        [[ -e "${file}" ]] && found+=("${file}")
+    done
+    if ((${#found[@]})); then
+        die "ASPIA_ROLE=relay, but the volumes hold a Router's or an Aspia 2.x installation: ${found[*]}." \
+            "A Relay on its own needs its own, empty configuration volume at ${CONFIG_DIR}. To run the" \
+            "Router from these files, use ASPIA_ROLE=router or all. Nothing was changed."
+    fi
+}
+
 validate_relay() {
     local addr
 
@@ -464,6 +593,7 @@ validate_relay() {
     require_minutes ASPIA_RELAY_IDLE_TIMEOUT
     require_count ASPIA_RELAY_MAX_PEERS
     refuse_path_override ASPIA_RELAY_CONFIG_FILE "${RELAY_CONF}"
+    [[ "${ROLE}" != relay ]] || validate_remote_relay
 
     if [[ -n "${ASPIA_RELAY_PUBLIC_ADDRESS:-}" && -n "${EXTERNAL_IP:-}" \
         && "${ASPIA_RELAY_PUBLIC_ADDRESS}" != "${EXTERNAL_IP}" ]]; then
@@ -660,6 +790,17 @@ apply_relay_settings() {
     [[ -n "${ASPIA_RELAY_MAX_PEERS:-}" ]] \
         && set_conf_value "${RELAY_CONF}" peer max_count "${ASPIA_RELAY_MAX_PEERS}" Relay
 
+    if [[ "${ROLE}" == relay ]]; then
+        # The Router is on another machine: its address and key are required variables, written on
+        # every start like every other variable that is set. The port is optional (unset leaves
+        # the file alone; --create-config writes the Router's default, 8063).
+        set_conf_value "${RELAY_CONF}" router address "${ASPIA_RELAY_ROUTER_ADDRESS}" Relay
+        [[ -n "${ASPIA_RELAY_ROUTER_PORT:-}" ]] \
+            && set_conf_value "${RELAY_CONF}" router port "${ASPIA_RELAY_ROUTER_PORT}" Relay
+        set_conf_value "${RELAY_CONF}" router public_key "${ROUTER_KEY}" Relay
+        return 0
+    fi
+
     # router/public_key is filled only when it is empty; a key set by hand is left alone.
     current="$(ini_get "${RELAY_CONF}" router public_key "")"
     if [[ -z "${current}" ]]; then
@@ -676,7 +817,11 @@ apply_relay_settings() {
 
 prepare_relay() {
     local key output
-    key="$(read_key "${RELAY_PUB}")"
+    if [[ "${ROLE}" == relay ]]; then
+        key="${ROUTER_KEY}"   # the remote Router's; validate_relay refused any 2.x file
+    else
+        key="$(read_key "${RELAY_PUB}")"
+    fi
 
     case "${RELAY_STATE}" in
         new)
@@ -790,28 +935,89 @@ supervise() {
     exit "${EXIT_CODE}"
 }
 
-print_summary() {
+# key_or_reason <file>: the key in <file>, or why there is none.
+key_or_reason() {
     local key
-    key="$(read_key "${HOST_PUB}")"
-    log "----------------------------------------------------------------------"
-    log "External address (Relay):  ${PEER_PUBLIC_ADDRESS}"
+    key="$(read_key "$1")"
     if [[ -z "${key}" ]]; then
-        [[ -e "${HOST_PUB}" ]] && key="not found (${HOST_PUB} holds no valid key)" \
-            || key="not found (${HOST_PUB} does not exist)"
+        [[ -e "$1" ]] && key="not found ($1 holds no valid key)" || key="not found ($1 does not exist)"
     fi
-    log "Public key for hosts:      ${key}"
-    if [[ -n "${PUID:-}" || -n "${PGID:-}" ]]; then
-        log "Running as:                 uid=${PUID:-0} gid=${PGID:-0}"
-    fi
-    log "Ports (publish them unchanged, host port = container port):"
+    printf '%s\n' "${key}"
+}
+
+# log_router_ports: the summary lines for the Router ports that clients and hosts use.
+log_router_ports() {
     log "  $(ini_get "${ROUTER_CONF}" host legacy_port 8060)/tcp  Router: hosts of Aspia 2.x"
     log "  $(ini_get "${ROUTER_CONF}" host port 8061)/tcp  Router: hosts"
     log "  $(ini_get "${ROUTER_CONF}" client port 8062)/tcp  Router: clients"
     if stun_enabled "${ROUTER_CONF}"; then
         log "  $(ini_get "${ROUTER_CONF}" stun port 8065)/udp  Router: STUN"
     fi
+}
+
+print_summary() { "print_summary_${ROLE}"; }
+
+print_summary_all() {
+    local key
+    key="$(key_or_reason "${HOST_PUB}")"
+    log "----------------------------------------------------------------------"
+    log "External address (Relay):  ${PEER_PUBLIC_ADDRESS}"
+    log "Public key for hosts:      ${key}"
+    if [[ -n "${PUID:-}" || -n "${PGID:-}" ]]; then
+        log "Running as:                 uid=${PUID:-0} gid=${PGID:-0}"
+    fi
+    log "Ports (publish them unchanged, host port = container port):"
+    log_router_ports
     log "  $(ini_get "${RELAY_CONF}" peer port 8070)/tcp  Relay: clients and hosts"
     log "  $(ini_get "${ROUTER_CONF}" relay port 8063)/tcp  Router: relays (used inside the container)"
+    log "----------------------------------------------------------------------"
+}
+
+# ASPIA_ROLE=router: everything a Relay on another machine needs, and who may register as one.
+print_summary_router() {
+    local relay_port allowed
+    relay_port="$(ini_get "${ROUTER_CONF}" relay port 8063)"
+    allowed="$(ini_get "${ROUTER_CONF}" relay white_list "")"
+    log "----------------------------------------------------------------------"
+    log "Role:                      router (ASPIA_ROLE): this container runs no Relay"
+    log "Public key for hosts:      $(key_or_reason "${HOST_PUB}")"
+    log "Public key for relays:     $(key_or_reason "${RELAY_PUB}")"
+    log "  (set it as ASPIA_RELAY_ROUTER_PUBLIC_KEY on every Relay, with ASPIA_RELAY_ROUTER_PORT=${relay_port})"
+    if [[ -n "${PUID:-}" || -n "${PGID:-}" ]]; then
+        log "Running as:                 uid=${PUID:-0} gid=${PGID:-0}"
+    fi
+    log "Ports (publish them unchanged, host port = container port):"
+    log_router_ports
+    log "  ${relay_port}/tcp  Router: relays (must be reachable from every Relay host)"
+    if [[ -n "${allowed}" ]]; then
+        log "Relays accepted from:      ${allowed} (ASPIA_ROUTER_RELAY_ALLOWED_IPS, [relay] white_list)"
+    else
+        warn "Relays are accepted from ANY address: [relay] white_list in ${ROUTER_CONF} is empty. Whoever" \
+            "reaches ${relay_port}/tcp and has the key above can register as a Relay (at most five at a time)." \
+            "Set ASPIA_ROUTER_RELAY_ALLOWED_IPS to the addresses of your Relays, or allow ${relay_port}/tcp" \
+            "only from them in the firewall."
+    fi
+    log "----------------------------------------------------------------------"
+}
+
+# ASPIA_ROLE=relay: where it connects, and how to read a failure in the log.
+print_summary_relay() {
+    log "----------------------------------------------------------------------"
+    log "Role:                      relay (ASPIA_ROLE): the Router is on another machine"
+    log "External address (Relay):  ${PEER_PUBLIC_ADDRESS}"
+    log "Router:                    $(ini_get "${RELAY_CONF}" router address "")," \
+        "port $(ini_get "${RELAY_CONF}" router port 8063)/tcp"
+    log "Router public key:         $(ini_get "${RELAY_CONF}" router public_key "")"
+    if [[ -n "${PUID:-}" || -n "${PGID:-}" ]]; then
+        log "Running as:                 uid=${PUID:-0} gid=${PGID:-0}"
+    fi
+    log "Ports (publish them unchanged, host port = container port):"
+    log "  $(ini_get "${RELAY_CONF}" peer port 8070)/tcp  Relay: clients and hosts"
+    log "The Relay logs 'Connection to the router is established' once the Router accepts it. If it does"
+    log "not, its log says why, and it retries every 15 s: ACCESS_DENIED = wrong Router key;"
+    log "SPECIFIED_HOST_NOT_FOUND, CONNECTION_REFUSED or SOCKET_TIMEOUT = the Router is not reachable at"
+    log "that address and port; REMOTE_HOST_CLOSED right after connecting = the Router refused this Relay"
+    log "(its ASPIA_ROUTER_RELAY_ALLOWED_IPS, or five Relays already connected)."
     log "----------------------------------------------------------------------"
 }
 
@@ -823,7 +1029,9 @@ main() {
     trap 'on_signal TERM' TERM
     trap 'on_signal INT' INT
 
+    resolve_role
     mkdir -p "${CONFIG_DIR}" "${DATA_DIR}"
+    warn_ignored
 
     # Every validate_* below only reads. Ownership is changed (drop_privileges) only once all of
     # them have passed, so a refused start never touches the volumes, PUID/PGID included.
@@ -834,6 +1042,7 @@ main() {
     router_version="$(/usr/bin/aspia_router --version 2>/dev/null)" || router_version="aspia_router: unknown version"
     relay_version="$(/usr/bin/aspia_relay --version 2>/dev/null)" || relay_version="aspia_relay: unknown version"
     log "Aspia Server image ${ASPIA_VERSION:-unknown}: ${router_version}, ${relay_version}."
+    [[ "${ROLE}" == all ]] || log "ASPIA_ROLE=${ROLE}: starting only ${SERVICES[*]}."
 
     for service in "${SERVICES[@]}"; do
         ((STOPPING)) || "prepare_${service}"

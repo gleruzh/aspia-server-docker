@@ -11,6 +11,18 @@
 # shellcheck disable=SC2034  # used by the scripts that source this file
 readonly TCP_ESTABLISHED=01 TCP_LISTEN=0A UDP_BOUND=07
 
+# role_services <role>: prints the processes that ASPIA_ROLE=<role> runs, in start order, and fails
+# for an unknown role. Empty means all. aspia_start starts these and aspia_health checks these, so
+# the two always agree.
+role_services() {
+    case "$1" in
+        "" | all) echo "router relay" ;;
+        router) echo "router" ;;
+        relay) echo "relay" ;;
+        *) return 1 ;;
+    esac
+}
+
 # ini_get <file> <section> <key> <default>: prints the value, or <default> if it is missing or empty.
 ini_get() {
     local value=""

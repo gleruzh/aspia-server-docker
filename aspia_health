@@ -2,12 +2,13 @@
 #
 # aspia_health: container healthcheck of the Aspia Server image.
 #
-# Healthy means:
-#   - the Router is listening on every port in router.conf: host/legacy_port, host/port,
-#     client/port, relay/port (TCP) and, when STUN is enabled, stun/port (UDP);
-#   - the Relay is listening on peer/port from relay.conf;
-#   - the Relay is connected to the Router: an ESTABLISHED TCP socket whose remote port is
-#     router/port from relay.conf.
+# What is checked depends on ASPIA_ROLE, the same variable aspia_start reads (aspia_common.sh,
+# role_services): all (the default) checks both parts, router only the Router, relay only the Relay.
+#   - Router: listening on every port in router.conf: host/legacy_port, host/port, client/port,
+#     relay/port (TCP) and, when STUN is enabled, stun/port (UDP);
+#   - Relay: listening on peer/port from relay.conf, and connected to the Router: an ESTABLISHED
+#     TCP socket whose remote port is router/port from relay.conf. With ASPIA_ROLE=relay that
+#     Router is on another machine; the check is the same.
 #
 # Only /proc/net/{tcp,tcp6,udp,udp6} are read. No connection is opened to the Router, so the
 # check neither fills the Router log nor counts against its connection limits.
@@ -52,13 +53,26 @@ check_router() {
 }
 
 check_relay() {
+    local what="the Relay is not connected to the Router"
     [[ -s "${RELAY_CONF}" ]] || { fail "${RELAY_CONF} does not exist yet"; return; }
     expect "the Relay is not listening for peers" tcp "${TCP_LISTEN}" local "${RELAY_CONF}" peer port 8070
-    expect "the Relay is not connected to the Router" tcp "${TCP_ESTABLISHED}" remote "${RELAY_CONF}" router port 8063
+    if [[ "${ROLE}" == relay ]]; then
+        # The Relay log says why: ACCESS_DENIED (wrong Router key), SPECIFIED_HOST_NOT_FOUND,
+        # CONNECTION_REFUSED or SOCKET_TIMEOUT (Router not reachable). It retries every 15 s.
+        what+=" at $(ini_get "${RELAY_CONF}" router address 127.0.0.1); see ACCESS_DENIED, CONNECTION_REFUSED,"
+        what+=" SPECIFIED_HOST_NOT_FOUND or SOCKET_TIMEOUT in the container log"
+    fi
+    expect "${what}" tcp "${TCP_ESTABLISHED}" remote "${RELAY_CONF}" router port 8063
 }
 
-check_router
-check_relay
+ROLE="${ASPIA_ROLE:-all}"
+if ! SERVICES="$(role_services "${ROLE}")"; then
+    echo "unhealthy: ASPIA_ROLE='${ROLE}' is not all, router or relay"
+    exit 1
+fi
+for service in ${SERVICES}; do
+    "check_${service}"
+done
 
 ((FAILED == 0)) || exit 1
 echo "healthy"
