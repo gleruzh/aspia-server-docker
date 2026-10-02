@@ -32,6 +32,13 @@ PublishPort=8070:8070/tcp
 Volume=aspia-config.volume:/etc/aspia
 Volume=aspia-data.volume:/var/lib/aspia
 
+# Least privilege (README.md, "Security settings"). PodmanArgs: PidsLimit= needs Podman 4.7.
+DropCapability=ALL
+AddCapability=CHOWN DAC_OVERRIDE SETUID SETGID KILL
+NoNewPrivileges=true
+ReadOnly=true
+PodmanArgs=--pids-limit=128
+
 # The health check is set here explicitly, so it does not depend on how the image was built or pulled.
 HealthCmd=/usr/bin/aspia_health
 HealthInterval=30s

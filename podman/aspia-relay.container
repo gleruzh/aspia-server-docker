@@ -29,6 +29,13 @@ Volume=aspia-relay-config.volume:/etc/aspia
 # uncomment this line, and set ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE=/run/aspia/router-relay.pub.
 #Volume=/etc/aspia-relay/router-relay.pub:/run/aspia/router-relay.pub:ro,Z
 
+# Least privilege (README.md, "Security settings"). PodmanArgs: PidsLimit= needs Podman 4.7.
+DropCapability=ALL
+AddCapability=CHOWN DAC_OVERRIDE SETUID SETGID KILL
+NoNewPrivileges=true
+ReadOnly=true
+PodmanArgs=--pids-limit=128
+
 # Healthy = listening on 8070 and connected to the Router (podman/README.md, section 11).
 HealthCmd=/usr/bin/aspia_health
 HealthInterval=30s
