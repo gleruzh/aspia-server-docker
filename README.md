@@ -151,6 +151,22 @@ Not configurable through a variable in this image: `router.conf`'s `[relay] port
 
 `docker run -e ASPIA_ROUTER_CONFIG_FILE=...`, `ASPIA_ROUTER_DB_FILE` and `ASPIA_RELAY_CONFIG_FILE` are the Aspia binaries' own variables for moving their files; this image's scripts do not yet follow them (they still read the default paths) and refuse to start rather than silently check the wrong file. See docs/dev/FOLLOWUPS.md.
 
+### Security settings
+
+The compose files and the Podman units start the container with few privileges. The same with `docker run`:
+
+```shell
+docker run -d --name aspia-server --restart unless-stopped \
+  --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETUID --cap-add SETGID --cap-add KILL \
+  --security-opt no-new-privileges:true --read-only --pids-limit 128 \
+  -e EXTERNAL_IP=203.0.113.10 \
+  -p 8060:8060 -p 8061:8061 -p 8062:8062 -p 8065:8065/udp -p 8070:8070 \
+  -v "$PWD/data/config:/etc/aspia" -v "$PWD/data/database:/var/lib/aspia" \
+  ghcr.io/<owner>/aspia-server:3.0.21
+```
+
+Every Linux capability is dropped except five, no process can gain privileges (setuid programs do not work), the image's own files are read-only (only the two volumes are written), and the container may have at most 128 processes and threads (it uses fewer than 30). The five that stay: `CHOWN`, `SETUID`, `SETGID` and `KILL` for `PUID`/`PGID` (give the volumes to that user, switch to it, and pass `docker stop` on to its processes); `DAC_OVERRIDE` (with `CHOWN`) to read, write and back up files that belong to another user, for example a host directory or an installation that used `PUID`/`PGID` before, and for the health check to read the configuration when `PUID`/`PGID` is set. Without `PUID`/`PGID` and with volumes owned by root, none of the five is needed: you may remove them (`--cap-add`, or `cap_add:` in the compose file). The Podman units also keep `NET_BIND_SERVICE`, because Podman, unlike Docker's bridge network, treats ports below 1024 as privileged; with Docker and `--network host`, a port below 1024 needs `--cap-add NET_BIND_SERVICE`. The measurements are in docs/dev/UPSTREAM-3.x-NOTES.md, section 20.
+
 ### Running a Relay on a separate host
 
 The same image runs the Router alone (`ASPIA_ROLE=router`) or a Relay alone (`ASPIA_ROLE=relay`), so a Relay can sit on another machine, closer to a group of users, or take the relayed traffic off the Router's machine. One Router accepts at most five Relays at a time (an Aspia limit). Without `ASPIA_ROLE` nothing changes: the default `all` is the combined container described above.
