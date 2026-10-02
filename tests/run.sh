@@ -1209,11 +1209,11 @@ scenario_relay_invalid() {
     label64="${label63}a"
     name253="${label63}.${label63}.${label63}.$(printf 'b%.0s' {1..61})"   # 63+1+63+1+63+1+61
     name254="${name253}b"
-    verdicts="$(router_address_verdicts 192.168.1.300 1.2.3.4.5 10.1 -router. ...a 010.0.0.1 router..example.com \
+    verdicts="$(router_address_verdicts 192.168.1.300 1.2.3.4.5 10.1 -router. ...a 010.0.0.1 0x7f.0.0.1 0x0a000001 0X7F.0.0.1 router..example.com \
         a-.example.com -a.example.com . "" "router address" "${label64}.example.com" "${name254}" \
         192.168.1.30 2001:db8::1 router.example.com router.example.com. localhost my_router-1 \
         "${label63}.example.com" "${name253}")"
-    for value in 192.168.1.300 1.2.3.4.5 10.1 -router. ...a 010.0.0.1 router..example.com a-.example.com -a.example.com . "" \
+    for value in 192.168.1.300 1.2.3.4.5 10.1 -router. ...a 010.0.0.1 0x7f.0.0.1 0x0a000001 0X7F.0.0.1 router..example.com a-.example.com -a.example.com . "" \
         "router address" "${label64}.example.com" "${name254}"; do
         grep -qxF "invalid ${value}" <<<"${verdicts}" || fail "the Router address '${value}' is accepted: ${verdicts}"
     done
@@ -1221,7 +1221,7 @@ scenario_relay_invalid() {
         "${label63}.example.com" "${name253}"; do
         grep -qxF "valid ${value}" <<<"${verdicts}" || fail "the Router address '${value}' is refused: ${verdicts}"
     done
-    ok "ASPIA_RELAY_ROUTER_ADDRESS: 192.168.1.300, 1.2.3.4.5, 10.1, 010.0.0.1, -router., ...a, empty labels, 64-character labels and names over 253 are refused; IPv4, IPv6, FQDN (also with a trailing dot) and 253 characters are accepted"
+    ok "ASPIA_RELAY_ROUTER_ADDRESS: 192.168.1.300, 1.2.3.4.5, 10.1, 010.0.0.1, 0x7f.0.0.1, 0x0a000001, 0X7F.0.0.1, -router., ...a, empty labels, 64-character labels and names over 253 are refused; IPv4, IPv6, FQDN (also with a trailing dot) and 253 characters are accepted"
 
     # A Router's configuration volume mounted on a Relay: refused before anything is written.
     cfg="$(new_volume s22-config)"

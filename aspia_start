@@ -415,14 +415,15 @@ warn_ignored() {
 
 # is_valid_router_address: what ASPIA_RELAY_ROUTER_ADDRESS accepts: an IP literal, or a DNS name:
 # at most 253 characters in labels of 1 to 63 letters, digits, '_' or '-' (not at either end of a
-# label), with one optional trailing dot. A value of only digits and dots that is not an IPv4
-# address (192.168.1.300, 10.1, 010.0.0.1) is refused: the resolver would read it as an address in
-# its own way (010.0.0.1 as octal, 10.1 as 10.0.0.1). The Relay resolves a name itself on every
+# label), with one optional trailing dot. A value whose last label is all digits or 0x and hex digits
+# and that is not an IPv4 address (192.168.1.300, 10.1, 010.0.0.1, 0x7f.0.0.1, 0x0a000001) is
+# refused: the resolver would read it as an address in its own way (010.0.0.1 as octal, 10.1 as
+# 10.0.0.1, 0x7f.0.0.1 as hex). The Relay resolves a name itself on every
 # connection attempt; an unknown name is logged as SPECIFIED_HOST_NOT_FOUND and retried.
 is_valid_router_address() {
     local label='[A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?'
     is_valid_ip "$1" && return 0
-    [[ "$1" =~ ^[0-9.]+$ ]] && return 1
+    [[ "${1%.}" =~ (^|\.)([0-9]+|0[xX][0-9A-Fa-f]*)$ ]] && return 1
     is_valid_hostname "$1" 253 && [[ "$1" =~ ^${label}(\.${label})*\.?$ ]]
 }
 
