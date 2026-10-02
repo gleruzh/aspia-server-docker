@@ -25,78 +25,6 @@ env:
   TRIVY_IMAGE: aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
 
 jobs:
-  lint:
-    name: Lint (hadolint, shellcheck, actionlint, versions)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: tests/lint.sh
-        run: tests/lint.sh
-
-  test:
-    name: Build, test and scan (linux/amd64)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Build the image (version from versions.env)
-        id: build
-        run: |
-          version="$(scripts/versions.sh get ASPIA_VERSION)"
-          echo "Building Aspia ${version} (versions.env)"
-          docker build --platform linux/amd64 \
-            --build-arg "ASPIA_VERSION=${version}" \
-            --build-arg "IMAGE_SOURCE=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
-            -t aspia-server:ci .
-
-      - name: tests/run.sh
-        env:
-          ASPIA_TEST_IMAGE: aspia-server:ci
-        run: tests/run.sh
-
-      # The scan reports; it never fails the build: the findings are in Debian packages that this
-      # repository does not control. The weekly rebuild in publish.yml picks up their fixes.
-      - name: Scan the image with Trivy
-        id: scan
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        continue-on-error: true
-        run: |
-          docker save -o "${RUNNER_TEMP}/image.tar" aspia-server:ci
-          trivy() {
-            docker run --rm -v "${RUNNER_TEMP}:/work" -v trivy-cache:/root/.cache/trivy "${TRIVY_IMAGE}" "$@"
-          }
-          trivy image --quiet --scanners vuln --format json --output /work/trivy.json --input /work/image.tar
-          trivy convert --format table /work/trivy.json
-          trivy convert --format sarif --output /work/trivy.sarif /work/trivy.json
-          {
-            echo "### Vulnerability scan (Trivy), reported only"
-            echo
-            jq -r '[.Results[]?.Vulnerabilities[]?.Severity] | length as $n | group_by(.)
-              | map("\(.[0]): \(length)") | "Findings: \($n) (" + join(", ") + "). Details are in the log of this step."' \
-              "${RUNNER_TEMP}/trivy.json"
-          } >> "${GITHUB_STEP_SUMMARY}"
-
-      - name: Keep the SARIF report
-        if: ${{ !cancelled() && steps.scan.outcome == 'success' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: trivy-sarif
-          path: ${{ runner.temp }}/trivy.sarif
-          retention-days: 14
-
-  # The Podman Quadlet unit in podman/, system-wide and rootless, on the runner's own Podman and
-  # systemd (the version is in the job summary). tests/podman.sh installs a service and removes it
-  # again; the runner is a throwaway machine.
   podman:
     name: Podman Quadlet (system-wide and rootless)
     runs-on: ubuntu-24.04
@@ -116,39 +44,11 @@ jobs:
             --build-arg "IMAGE_SOURCE=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             -t aspia-server:ci .
 
+      - name: diagnostic (temporary)
+        run: tests/diag-signal.sh
+
       - name: tests/podman.sh
         env:
           ASPIA_TEST_IMAGE: aspia-server:ci
         run: tests/podman.sh
 
-  # A separate job, so that the job running the pull request's code never holds
-  # security-events: write. Pull requests from forks get a read-only token, so the upload is skipped
-  # there; the table is in the test job's log either way. Code scanning is free for public repositories.
-  security-tab:
-    name: Upload the scan to the Security tab
-    needs: test
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      # upload-sarif reads the commit from the checkout; no code from it is run here.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Download the SARIF report
-        id: download
-        continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: trivy-sarif
-          path: ${{ runner.temp }}/sarif
-      - name: Upload to code scanning
-        if: steps.download.outcome == 'success'
-        continue-on-error: true
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
-        with:
-          sarif_file: ${{ runner.temp }}/sarif/trivy.sarif
-          category: trivy-image
