@@ -3,7 +3,7 @@
 # tests/podman.sh: tests the Quadlet unit in podman/ on a Linux machine with Podman and systemd,
 # for both install variants from podman/README.md.
 #
-#   tests/podman.sh [system|rootless|guard|all]      (default: all)
+#   tests/podman.sh [system|rootless|guard|relay|all]      (default: all)
 #
 # For each variant it installs the files as the README says (the unit's Image= line is replaced by
 # ASPIA_TEST_IMAGE, the one edit the README asks for; the test asserts that nothing else differs),
@@ -18,7 +18,17 @@
 # "guard" checks that safety: it creates a volume and a unit that look like a user's own install,
 # runs the test (which must refuse to start) and asserts that both are still there.
 #
-# THIS INSTALLS A SERVICE AND USES PORTS 8060-8070 AND THE VOLUMES systemd-aspia-config/systemd-aspia-data.
+# "relay" tests the Relay-only unit aspia-relay.container, system-wide and rootless: it starts a
+# Router with ASPIA_ROLE=router (plain "podman run" as root, port 8063 published on this machine),
+# installs the relay unit as podman/README.md says, pointed at the Router's address and key, and
+# checks: the generator, the service becomes healthy (connected), the Router logs the Relay's key
+# pool, the unit is wanted by default.target, and "systemctl stop" is quick and clean. The
+# system-wide Relay uses this machine's own address (through the published port); the rootless one
+# uses the Router container's bridge address, because rootless Podman 5 (pasta) gives a container
+# the host's own address, so the host's address would lead the Relay back to itself.
+#
+# THIS INSTALLS A SERVICE AND USES PORTS 8060-8070 AND THE VOLUMES systemd-aspia-config/systemd-aspia-data
+# (relay: systemd-aspia-relay-config, and a container named aspia-podman-test-router).
 # Run it only on a throwaway machine (a CI runner, a VM). It refuses to start when the unit, the
 # container, the volumes or any of the ports already exist.
 #
@@ -39,6 +49,10 @@ cd "$(dirname "$0")/.."
 readonly REPO="${PWD}"
 readonly UNIT=aspia-server.service
 readonly CONTAINER=aspia-server
+readonly RELAY_UNIT=aspia-relay.service
+readonly RELAY_CONTAINER=aspia-relay
+readonly TEST_ROUTER=aspia-podman-test-router
+readonly RELAY_FILES=(aspia-relay.container aspia-relay-config.volume aspia-relay.env)
 readonly PORTS=(8060 8061 8062 8063 8065 8070)
 readonly STOP_LIMIT=20          # seconds: "systemctl stop" must finish well inside systemd's 70 s default
 readonly HEALTHY_TIMEOUT=240    # seconds; generous, because CI runners and emulation are slow
@@ -51,7 +65,9 @@ UNIT_DIR=""
 CREATED_USER=0
 ENABLED_LINGER=0
 OWNED_DIR=""                    # the unit directory this run installs into; set only after check_free passed
+RELAY_OWNED_DIR=""              # the same for the relay variant (check_free_relay)
 CREATED_TAGS=()                 # image names this run added to the Podman store (and so removes again)
+ROOT_TAGS=()                    # the same for root's store, for the relay variant's Router
 STOPLOG=""                      # temporary file, removed on exit
 
 say() { printf '\n=== %s\n' "$*"; }
@@ -105,6 +121,11 @@ dump_diagnostics() {
     run podman logs --tail 40 "${CONTAINER}" 2>&1 || true
     if [[ "${MODE}" == system ]]; then
         as_root journalctl -u "${UNIT}" --no-pager -n 40 2>&1 || true
+    fi
+    if [[ -n "${RELAY_OWNED_DIR}" ]]; then
+        sctl status "${RELAY_UNIT}" --no-pager -l 2>&1 | tail -n 30 || true
+        run podman logs --tail 40 "${RELAY_CONTAINER}" 2>&1 || true
+        as_root podman logs --tail 40 "${TEST_ROUTER}" 2>&1 || true
     fi
 }
 
@@ -325,6 +346,131 @@ run_variant() {
     ok "variant ${label} passed"
 }
 
+check_free_relay() {
+    local port file
+    for port in 8063 8070; do
+        if ss -Hltun | awk -v p=":${port}" '$5 ~ p"$" {found=1} END {exit !found}'; then
+            die "port ${port} is already in use on this machine; run this test on a throwaway machine"
+        fi
+    done
+    run podman container exists "${RELAY_CONTAINER}" 2> /dev/null && die "a container named ${RELAY_CONTAINER} already exists"
+    as_root podman container exists "${TEST_ROUTER}" 2> /dev/null && die "a container named ${TEST_ROUTER} already exists"
+    run podman volume exists systemd-aspia-relay-config 2> /dev/null && die "volume systemd-aspia-relay-config already exists"
+    for file in "${RELAY_FILES[@]}"; do
+        [[ ! -e "${UNIT_DIR}/${file}" ]] || die "${UNIT_DIR}/${file} already exists"
+    done
+}
+
+# host_address: this machine's own IPv4 address on its default route, the address a Relay on
+# another machine would use for the Router.
+host_address() {
+    ip -4 route get 1.1.1.1 2> /dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit } }'
+}
+
+# load_root_image: ASPIA_TEST_IMAGE in root's store, for the Router of the relay variant.
+load_root_image() {
+    if as_root podman image exists "${ASPIA_TEST_IMAGE}"; then
+        return 0
+    elif [[ "${ASPIA_TEST_IMAGE}" != *@* ]] && command -v docker > /dev/null \
+        && docker image inspect "${ASPIA_TEST_IMAGE}" > /dev/null 2>&1; then
+        docker save "${ASPIA_TEST_IMAGE}" | as_root podman load -q > /dev/null || die "docker save | podman load failed"
+    else
+        as_root podman pull -q "${ASPIA_TEST_IMAGE}" > /dev/null || die "could not pull ${ASPIA_TEST_IMAGE}"
+    fi
+    ROOT_TAGS+=("${ASPIA_TEST_IMAGE}")
+}
+
+test_router_ready() { as_root podman exec "${TEST_ROUTER}" /usr/bin/aspia_health > /dev/null 2>&1; }
+# The log is read completely first: "podman logs | grep -q" fails under pipefail when grep exits early.
+relay_registered() { grep -q 'Received key pool' <<< "$(as_root podman logs "${TEST_ROUTER}" 2>&1)"; }
+relay_healthy() {
+    run podman healthcheck run "${RELAY_CONTAINER}" > /dev/null 2>&1 \
+        && [[ "$(run podman inspect --format '{{.State.Health.Status}}' "${RELAY_CONTAINER}" 2> /dev/null)" == healthy ]]
+}
+
+run_relay_variant() {
+    MODE="$1"
+    local label generator out status=0 addr key t0 elapsed result logger
+    local -a generator_args=(--dryrun)
+    if [[ "${MODE}" == system ]]; then
+        label="relay unit, system-wide (root)"
+        UNIT_DIR=/etc/containers/systemd
+    else
+        label="relay unit, rootless"
+        setup_rootless_user
+        UNIT_DIR="${RL_HOME}/.config/containers/systemd"
+        generator_args+=(--user)
+    fi
+    say "Variant: ${label}"
+    check_free_relay
+    RELAY_OWNED_DIR="${UNIT_DIR}"
+    load_image
+    load_root_image
+
+    say "A Router to register with: ASPIA_ROLE=router, as root, 8063 published"
+    as_root podman run -d --name "${TEST_ROUTER}" -e ASPIA_ROLE=router -p 8063:8063 "${ASPIA_TEST_IMAGE}" > /dev/null \
+        || die "could not start the Router"
+    wait_until "${HEALTHY_TIMEOUT}" test_router_ready || die "the Router did not become ready"
+    key="$(as_root podman exec "${TEST_ROUTER}" cat /etc/aspia/relay.pub)" || die "cannot read the Router's relay.pub"
+    if [[ "${MODE}" == system ]]; then
+        addr="$(host_address)"
+    else
+        addr="$(as_root podman inspect --format '{{.NetworkSettings.IPAddress}}' "${TEST_ROUTER}")"
+    fi
+    [[ -n "${addr}" ]] || die "cannot find an address for the Router"
+    ok "Router up at ${addr}; its relay key is ${key}"
+
+    say "Install the relay unit the way podman/README.md says (the Image= line and the env file are the edits)"
+    run mkdir -p "${UNIT_DIR}"
+    run install -m 0644 podman/aspia-relay.container podman/aspia-relay-config.volume "${UNIT_DIR}/"
+    run install -m 0644 podman/aspia-relay.env.example "${UNIT_DIR}/aspia-relay.env"
+    run sed -i "s|^Image=.*|Image=${ASPIA_TEST_IMAGE}|" "${UNIT_DIR}/aspia-relay.container"
+    run sed -i -e "s|^ASPIA_RELAY_ROUTER_ADDRESS=.*|ASPIA_RELAY_ROUTER_ADDRESS=${addr}|" \
+        -e "s|^ASPIA_RELAY_ROUTER_PUBLIC_KEY=.*|ASPIA_RELAY_ROUTER_PUBLIC_KEY=${key}|" \
+        -e "s|^EXTERNAL_IP=.*|EXTERNAL_IP=relay.example.test|" "${UNIT_DIR}/aspia-relay.env"
+    diff <(sed '/^Image=/d' podman/aspia-relay.container) <(run sed '/^Image=/d' "${UNIT_DIR}/aspia-relay.container") \
+        || die "the installed relay unit differs from the shipped one in more than its Image= line"
+    run grep -qxF "ASPIA_RELAY_ROUTER_PUBLIC_KEY=${key}" "${UNIT_DIR}/aspia-relay.env" || die "the env file edit did not take"
+    ok "installed into ${UNIT_DIR}"
+
+    say "Quadlet generator, dry run"
+    generator="$(find_generator)" || die "no Quadlet generator found (is this Podman older than 4.4?)"
+    out="$(run "${generator}" "${generator_args[@]}" 2>&1)" || status=$?
+    ((status == 0)) || { printf '%s\n' "${out}"; die "the generator exited with status ${status}"; }
+    grep -q 'systemd-aspia-relay-config' <<< "${out}" || die "the generator did not use the aspia-relay-config volume"
+    grep -q 'ASPIA_ROLE=relay' <<< "${out}" || die "the generated service does not set ASPIA_ROLE=relay"
+    ok "generator: no errors; the service runs with ASPIA_ROLE=relay and its own volume"
+
+    say "Start: healthy means connected to the Router"
+    sctl daemon-reload
+    sctl start "${RELAY_UNIT}" || die "systemctl start ${RELAY_UNIT} failed"
+    wait_until "${HEALTHY_TIMEOUT}" relay_healthy || die "the Relay did not become healthy within ${HEALTHY_TIMEOUT} s"
+    wait_until 60 relay_registered || die "the Router did not log the Relay's key pool"
+    ok "healthy; Router log: $(grep -m1 -o 'Received key pool.*' <<< "$(as_root podman logs "${TEST_ROUTER}" 2>&1)")"
+    sctl list-dependencies default.target --plain 2> /dev/null | grep -q "${RELAY_UNIT}" || die "${RELAY_UNIT} is not wanted by default.target"
+    ok "${RELAY_UNIT} is wanted by default.target"
+
+    say "Stop"
+    STOPLOG="$(mktemp)"
+    run podman logs -f --tail 0 "${RELAY_CONTAINER}" > "${STOPLOG}" 2>&1 &
+    logger=$!
+    sleep 1
+    t0=${SECONDS}
+    sctl stop "${RELAY_UNIT}" || die "systemctl stop failed"
+    elapsed=$((SECONDS - t0))
+    wait_until 10 pid_gone "${logger}" || true
+    kill "${logger}" 2> /dev/null || true
+    wait "${logger}" 2> /dev/null || true
+    grep -q 'All processes have exited; exit code 0' "${STOPLOG}" || { cat "${STOPLOG}"; die "the Relay did not exit cleanly on SIGTERM"; }
+    result="$(sctl show "${RELAY_UNIT}" -p Result --value)"
+    ((elapsed < STOP_LIMIT)) || die "systemctl stop took ${elapsed} s (limit ${STOP_LIMIT} s)"
+    [[ "${result}" == success ]] || die "the unit's Result after stop is '${result}', not success"
+    ok "stopped in ${elapsed} s, Result=${result}, exit code 0"
+
+    cleanup_variant
+    ok "variant ${label} passed"
+}
+
 # guard_check: a check that fails before this run owns anything must leave an existing install alone.
 guard_check() {
     local out status=0 volume_kept=0 unit_kept=0
@@ -351,8 +497,17 @@ guard_check() {
 
 cleanup_variant() {
     [[ -n "${MODE}" ]] || return 0
-    local tag
+    local tag file
     # Only what this run installed: before check_free passed (OWNED_DIR unset), anything found belongs to the user.
+    if [[ -n "${RELAY_OWNED_DIR}" ]]; then
+        quiet sctl stop "${RELAY_UNIT}"
+        quiet run podman rm -f -v "${RELAY_CONTAINER}"
+        quiet as_root podman rm -f -v "${TEST_ROUTER}"
+        for file in "${RELAY_FILES[@]}"; do quiet run rm -f "${RELAY_OWNED_DIR}/${file}"; done
+        quiet sctl daemon-reload
+        quiet run podman volume rm -f systemd-aspia-relay-config
+        RELAY_OWNED_DIR=""
+    fi
     if [[ -n "${OWNED_DIR}" ]]; then
         quiet sctl stop "${UNIT}"
         quiet run podman rm -f "${CONTAINER}"
@@ -366,6 +521,10 @@ cleanup_variant() {
         quiet run podman rmi -f "${tag}"
     done
     CREATED_TAGS=()
+    for tag in "${ROOT_TAGS[@]}"; do
+        quiet as_root podman rmi -f "${tag}"
+    done
+    ROOT_TAGS=()
     if [[ "${MODE}" == rootless ]]; then
         if ((ENABLED_LINGER == 1)); then quiet as_root loginctl disable-linger "${RL_USER}"; fi
         if ((CREATED_USER == 1)); then
@@ -390,9 +549,9 @@ on_exit() {
 }
 
 main() {
-    local which="${1:-all}"
-    case "${which}" in system | rootless | guard | all) ;; *)
-        echo "usage: tests/podman.sh [system|rootless|guard|all]" >&2
+    local which="${1:-all}" unit
+    case "${which}" in system | rootless | guard | relay | all) ;; *)
+        echo "usage: tests/podman.sh [system|rootless|guard|relay|all]" >&2
         exit 2
         ;;
     esac
@@ -404,13 +563,19 @@ main() {
     if ((EUID != 0)) && [[ "${which}" != rootless ]]; then
         sudo -n true 2> /dev/null || { echo "the system-wide variant needs root or passwordless sudo" >&2; exit 2; }
     fi
-    [[ "$(grep -c '^Image=' podman/aspia-server.container)" == 1 ]] || { echo "the unit must have exactly one Image= line" >&2; exit 2; }
+    for unit in podman/aspia-server.container podman/aspia-relay.container; do
+        [[ "$(grep -c '^Image=' "${unit}")" == 1 ]] || { echo "${unit} must have exactly one Image= line" >&2; exit 2; }
+    done
     printf '### Podman Quadlet test\n\n- %s; %s; %s\n' "$(podman --version)" "$(systemctl --version | head -n 1)" \
         "$(sed -n 's/^PRETTY_NAME="\(.*\)"$/\1/p' /etc/os-release 2> /dev/null)" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
     trap on_exit EXIT
     if [[ "${which}" == guard || "${which}" == all ]]; then guard_check; fi
     if [[ "${which}" == system || "${which}" == all ]]; then run_variant system; fi
     if [[ "${which}" == rootless || "${which}" == all ]]; then run_variant rootless; fi
+    if [[ "${which}" == relay || "${which}" == all ]]; then
+        run_relay_variant system
+        run_relay_variant rootless
+    fi
 }
 
 main "$@"
