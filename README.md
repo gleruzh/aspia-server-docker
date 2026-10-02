@@ -182,6 +182,41 @@ Some settings have no variable: the Router port for Relays (`[relay] port` in `r
 
 `ASPIA_ROUTER_CONFIG_FILE`, `ASPIA_ROUTER_DB_FILE` and `ASPIA_RELAY_CONFIG_FILE` are variables of the Aspia programs. The compose files do not pass them to the container, so they have no effect in `.env`. This image does not support them yet. If you set one of them in the container yourself (`docker run` or Podman), the container does not start.
 
+## Security settings
+
+The compose files and the Podman units start the container with few privileges:
+
+- All Linux capabilities are dropped, except five. The list is below.
+- No process can gain new privileges. Programs with the setuid bit do not work. The Podman units do not set this (see below).
+- The files of the image are read-only. The container writes only to its two volumes.
+- The container can have at most 128 processes and threads. It uses fewer than 30.
+
+The five capabilities that stay:
+
+- `CHOWN`: give the volumes to `PUID`/`PGID`, and keep the owner of a backup copy.
+- `DAC_OVERRIDE`: read and write files of another user, for example in a directory of a user on the server, or from an earlier start with `PUID`/`PGID`. With `PUID`/`PGID` the health check needs it to read the configuration.
+- `SETUID`: switch to the user `PUID`.
+- `SETGID`: switch to the group `PGID`.
+- `KILL`: pass the stop signal to the processes that run as `PUID`/`PGID`.
+
+The same settings with `docker run`:
+
+```shell
+docker run -d --name aspia-server --restart unless-stopped \
+  --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETUID --cap-add SETGID --cap-add KILL \
+  --security-opt no-new-privileges:true --read-only --pids-limit 128 \
+  -e EXTERNAL_IP=203.0.113.10 \
+  -p 8060:8060 -p 8061:8061 -p 8062:8062 -p 8065:8065/udp -p 8070:8070 \
+  -v "$PWD/data/config:/etc/aspia" -v "$PWD/data/database:/var/lib/aspia" \
+  ghcr.io/<owner>/aspia-server:3.0.21
+```
+
+The simplest setup needs none of the five capabilities: no `PUID` and `PGID`, and the volumes belong to root. For this setup you can remove the `--cap-add` flags, or `cap_add:` in the compose file.
+
+All default ports are above 1024. A port below 1024 needs the capability `NET_BIND_SERVICE`. Docker needs it only with host networking: add `--cap-add NET_BIND_SERVICE`. Podman always needs it: add `AddCapability=NET_BIND_SERVICE` to the unit.
+
+The Podman units do not set `NoNewPrivileges`. On Ubuntu 24.04 AppArmor then blocks the stop signal, and the container does not stop cleanly. Docker is not affected. The measurements are in [docs/dev/UPSTREAM-3.x-NOTES.md](docs/dev/UPSTREAM-3.x-NOTES.md), section 21.
+
 ## Updating
 
 The image never updates itself. You update by hand when you decide to.

@@ -32,6 +32,14 @@ PublishPort=8070:8070/tcp
 Volume=aspia-config.volume:/etc/aspia
 Volume=aspia-data.volume:/var/lib/aspia
 
+# Least privilege, as in the compose files (README "Security settings").
+DropCapability=ALL
+AddCapability=CHOWN DAC_OVERRIDE SETUID SETGID KILL
+# No NoNewPrivileges: on Ubuntu 24.04 AppArmor then blocks tini's SIGTERM (docs/dev/UPSTREAM-3.x-NOTES.md, section 21).
+ReadOnly=true
+# PidsLimit= needs Podman 4.7; --read-only-tmpfs=false: no tmpfs on /tmp, /run (as in compose).
+PodmanArgs=--pids-limit=128 --read-only-tmpfs=false
+
 # The health check is set here explicitly, so it does not depend on how the image was built or pulled.
 HealthCmd=/usr/bin/aspia_health
 HealthInterval=30s

@@ -48,6 +48,11 @@
 #  23. one process: docker stop is clean, and the process dying stops the container non-zero
 #  24. ASPIA_ROLE=all given explicitly behaves as the default; relay-only variables are ignored;
 #      a remote Relay can register with the combined container too
+# Hardening (PR 5b). Every server container above starts with HARDENING, the settings the compose files ship.
+#   0e. the compose files, the Podman units and the README carry exactly those settings
+# Scenario 1 also checks a running container (capabilities, no-new-privileges, read-only root, pids
+# limit); 14 does the same with PUID/PGID (Aspia processes without capabilities), then starts its
+# volumes as root with another EXTERNAL_IP (the backup keeps owner, mode, mtime) and with a changed port.
 # Lint (hadolint, shellcheck) is in tests/lint.sh.
 
 set -euo pipefail
@@ -64,6 +69,12 @@ readonly IP_OLD=203.0.113.10   # EXTERNAL_IP given to 2.7.0
 readonly IP_NEW=203.0.113.11   # EXTERNAL_IP given to the new image
 readonly HEALTH_TIMEOUT=180    # seconds; generous because CI or emulation may be slow
 IMAGE="${ASPIA_TEST_IMAGE:-aspia-server:test}"
+# The hardening the compose files and Quadlet units ship (scenario 0e checks them against it).
+readonly CAPS=(CHOWN DAC_OVERRIDE SETUID SETGID KILL)
+readonly PIDS_LIMIT=128
+HARDENING=(--cap-drop ALL --security-opt no-new-privileges:true --read-only --pids-limit "${PIDS_LIMIT}")
+for cap in "${CAPS[@]}"; do HARDENING+=(--cap-add "${cap}"); done
+readonly HARDENING
 ASPIA_VERSION="$(sed -n 's/^ASPIA_VERSION=//p' versions.env)"   # the single source of the version
 readonly ASPIA_VERSION
 
@@ -108,7 +119,7 @@ new_volume() { docker volume create --label "aspia-test=${RUN_ID}" "${RUN_ID}-$1
 run_new() {
     local name="${RUN_ID}-$1" cfg="$2" db="$3"
     shift 3
-    docker run -d --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" --name "${name}" \
+    docker run -d --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" --name "${name}" "${HARDENING[@]}" \
         -v "${cfg}:/etc/aspia" -v "${db}:/var/lib/aspia" "$@" "${IMAGE}" >/dev/null
     CURRENT_CONTAINER="${name}"
 }
@@ -321,7 +332,7 @@ scenario_command() {
     local out
     log "0b. A command given to docker run runs instead of the server, under tini"
     # No EXTERNAL_IP: if the server started instead, it would exit 1 with an error.
-    out="$(docker run --rm --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" "${IMAGE}" \
+    out="$(docker run --rm --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" "${HARDENING[@]}" "${IMAGE}" \
         sh -c 'cat /proc/1/comm; aspia_router --version 2>/dev/null')" \
         || fail "the command exited non-zero: ${out}"
     [[ "$(head -n 1 <<<"${out}")" == tini ]] || fail "PID 1 is not tini: ${out}"
@@ -384,6 +395,7 @@ scenario_clean_start() {
         bash -c 'for p in 8060 8061 8062 8070; do timeout 5 bash -c "exec 3<>/dev/tcp/aspia/$p" 2>/dev/null || echo "$p"; done')"
     [[ -z "${unreachable}" ]] || fail "cannot connect from another container to: ${unreachable//$'\n'/ }"
     ok "8060, 8061, 8062 and 8070 accept TCP connections from another container"
+    check_hardening "${name}" "$(cap_mask "${CAPS[@]}")"
 }
 
 scenario_restart() {
@@ -833,7 +845,7 @@ scenario_env_migration() {
 }
 
 scenario_puid_pgid() {
-    local cfg db name uid_lines
+    local cfg db name uid_lines before
     log "14. PUID/PGID: the Router and the Relay run as that uid/gid, and the files they write are owned by it"
     cfg="$(new_volume s14-config)"
     db="$(new_volume s14-db)"
@@ -858,6 +870,23 @@ scenario_puid_pgid() {
     [[ "$(grep -c ' 1000$' <<<"${uid_lines}")" == 2 ]] \
         || fail "aspia_router and aspia_relay are not both running as uid 1000: ${uid_lines}"
     ok "aspia_router and aspia_relay both run as uid 1000 (${uid_lines//$'\n'/; })"
+    check_hardening "${name}" 0000000000000000   # setpriv drops the capabilities of the Aspia processes
+    stop_check "${name}" 2   # tini signals uid 1000: needs KILL
+
+    # As root, without PUID, on these volumes (files of uid 1000, mode 600): the new address needs
+    # DAC_OVERRIDE to read them, and the backup keeps owner, mode and mtime (copy_file, no FOWNER).
+    before="$(helper "${cfg}" "${db}" stat -c '%u:%g %a %Y' /etc/aspia/relay.conf)"
+    run_new s14-root "${cfg}" "${db}" -e "EXTERNAL_IP=${IP_OLD}"
+    wait_healthy "${CURRENT_CONTAINER}"
+    [[ "$(helper "${cfg}" "${db}" sh -c 'stat -c "%u:%g %a %Y" /etc/aspia/relay.conf.pre-*')" == "${before}" ]] \
+        || fail "the relay.conf backup is not 1000:1000, mode 600 and the mtime of ${before}"
+    ok "as root on files of uid 1000: healthy, the relay.conf backup keeps owner, mode and mtime (${before})"
+    docker rm -fv "${CURRENT_CONTAINER}" >/dev/null
+
+    # PUID again with a non-default port: the health check (root) reads the 0600 router.conf of uid 1000.
+    run_new s14-port "${cfg}" "${db}" -e "EXTERNAL_IP=${IP_OLD}" -e PUID=1000 -e PGID=1000 -e ASPIA_ROUTER_CLIENT_PORT=19062
+    wait_healthy "${CURRENT_CONTAINER}"
+    docker rm -fv "${CURRENT_CONTAINER}" >/dev/null
 }
 
 scenario_env_empty_allowlist() {
@@ -1289,11 +1318,89 @@ scenario_role_all_explicit() {
 }
 
 # ---------------------------------------------------------------------------------------------
+# Hardening (PR 5b)
+
+# jq_img <args...>: jq from the image under test (the host may not have it).
+jq_img() { docker run --rm -i --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" --entrypoint jq "${IMAGE}" "$@"; }
+
+scenario_compose_hardening() {
+    local file unit expected out caps readme line
+    log "0e. The compose files, Podman units and README carry the hardening settings that the scenarios run with"
+    caps="$(printf '"%s",' "${CAPS[@]}")"
+    expected="{\"cap_drop\":[\"ALL\"],\"cap_add\":[${caps%,}],\"security_opt\":[\"no-new-privileges:true\"],\"read_only\":true,\"pids_limit\":${PIDS_LIMIT},\"tmpfs\":null}"
+    # One jq run for the three files; each prints one line.
+    out="$(for file in docker-compose.yml compose.router.yml compose.relay.yml; do
+        EXTERNAL_IP="${IP_NEW}" compose_file_config "${file}" --format json
+    done | jq_img -c '.services[] | {cap_drop, cap_add, security_opt, read_only, pids_limit, tmpfs}')"
+    [[ "${out}" == "${expected}"$'\n'"${expected}"$'\n'"${expected}" ]] || fail "compose files: ${out}, expected ${expected} three times"
+    ok "docker-compose.yml, compose.router.yml, compose.relay.yml: ${expected}"
+
+    # The Quadlet units: the same set.
+    for unit in podman/aspia-server.container podman/aspia-relay.container; do
+        [[ "$(sed -n 's/^AddCapability=//p' "${unit}")" == "${CAPS[*]}" ]] || fail "${unit}: AddCapability= is not ${CAPS[*]}"
+        for line in DropCapability=ALL ReadOnly=true; do
+            grep -qxF -- "${line}" "${unit}" || fail "${unit} has no line ${line}"
+        done
+        # Absent on purpose: AppArmor on Ubuntu 24.04 then blocks tini's SIGTERM (notes, section 21).
+        ! grep -q '^NoNewPrivileges=' "${unit}" || fail "${unit} sets NoNewPrivileges= (breaks the stop on Ubuntu 24.04, notes section 21)"
+        [[ "$(grep '^PodmanArgs=' "${unit}")" == "PodmanArgs=--pids-limit=${PIDS_LIMIT} --read-only-tmpfs=false" ]] || fail "${unit}: PodmanArgs= is not --pids-limit=${PIDS_LIMIT} --read-only-tmpfs=false"
+    done
+    ok "both Podman units: AddCapability= ${CAPS[*]}, DropCapability=ALL, no NoNewPrivileges, ReadOnly, pids ${PIDS_LIMIT}"
+
+    readme="$(sed -n '/^## Security settings$/,/^## Updating$/p' README.md)"
+    for line in "--cap-drop ALL" "--security-opt no-new-privileges:true" "--read-only" "--pids-limit ${PIDS_LIMIT} "; do
+        grep -qF -- "${line}" <<<"${readme}" || fail "the README docker run example has no '${line}'"
+    done
+    [[ "$(grep '^  --' <<<"${readme}" | grep -o -- '--cap-add [A-Z_]*' | sed 's/--cap-add //' | sort | tr '\n' ' ')" == "$(printf '%s\n' "${CAPS[@]}" | sort | tr '\n' ' ')" ]] \
+        || fail "the README docker run example has other --cap-add flags than ${CAPS[*]}"
+    ok "the README docker run example has the same flags"
+}
+
+# cap_mask <capability>...: the CapEff bit mask of these capabilities, as /proc/<pid>/status prints it.
+cap_mask() {
+    local cap mask=0 bit
+    for cap in "$@"; do
+        case "${cap}" in
+            CHOWN) bit=0 ;;
+            DAC_OVERRIDE) bit=1 ;;
+            KILL) bit=5 ;;
+            SETGID) bit=6 ;;
+            SETUID) bit=7 ;;
+            *) fail "cap_mask does not know ${cap}" ;;
+        esac
+        mask=$((mask | (1 << bit)))
+    done
+    printf '%016x\n' "${mask}"
+}
+
+# check_hardening <container> <CapEff of the Aspia processes>: tini and the Aspia processes (role all) have NoNewPrivs 1 and
+# that CapEff (tini, PID 1, always the full set: it forwards signals); the root is read-only; the pids limit is set.
+check_hardening() {
+    local status host full name
+    full="$(cap_mask "${CAPS[@]}")"
+    # cat, not awk: a process that exits during the read must not fail it. Parsed here, on the host.
+    # Only tini and the Aspia processes are judged: a health check (root, full set under PUID) may run at any time.
+    status="$(docker exec "$1" sh -c 'cat /proc/[0-9]*/status 2>/dev/null; true' \
+        | awk '/^Name:/ {n = $2} /^CapEff:/ {c = $2} /^NoNewPrivs:/ {print n, c, $2}')"
+    for name in tini aspia_router aspia_relay; do
+        grep -q "^${name} " <<<"${status}" || fail "$1: no ${name} in the process list: ${status}"
+    done
+    # "" forces a string comparison: awk reads 00000000000000e3 as the number 0e3 = 0.
+    [[ -z "$(awk -v m="$2" -v f="${full}" '$1 ~ /^(tini|aspia_start|aspia_router|aspia_relay)$/ && ($3 != 1 || $2"" != ($1 == "tini" ? f : m)"")' <<<"${status}")" ]] \
+        || fail "$1: expected NoNewPrivs 1 and CapEff $2 (tini ${full}), got:"$'\n'"${status}"
+    host="$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.PidsLimit}}' "$1")"
+    [[ "${host}" == "true ${PIDS_LIMIT}" ]] || fail "$1: ReadonlyRootfs and PidsLimit are '${host}'"
+    if docker exec "$1" touch /usr/bin/aspia_start 2>/dev/null; then fail "$1: the root filesystem is writable"; fi
+    ok "$1: NoNewPrivs 1, CapEff $2 (tini ${full}), read-only root, pids limit ${PIDS_LIMIT}"
+}
+
+# ---------------------------------------------------------------------------------------------
 
 scenario_build
 scenario_command
 scenario_compose
 scenario_compose_roles
+scenario_compose_hardening
 scenario_clean_start
 scenario_restart
 scenario_new_external_ip

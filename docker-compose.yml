@@ -50,4 +50,10 @@ services:
       - "${ASPIA_RELAY_PEER_PORT:-8070}:${ASPIA_RELAY_PEER_PORT:-8070}"             # Relay: clients and hosts
       # 8063 is the Router port for Relays. The Relay in this container reaches it internally;
       # publish it only for a Relay running on another machine (not configurable in this PR).
+    # Least privilege; why each capability: README.md, "Security settings".
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID, KILL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    pids_limit: 128
     restart: unless-stopped

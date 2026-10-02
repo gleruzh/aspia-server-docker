@@ -165,6 +165,8 @@ The rules there apply unchanged.
 
 Podman reads this file itself, not systemd: one `VAR=value` per line, no quotes, no trailing comments.
 A changed port variable needs the matching `PublishPort=` line (see the comments in the unit).
+The default ports are all above 1024; for a port below 1024 also add `AddCapability=NET_BIND_SERVICE` to the unit.
+The units do not set `NoNewPrivileges`: on Ubuntu 24.04 (AppArmor, crun profile) it blocks the clean stop. The compose files keep `no-new-privileges`; Docker is not affected.
 
 ## 7. Firewall
 

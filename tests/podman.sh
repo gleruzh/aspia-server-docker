@@ -12,7 +12,8 @@
 # succeeds); the unit is wanted by default.target (so it starts at boot); "systemctl stop" finishes
 # quickly and cleanly; the keys are the same after "systemctl restart"; and systemd restarts the
 # container after it was killed. It also applies the Network=host edit that the unit file describes
-# in a comment and checks it.
+# in a comment and checks it. Both units: the container has the expected capabilities,
+# a read-only root filesystem without tmpfs and the pids limit.
 # Everything it installed is removed at the end, and nothing it did not install is touched.
 #
 # "guard" checks that safety: it creates a volume and a unit that look like a user's own install,
@@ -54,7 +55,7 @@ readonly RELAY_CONTAINER=aspia-relay
 readonly TEST_ROUTER=aspia-podman-test-router
 readonly SERVER_FILES=(aspia-server.container aspia-config.volume aspia-data.volume aspia-server.env)
 readonly SERVER_VOLUMES=(systemd-aspia-config systemd-aspia-data)
-readonly RELAY_FILES=(aspia-relay.container aspia-relay-config.volume aspia-relay.env)
+readonly RELAY_FILES=(aspia-relay.container aspia-relay-config.volume aspia-relay.env router-relay.pub)
 readonly RELAY_VOLUMES=(systemd-aspia-relay-config)
 readonly PORTS=(8060 8061 8062 8063 8065 8070)
 readonly RELAY_PORTS=(8063 8070)
@@ -168,6 +169,18 @@ is_healthy() {
 }
 
 wait_healthy() { wait_until "${HEALTHY_TIMEOUT}" is_healthy; }
+
+# check_hardening CONTAINER: the running container has the hardening the units ship (one list, here;
+# README "Security settings"): capabilities, no security options (no-new-privileges breaks the stop on Ubuntu 24.04), read-only root without tmpfs, pids limit.
+check_hardening() {
+    local file got want="[CAP_CHOWN CAP_DAC_OVERRIDE CAP_KILL CAP_SETGID CAP_SETUID] [] true 128"
+    got="$(run podman inspect --format '{{.EffectiveCaps}} {{.HostConfig.SecurityOpt}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.PidsLimit}}' "$1")"
+    [[ "${got}" == "${want}" ]] || die "$1: capabilities, security options, read-only root, pids limit are '${got}', expected '${want}'"
+    for file in /tmp/probe /usr/bin/aspia_start; do
+        if run podman exec "$1" touch "${file}" 2> /dev/null; then die "$1: ${file} is writable"; fi
+    done
+    ok "$1: ${want}; /tmp and /usr/bin are read-only"
+}
 
 # restart_seen N: systemd has restarted the unit more than N times.
 restart_seen() { (($(sctl show "${UNIT}" -p NRestarts --value) > $1)); }
@@ -339,6 +352,7 @@ run_variant() {
     sctl start "${UNIT}" || die "systemctl start failed"
     wait_healthy || die "the container did not become healthy within ${HEALTHY_TIMEOUT} s"
     ok "service started; podman healthcheck run reports healthy"
+    check_hardening "${CONTAINER}"
 
     say "Starts at boot"
     sctl list-dependencies default.target --plain 2> /dev/null | grep -q "${UNIT}" || die "${UNIT} is not wanted by default.target"
@@ -432,10 +446,14 @@ run_relay_variant() {
 
     say "Install the relay unit the way podman/README.md says (the Image= line and the env file are the edits)"
     install_unit aspia-relay.container aspia-relay-config.volume
+    # The Router's key comes from a file bind-mounted at /run/aspia/ (the unit's commented Volume= line), on the read-only root.
+    printf '%s\n' "${key}" | run tee "${UNIT_DIR}/router-relay.pub" > /dev/null
+    run sed -i "s|^#Volume=/etc/aspia-relay/router-relay.pub:|Volume=${UNIT_DIR}/router-relay.pub:|" "${UNIT_DIR}/aspia-relay.container"
+    run grep -q "^Volume=${UNIT_DIR}/router-relay.pub:/run/aspia/router-relay.pub:ro,Z$" "${UNIT_DIR}/aspia-relay.container" || die "the Volume= edit did not take"
     run sed -i -e "s|^#\?ASPIA_RELAY_ROUTER_ADDRESS=.*|ASPIA_RELAY_ROUTER_ADDRESS=${addr}|" \
-        -e "s|^#\?ASPIA_RELAY_ROUTER_PUBLIC_KEY=.*|ASPIA_RELAY_ROUTER_PUBLIC_KEY=${key}|" \
+        -e "s|^#\?ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE=.*|ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE=/run/aspia/router-relay.pub|" \
         -e "s|^EXTERNAL_IP=.*|EXTERNAL_IP=relay.example.test|" "${UNIT_DIR}/aspia-relay.env"
-    run grep -qxF "ASPIA_RELAY_ROUTER_PUBLIC_KEY=${key}" "${UNIT_DIR}/aspia-relay.env" || die "the env file edit did not take"
+    run grep -qxF "ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE=/run/aspia/router-relay.pub" "${UNIT_DIR}/aspia-relay.env" || die "the env file edit did not take"
     ok "installed into ${UNIT_DIR}"
 
     say "Quadlet generator, dry run"
@@ -452,6 +470,7 @@ run_relay_variant() {
     wait_until "${HEALTHY_TIMEOUT}" relay_healthy || die "the Relay did not become healthy within ${HEALTHY_TIMEOUT} s"
     wait_until 60 relay_registered || die "the Router did not log the Relay's key pool"
     ok "healthy; Router log: $(grep -m1 -o 'Received key pool.*' <<< "$(as_root podman logs "${TEST_ROUTER}" 2>&1)")"
+    check_hardening "${RELAY_CONTAINER}"
     sctl list-dependencies default.target --plain 2> /dev/null | grep -q "${RELAY_UNIT}" || die "${RELAY_UNIT} is not wanted by default.target"
     ok "${RELAY_UNIT} is wanted by default.target"
 

@@ -2,7 +2,7 @@
 
 Unofficial packaging of the server programs of [Aspia](https://github.com/dchapyshev/aspia), the open source remote desktop software by Dmitry Chapyshev: the Aspia Router and the Aspia Relay in one linux/amd64 image. It is not made or supported by the Aspia author.
 
-**The full documentation is on GitHub: [README.md](README.md).** It covers the quick start, the first login, the environment variables, upgrading from Aspia 2.x, running a Relay on a separate host, backups and troubleshooting. Read it before you run the image. This page is only a short summary.
+**The full documentation is on GitHub: [README.md](README.md).** It covers the quick start, the first login, the environment variables, the security settings, upgrading from Aspia 2.x, running a Relay on a separate host, backups and troubleshooting. Read it before you run the image. This page is only a short summary.
 
 ## Tags
 
