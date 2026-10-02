@@ -18,8 +18,8 @@ The terms in this document:
 
 | Term | Meaning |
 |---|---|
-| Router | The Aspia server that the Hosts and the Clients connect to. It keeps the users and the list of Hosts. |
-| Relay | The Aspia server that carries a session when the Client and the Host cannot connect directly. |
+| Router | The Aspia program that the Hosts and the Clients connect to. It keeps the users and the list of Hosts. |
+| Relay | The Aspia program that carries a session when the Client and the Host cannot connect directly. |
 | Host | The Aspia program on a computer that you want to control. |
 | Client | The Aspia program that you use to connect to a Host and to manage the Router. |
 | server | The machine where you run this image. |
