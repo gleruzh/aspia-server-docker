@@ -1,4 +1,6 @@
-# CI: lint, build, behaviour tests and a vulnerability scan, on every pull request and on main.
+# CI: lint, build, behaviour tests and a vulnerability scan, on every pull request. main is protected
+# (merge only through a pull request with these checks green, branch up to date), so a run after the
+# merge would test the same tree again; a weekly run keeps the Security tab current for main instead.
 # Nothing here is published and no secret is used. The trigger is pull_request (never
 # pull_request_target), so code from other people's pull requests runs with a read-only token and
 # without access to secrets.
@@ -6,8 +8,8 @@ name: CI
 
 on:
   pull_request:
-  push:
-    branches: [main]
+  schedule:
+    - cron: '17 5 * * 1'   # Mondays, after the weekly rebuild in publish.yml
   workflow_dispatch:
 
 permissions: {}

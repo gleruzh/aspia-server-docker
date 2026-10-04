@@ -6,7 +6,7 @@ to Docker Hub or Quay.io only when the owner has set their secrets.
 
 | Workflow | Runs on | What it does |
 |---|---|---|
-| [`ci.yml`](../.github/workflows/ci.yml) | every pull request, push to `main`, manual | `tests/lint.sh` (hadolint, shellcheck, actionlint, `scripts/versions.sh check`), builds the image, runs `tests/run.sh` against it, and scans it with Trivy. The scan is reported in the log, the run summary and the Security tab; it never fails the run. |
+| [`ci.yml`](../.github/workflows/ci.yml) | every pull request, weekly (Mondays), manual | `tests/lint.sh` (hadolint, shellcheck, actionlint, `scripts/versions.sh check`), builds the image, runs `tests/run.sh` against it, and scans it with Trivy. The scan is reported in the log, the run summary and the Security tab; it never fails the run. |
 | [`publish.yml`](../.github/workflows/publish.yml) | push to `main` that changes `versions.env` or the image files; weekly (Monday 03:41 UTC); manual | Builds the image once, pushes it to GHCR by digest only, runs `tests/run.sh` against that digest, then tags it and copies it to the other registries. Signs it and attests its provenance. |
 | [`upstream-watch.yml`](../.github/workflows/upstream-watch.yml) | every 6 hours; manual | Opens a pull request "chore: bump Aspia to X.Y.Z" when Aspia publishes a newer stable release with both x86_64 server packages. |
 
@@ -69,6 +69,12 @@ an error: the run logs "Docker Hub skipped" or "Quay.io skipped" and continues.
   `denied: permission_denied: write_package` until the repository is given access: **Package
   settings** > **Manage Actions access** > **Add Repository** > this repository, role **Write**. A
   package created by `publish.yml` itself has that access already.
+- **Branch protection on `main`.** Merges only through a pull request; the three CI checks (Lint, Build, test
+  and scan, Podman Quadlet) must pass and the branch must be up to date with `main`; no force pushes, no
+  deletion. No approval is required (a single maintainer cannot approve their own pull requests), and admins can
+  bypass the rules. A bump pull request opened with `GITHUB_TOKEN` gets no CI run, so its checks stay missing:
+  set `UPSTREAM_WATCH_TOKEN`, push a commit to the branch, or merge as admin after reading the upstream-watch
+  test result in the pull request.
 - **Code scanning.** The Trivy report in the Security tab needs code scanning, which is free for
   public repositories. On a private repository without GitHub Advanced Security the upload step
   fails without failing the run.
