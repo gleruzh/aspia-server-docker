@@ -14,7 +14,7 @@ docker pull <namespace>/aspia-server:3.0.23
 
 `<namespace>` is the Docker Hub account name in the address of this page.
 
-The tag `3.0.23` is built again every week with the Debian security updates, so it points to a new build from time to time. `3.0.23-YYYYMMDD` (a dated tag) never changes. To pin an image exactly, use its digest: `<namespace>/aspia-server@sha256:...`. The digest is the same in every registry the image is published to, and the images are signed (see [docs/ci.md](docs/ci.md)).
+The tag `3.0.23` points to the newest build of that version: it moves when the image changes (a Debian base update or a fix). `3.0.23-YYYYMMDD` (a dated tag) never changes. To pin an image exactly, use its digest: `<namespace>/aspia-server@sha256:...`. The digest is the same in every registry the image is published to, and the images are signed (see [docs/ci.md](docs/ci.md)).
 
 ## Quick start
 

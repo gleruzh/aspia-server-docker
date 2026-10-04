@@ -9,7 +9,7 @@ name: CI
 on:
   pull_request:
   schedule:
-    - cron: '17 5 * * 1'   # Mondays, after the weekly rebuild in publish.yml
+    - cron: '17 5 * * 1'   # Mondays: a fresh Trivy scan of main for the Security tab
   workflow_dispatch:
 
 permissions: {}
@@ -67,7 +67,7 @@ jobs:
         run: tests/run.sh
 
       # The scan reports; it never fails the build: the findings are in Debian packages that this
-      # repository does not control. The weekly rebuild in publish.yml picks up their fixes.
+      # repository does not control. Their fixes arrive with Dependabot's base image updates.
       - name: Scan the image with Trivy
         id: scan
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}

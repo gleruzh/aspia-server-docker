@@ -7,12 +7,14 @@ to Docker Hub or Quay.io only when the owner has set their secrets.
 | Workflow | Runs on | What it does |
 |---|---|---|
 | [`ci.yml`](../.github/workflows/ci.yml) | every pull request, weekly (Mondays), manual | `tests/lint.sh` (hadolint, shellcheck, actionlint, `scripts/versions.sh check`), builds the image, runs `tests/run.sh` against it, and scans it with Trivy. The scan is reported in the log, the run summary and the Security tab; it never fails the run. |
-| [`publish.yml`](../.github/workflows/publish.yml) | push to `main` that changes `versions.env` or the image files; weekly (Monday 03:41 UTC); manual | Builds the image once, pushes it to GHCR by digest only, runs `tests/run.sh` against that digest, then tags it and copies it to the other registries. Signs it and attests its provenance. |
+| [`publish.yml`](../.github/workflows/publish.yml) | push to `main` that changes `versions.env` or the image files; manual | Builds the image once, pushes it to GHCR by digest only, runs `tests/run.sh` against that digest, then tags it and copies it to the other registries. Signs it and attests its provenance. |
 | [`upstream-watch.yml`](../.github/workflows/upstream-watch.yml) | every 6 hours; manual | Opens a pull request "chore: bump Aspia to X.Y.Z" when Aspia publishes a newer stable release with both x86_64 server packages. |
 
 Dependabot ([`.github/dependabot.yml`](../.github/dependabot.yml)) opens pull requests, weekly, for
 the pinned action SHAs and for the pinned digest of the Debian base image. Nothing is updated
-silently.
+silently. There is no scheduled rebuild: the base image is pinned by digest, so a rebuild would not
+update it. Security updates of Debian arrive as a Dependabot pull request for the base digest; once
+merged, it changes the Dockerfile and `publish.yml` publishes the new image.
 
 ## The version file
 
@@ -114,8 +116,8 @@ from `main` unless you are testing the workflow itself.
 
 | Tag | Moves? | Pushed by |
 |---|---|---|
-| `X.Y.Z` (e.g. 3.0.23) | Yes: every rebuild of that version replaces it | every publish |
-| `X.Y.Z-YYYYMMDD` (e.g. 3.0.23-20261005) | Never: an existing dated tag is not overwritten | the weekly rebuild, or a manual run with "dated tag" |
+| `X.Y.Z` (e.g. 3.0.23) | Yes: every new build of that version replaces it | every publish |
+| `X.Y.Z-YYYYMMDD` (e.g. 3.0.23-20261005) | Never: an existing dated tag is not overwritten | every publish after a merge, or a manual run with "dated tag" |
 | `X.Y`, `X`, `latest` | Yes, to the newest publish | every publish; for convenience only, nothing in this repository refers to them |
 
 The digest of every publish is in the run summary, with the commands to verify it. Pin by digest for

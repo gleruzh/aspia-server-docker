@@ -238,7 +238,7 @@ Do not run `aspia_router --check-update` or `aspia_router --install-update` in t
 
 ### Tags and digests
 
-The tag `3.0.23` moves with every publish: a push to `main` that changes the image, a manual run, and the weekly rebuild with the Debian security updates. The tag `3.0.23-YYYYMMDD`, for example `3.0.23-20261005`, never moves. Only the weekly rebuild, or a manual run with a dated tag, creates it. Short tags such as `3.0` move too. Do not use them on a server. [docs/ci.md](docs/ci.md) has the details and shows how to verify the signature of the image.
+The tag `3.0.23` moves with every publish: a change to the image (a new Aspia version, a Debian base update, a fix) or a manual run. The tag `3.0.23-YYYYMMDD`, for example `3.0.23-20261005`, never moves. Every publish after a change creates one. Short tags such as `3.0` move too. Do not use them on a server. [docs/ci.md](docs/ci.md) has the details and shows how to verify the signature of the image.
 
 For an image that never changes, use its digest. Show the digests of the image that you have downloaded:
 
