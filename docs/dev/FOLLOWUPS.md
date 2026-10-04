@@ -48,7 +48,7 @@ Each item names the PR that found it.
   and small, but nothing prunes them.
 - **Build downloads.** `ADD <url>` re-checks the release assets on every build. A local package cache
   (or a `--build-context`) would make repeated CI builds faster. PR 2: not changed. `publish.yml` builds
-  with `no-cache` on purpose (the weekly rebuild must fetch current Debian packages), and `ci.yml` builds
+  with `no-cache` on purpose (each publish installs the current Debian packages), and `ci.yml` builds
   once per run, so a cache would save little; `tests/run.sh` still builds twice more (the tampered-checksum
   build and the helper image).
 - **README.** The Russian half only points to the English "Ports" and "Upgrading from 2.x" sections

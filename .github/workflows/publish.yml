@@ -16,10 +16,6 @@ on:
       - aspia_start
       - aspia_health
       - aspia_common.sh
-  schedule:
-    # Weekly rebuild (Mondays 03:41 UTC): picks up Debian security updates of the packages the
-    # image installs, and adds an immutable X.Y.Z-YYYYMMDD tag.
-    - cron: '41 3 * * 1'
   workflow_dispatch:
     inputs:
       version:
@@ -29,7 +25,7 @@ on:
         required: true
         type: string
       dated_tag:
-        description: Also push the immutable X.Y.Z-YYYYMMDD tag (the weekly rebuild always does).
+        description: Also push the immutable X.Y.Z-YYYYMMDD tag (a publish after a merge always does).
         required: false
         type: boolean
         default: false
@@ -79,7 +75,7 @@ jobs:
           major="${version%%.*}"
           created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           dated_tag=""
-          if [[ "${GITHUB_EVENT_NAME}" == schedule || "${INPUT_DATED_TAG}" == true ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" == push || "${INPUT_DATED_TAG}" == true ]]; then
             dated_tag="${version}-$(date -u +%Y%m%d)"
           fi
           {
@@ -155,7 +151,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Pushed by digest only: nothing points at this image until it has passed the tests.
-      # No cache and a fresh pull, so that the weekly rebuild gets current Debian packages.
+      # No cache and a fresh pull: the build installs the current Debian packages.
       - name: Build and push to GHCR by digest
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
