@@ -5,7 +5,7 @@
 
 [![CI](../../../actions/workflows/ci.yml/badge.svg)](../../../actions/workflows/ci.yml) [![Publish](../../../actions/workflows/publish.yml/badge.svg)](../../../actions/workflows/publish.yml)
 
-Этот репозиторий собирает Docker-образ серверной части [Aspia](https://aspia.org/), системы удалённого доступа с открытым исходным кодом. В образе работают Aspia Router и Aspia Relay версии 3.0.22.
+Этот репозиторий собирает Docker-образ серверной части [Aspia](https://aspia.org/), системы удалённого доступа с открытым исходным кодом. В образе работают Aspia Router и Aspia Relay версии 3.0.23.
 
 ## Что это и чем не является
 
@@ -42,7 +42,7 @@
     ```shell
     # .env
     EXTERNAL_IP=203.0.113.10
-    ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.0.22
+    ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.0.23
     ```
 
     `EXTERNAL_IP` — адрес, который Relay сообщает программам Client и Host. Это может быть IP-адрес или DNS-имя. Значение `auto` определяет публичный IP-адрес при каждом запуске.
@@ -177,7 +177,7 @@ docker compose up -d
 | `PUID`, `PGID` | `0` (root) | Запускать Router и Relay от имени пользователя и группы с этими ID. Задайте обе переменные или ни одной. При каждом запуске контейнер меняет владельца `./data/config` и `./data/database`. |
 | `TZ` | `UTC` | Часовой пояс меток времени в журнале, например `Europe/Berlin`. |
 | `ASPIA_LOG_LEVEL` | `1` | Минимальный уровень журнала: `0` TRACE, `1` INFO, `2` WARNING, `3` ERROR, `4` FATAL. |
-| `ASPIA_IMAGE` | `aspia-server:3.0.22` | Образ, который запускает `docker compose`. Значение по умолчанию — имя локальной сборки. |
+| `ASPIA_IMAGE` | `aspia-server:3.0.23` | Образ, который запускает `docker compose`. Значение по умолчанию — имя локальной сборки. |
 
 У некоторых параметров нет переменной: порт Router для Relay (`[relay] port` в `router.conf`) и адреса прослушивания (`listen_interface`). Для них отредактируйте `router.conf` или `relay.conf`. Контейнер никогда не перезаписывает такое изменение. Нет и переменной для пароля `admin` (см. [Первый вход](#первый-вход)).
 
@@ -209,7 +209,7 @@ docker run -d --name aspia-server --restart unless-stopped \
   -e EXTERNAL_IP=203.0.113.10 \
   -p 8060:8060 -p 8061:8061 -p 8062:8062 -p 8065:8065/udp -p 8070:8070 \
   -v "$PWD/data/config:/etc/aspia" -v "$PWD/data/database:/var/lib/aspia" \
-  ghcr.io/<owner>/aspia-server:3.0.22
+  ghcr.io/<owner>/aspia-server:3.0.23
 ```
 
 В простейшей установке ни одна из пяти capabilities не нужна: `PUID` и `PGID` не заданы, а тома принадлежат root. В этом случае можно убрать флаги `--cap-add` или `cap_add:` в файле compose.
@@ -239,12 +239,12 @@ docker run -d --name aspia-server --restart unless-stopped \
 
 ### Теги и дайджесты
 
-Тег `3.0.22` переназначается при каждой публикации: при отправке в `main` с изменением образа, при ручном запуске и при еженедельной пересборке с обновлениями безопасности Debian. Тег `3.0.22-YYYYMMDD`, например `3.0.22-20261005`, не переназначается никогда. Его создают только еженедельная пересборка или ручной запуск с тегом с датой. Короткие теги, например `3.0`, тоже переназначаются. Не используйте их на сервере. Подробности и проверку подписи образа смотрите в [docs/ci.md](ci.md).
+Тег `3.0.23` переназначается при каждой публикации: при отправке в `main` с изменением образа, при ручном запуске и при еженедельной пересборке с обновлениями безопасности Debian. Тег `3.0.23-YYYYMMDD`, например `3.0.23-20261005`, не переназначается никогда. Его создают только еженедельная пересборка или ручной запуск с тегом с датой. Короткие теги, например `3.0`, тоже переназначаются. Не используйте их на сервере. Подробности и проверку подписи образа смотрите в [docs/ci.md](ci.md).
 
 Чтобы образ никогда не менялся, закрепите его по дайджесту. Покажите дайджесты скачанного образа:
 
 ```shell
-docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' ghcr.io/<owner>/aspia-server:3.0.22
+docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' ghcr.io/<owner>/aspia-server:3.0.23
 ```
 
 Если вы скачивали образ из обоих реестров, в списке будет и строка, которая начинается с `docker.io`. Используйте строку, которая начинается с `ghcr.io`. Она выглядит как `ghcr.io/<owner>/aspia-server@sha256:...`. Впишите её в `.env`:
@@ -258,7 +258,7 @@ ASPIA_IMAGE=ghcr.io/<owner>/aspia-server@sha256:2ff06f77e1e364bf03245bc5453646a6
 
 ## Переход с 2.x
 
-Этот раздел для сервера со старым образом `paprikkafox/aspia-server` (версия 2.7.0, обычно с тегом `latest`), файлом `docker-compose.yml` и каталогом `data`. Образ 3.0.22 сохраняет ваших пользователей, Host и ключи. Официальное [руководство по миграции](https://aspia.org/docs/migration) описывает порядок обновления, Console, адресные книги и двухфакторную аутентификацию.
+Этот раздел для сервера со старым образом `paprikkafox/aspia-server` (версия 2.7.0, обычно с тегом `latest`), файлом `docker-compose.yml` и каталогом `data`. Образ 3.0.23 сохраняет ваших пользователей, Host и ключи. Официальное [руководство по миграции](https://aspia.org/docs/migration) описывает порядок обновления, Console, адресные книги и двухфакторную аутентификацию.
 
 Исходный образ удалён из Docker Hub в октябре 2026 года. Тот же образ (с тем же digest) сохранён как `gleruzh/aspia-server:2.7.0-paprikkafox`, для отката на 2.7.0.
 
@@ -285,7 +285,7 @@ ASPIA_IMAGE=ghcr.io/<owner>/aspia-server@sha256:2ff06f77e1e364bf03245bc5453646a6
 
 Что происходит при первом запуске:
 
-- Контейнер копирует `router.json`, `relay.json` и `router.db3` в файлы с суффиксом `.pre-3.0.22-<time>` рядом с оригиналами.
+- Контейнер копирует `router.json`, `relay.json` и `router.db3` в файлы с суффиксом `.pre-3.0.23-<time>` рядом с оригиналами.
 - Aspia преобразует `router.json` в `router.conf`, а `relay.json` в `relay.conf`. Старые файлы она переименовывает в `router.json.bak` и `relay.json.bak`.
 - Aspia переводит базу данных `router.db3` на новую версию. После этого Aspia 2.7.0 может не прочитать её.
 - Router сохраняет свой ключ, поэтому Host, которые используют ключ из `router.pub`, продолжают работать. Контейнер копирует `router.pub` в `host.pub` и `relay.pub` — имена файлов в Aspia 3.x.
@@ -389,7 +389,7 @@ docker compose up -d
     ```shell
     # .env
     COMPOSE_FILE=compose.relay.yml
-    ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.0.22
+    ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.0.23
     EXTERNAL_IP=203.0.113.20
     ASPIA_RELAY_ROUTER_ADDRESS=203.0.113.10
     ASPIA_RELAY_ROUTER_PUBLIC_KEY=047d0004a25c7f61e501c3eadc701732ca94c6a2fb035b4935caf7da7b27c555
@@ -453,7 +453,7 @@ cd aspia-server-docker
 cp .env.example .env
 ```
 
-Задайте `EXTERNAL_IP` в `.env`, а `ASPIA_IMAGE` оставьте незаданной. Затем соберите образ и запустите контейнер. Образ получит имя `aspia-server:3.0.22`:
+Задайте `EXTERNAL_IP` в `.env`, а `ASPIA_IMAGE` оставьте незаданной. Затем соберите образ и запустите контейнер. Образ получит имя `aspia-server:3.0.23`:
 
 ```shell
 docker compose up -d --build
