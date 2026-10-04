@@ -1,4 +1,4 @@
-<!-- canonical: README.md df95a4fe57f00fb139753ca4919a69752062d679 -->
+<!-- canonical: README.md bb21535ca228ffe08c05bd067d67e1060b1208a8 -->
 [English](../README.md) | **Русский**
 
 # Aspia Server в Docker (Router + Relay)
