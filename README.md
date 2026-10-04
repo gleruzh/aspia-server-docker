@@ -259,6 +259,8 @@ The digest in this example is only an example. The summary of each publish run o
 
 This section is for a server that runs the old image `paprikkafox/aspia-server` (version 2.7.0, usually with the tag `latest`) with a `docker-compose.yml` and a `data` directory. The image 3.0.22 keeps your users, Hosts and keys. The official [migration guide](https://aspia.org/docs/migration) covers the order of the updates, the Console, the address books and two-factor authentication.
 
+The original image was removed from Docker Hub in October 2026. The same image (the same digest) is kept as `gleruzh/aspia-server:2.7.0-paprikkafox`, for a rollback to 2.7.0.
+
 1. Go to the directory of the old installation. Write down `EXTERNAL_IP` from the old `docker-compose.yml`: the old file sets it in the `environment:` list. Then stop the container:
 
     ```shell
@@ -494,7 +496,7 @@ This repository is licensed under the GNU General Public License v3.0: see [LICE
 Thanks to:
 
 - Dmitry Chapyshev ([dchapyshev](https://github.com/dchapyshev)) for Aspia: [dchapyshev/aspia](https://github.com/dchapyshev/aspia).
-- Dmitry Fox ([paprikkafox](https://github.com/paprikkafox)) for the original aspia-server Docker image: [paprikkafox/aspia-server-docker](https://github.com/paprikkafox/aspia-server-docker).
+- Dmitry Fox ([paprikkafox](https://github.com/paprikkafox)) for the original aspia-server Docker image (GPL-3.0). Its Docker Hub image was removed in October 2026. His current project is [paprikkafox/aspia-docker](https://github.com/paprikkafox/aspia-docker).
 - [SinitsaDA](https://github.com/SinitsaDA) for [SinitsaDA/aspia-server-docker](https://github.com/SinitsaDA/aspia-server-docker) (GPL-3.0). The 3.x image of this project was ported from its 3.x server image, its handling of the 2.x migration and its health check that opens no connections.
 
 The work on this repository was done with the help of Claude, the AI assistant by Anthropic, used through Claude Code.

@@ -303,3 +303,17 @@ New:
   warning may be friendlier (the compose files never pass them, so only `docker run` and Podman users meet this).
 - **One service and container name in all compose files.** The service is `aspia-server`, `aspia-router` or
   `aspia-relay` by file, which is why the README needs a service-name note. One name everywhere would remove it.
+
+## The original image is gone from Docker Hub (2026-10-04)
+
+- `paprikkafox/aspia-server` is no longer on Docker Hub (repository and user: HTTP 404), and
+  `github.com/paprikkafox/aspia-server-docker` returns 404. The GitHub account `paprikkafox` exists; his current
+  project is `paprikkafox/aspia-docker` (created 2026-10-03, its own 3.x image on GHCR). GitHub made an unrelated 2022 fork, `diemetro/aspia-server-docker`, the root of the
+  fork network, so this repository now shows it as its parent. Options: ask GitHub Support to detach this
+  repository from the fork network ("Leave fork network"), so it stands on its own. Owner's decision.
+- The 2.7.0 image that `tests/run.sh` upgrades from is archived byte-identical as
+  `gleruzh/aspia-server:2.7.0-paprikkafox` (same digest). Users who need a rollback to 2.7.0 pull it from there
+  (README, "Upgrading from 2.x").
+- `docs/dev/UPSTREAMING.md` (branch `docs/upstreaming`) was written for the old repository and is out of date;
+  the owner offered cooperation to paprikkafox/aspia-docker in an issue instead. The local `upstream` remote points to
+  the old repository address (404).

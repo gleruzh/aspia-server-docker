@@ -1,4 +1,4 @@
-<!-- canonical: README.md 695bf173cc34a25bf36897f55999635b08141c17 -->
+<!-- canonical: README.md df95a4fe57f00fb139753ca4919a69752062d679 -->
 [English](../README.md) | **Русский**
 
 # Aspia Server в Docker (Router + Relay)
@@ -260,6 +260,8 @@ ASPIA_IMAGE=ghcr.io/<owner>/aspia-server@sha256:2ff06f77e1e364bf03245bc5453646a6
 
 Этот раздел для сервера со старым образом `paprikkafox/aspia-server` (версия 2.7.0, обычно с тегом `latest`), файлом `docker-compose.yml` и каталогом `data`. Образ 3.0.22 сохраняет ваших пользователей, Host и ключи. Официальное [руководство по миграции](https://aspia.org/docs/migration) описывает порядок обновления, Console, адресные книги и двухфакторную аутентификацию.
 
+Исходный образ удалён из Docker Hub в октябре 2026 года. Тот же образ (с тем же digest) сохранён как `gleruzh/aspia-server:2.7.0-paprikkafox`, для отката на 2.7.0.
+
 1. Перейдите в каталог старой установки. Запишите `EXTERNAL_IP` из старого `docker-compose.yml`: старый файл задаёт его в списке `environment:`. Затем остановите контейнер:
 
     ```shell
@@ -495,7 +497,7 @@ docker compose restart
 Спасибо:
 
 - Dmitry Chapyshev ([dchapyshev](https://github.com/dchapyshev)) — за Aspia: [dchapyshev/aspia](https://github.com/dchapyshev/aspia).
-- Dmitry Fox ([paprikkafox](https://github.com/paprikkafox)) — за исходный Docker-образ aspia-server: [paprikkafox/aspia-server-docker](https://github.com/paprikkafox/aspia-server-docker).
+- Dmitry Fox ([paprikkafox](https://github.com/paprikkafox)) — за исходный Docker-образ aspia-server (GPL-3.0). Этот образ удалён из Docker Hub в октябре 2026 года. Текущий проект автора — [paprikkafox/aspia-docker](https://github.com/paprikkafox/aspia-docker).
 - [SinitsaDA](https://github.com/SinitsaDA) за [SinitsaDA/aspia-server-docker](https://github.com/SinitsaDA/aspia-server-docker) (GPL-3.0). Из этого репозитория в образ 3.x перенесены серверный образ 3.x, обработка перехода с 2.x и проверка состояния, которая не открывает соединений.
 
 Работа над этим репозиторием выполнена с помощью Claude — ИИ-ассистента от Anthropic — через Claude Code.
