@@ -15,7 +15,7 @@
 #   0c. docker-compose.yml: local build by default, ASPIA_IMAGE override, EXTERNAL_IP required
 #   1. clean start
 #   2. restart keeps keys and configuration; 2b. a changed EXTERNAL_IP is applied, with a copy
-#   3. upgrade from paprikkafox/aspia-server:2.7.0
+#   3. upgrade from 2.7.0 (an archived copy of paprikkafox/aspia-server:2.7.0)
 #   4. docker stop is fast and clean
 #   5. a crashed process stops the container with a non-zero exit code
 #   6. EXTERNAL_IP unset, empty or blank
@@ -60,7 +60,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 readonly PLATFORM=linux/amd64
-readonly OLD_IMAGE=paprikkafox/aspia-server:2.7.0@sha256:8db62b95681b09ab8dc2346d803a2981d7a44826b3a06310ab27b3d054215b82
+# paprikkafox/aspia-server:2.7.0 was removed from Docker Hub in October 2026; this is the same image (same digest).
+readonly OLD_IMAGE=gleruzh/aspia-server:2.7.0-paprikkafox@sha256:8db62b95681b09ab8dc2346d803a2981d7a44826b3a06310ab27b3d054215b82
 readonly HELPER_IMAGE=aspia-server-test-helper:local
 # Docker CLI with Compose v2.31, to check docker-compose.yml against the Compose v2 still common on servers.
 readonly COMPOSE_V2_IMAGE=docker:27.3-cli@sha256:328eb399a065780c2cebe9224de003aa14084cf69efae882ac27430f921819b7

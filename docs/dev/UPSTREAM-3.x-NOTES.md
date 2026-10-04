@@ -217,7 +217,7 @@ public_key=
 
 ## 7. 2.7.0 data (produced by `paprikkafox/aspia-server:2.7.0`)
 
-Image `paprikkafox/aspia-server@sha256:8db62b95681b09ab8dc2346d803a2981d7a44826b3a06310ab27b3d054215b82` (amd64).
+Image `paprikkafox/aspia-server@sha256:8db62b95681b09ab8dc2346d803a2981d7a44826b3a06310ab27b3d054215b82` (amd64). Removed from Docker Hub in October 2026 (repository and user: HTTP 404, checked 2026-10-04), and github.com/paprikkafox/aspia-server-docker returns 404 (the fork network root moved to an unrelated 2022 fork, diemetro/aspia-server-docker); the account paprikkafox now has paprikkafox/aspia-docker. Archived byte-identical as `gleruzh/aspia-server:2.7.0-paprikkafox` (same digest, checked with `docker buildx imagetools inspect`); `tests/run.sh` uses that copy.
 
 [run] `docker run --platform linux/amd64 -e EXTERNAL_IP=203.0.113.10 -v a27cfg:/etc/aspia -v a27db:/var/lib/aspia paprikkafox/aspia-server:2.7.0`, run twice:
 

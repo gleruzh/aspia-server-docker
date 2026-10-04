@@ -47,7 +47,7 @@ Licensed under the GNU General Public License v3.0: see [LICENSE](LICENSE). Aspi
 Thanks to:
 
 - Dmitry Chapyshev ([dchapyshev](https://github.com/dchapyshev)) for [Aspia](https://github.com/dchapyshev/aspia).
-- Dmitry Fox ([paprikkafox](https://github.com/paprikkafox)) for the original [aspia-server-docker](https://github.com/paprikkafox/aspia-server-docker).
+- Dmitry Fox ([paprikkafox](https://github.com/paprikkafox)) for the original aspia-server Docker image (removed from Docker Hub in October 2026).
 - [SinitsaDA](https://github.com/SinitsaDA) for [SinitsaDA/aspia-server-docker](https://github.com/SinitsaDA/aspia-server-docker), which the 3.x image was ported from.
 
 The work on this repository was done with the help of Claude, the AI assistant by Anthropic, used through Claude Code.

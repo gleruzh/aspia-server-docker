@@ -22,7 +22,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 readonly VERSIONS_FILE=versions.env
-readonly LEGACY_TAG=2.7.0   # paprikkafox/aspia-server:2.7.0, the 2.x image that users upgrade from
+readonly LEGACY_TAG=2.7.0   # the 2.x image that users upgrade from (paprikkafox/aspia-server:2.7.0, archived as 2.7.0-paprikkafox)
 
 die() {
     printf 'versions.sh: %s\n' "$*" >&2
@@ -66,7 +66,7 @@ check() {
         while IFS=: read -r line ref; do
             tag="${ref#aspia-server:}"
             tag="${tag%.}"   # a sentence may end right after the tag
-            if [[ "${tag}" != "${version}" && ! "${tag}" =~ ^${version//./\\.}-[0-9]{8}$ && "${tag}" != "${LEGACY_TAG}" ]]; then
+            if [[ "${tag}" != "${version}" && ! "${tag}" =~ ^${version//./\\.}-[0-9]{8}$ && "${tag}" != "${LEGACY_TAG}" && "${tag}" != "${LEGACY_TAG}-paprikkafox" ]]; then
                 printf '%s:%s: aspia-server:%s (expected the exact version %s)\n' "${file}" "${line}" "${tag}" "${version}" >&2
                 status=1
             fi
