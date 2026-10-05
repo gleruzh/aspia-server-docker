@@ -24,7 +24,7 @@
 образ**, закреплённый по точному тегу версии (или по дайджесту):
 
 ```ini
-Image=ghcr.io/<owner>/aspia-server:3.0.23
+Image=ghcr.io/<owner>/aspia-server:3.0.24
 Image=ghcr.io/<owner>/aspia-server@sha256:<digest>
 ```
 
@@ -33,17 +33,17 @@ Image=ghcr.io/<owner>/aspia-server@sha256:<digest>
 docs/ci.md. Никогда не используйте `latest`, `3` или `3.0`: при следующем скачивании образ под ними изменится.
 Podman скачивает публичный образ при запуске службы, входить в реестр не нужно.
 
-Значение по умолчанию в файле, `localhost/aspia-server:3.0.23`, — это имя, которое получает образ при локальной сборке. Чтобы собрать образ локально,
+Значение по умолчанию в файле, `localhost/aspia-server:3.0.24`, — это имя, которое получает образ при локальной сборке. Чтобы собрать образ локально,
 выполните команду в клоне этого репозитория от имени пользователя, который будет запускать службу (root для установки на всю систему):
 
 ```shell
-podman build -t aspia-server:3.0.23 .
+podman build -t aspia-server:3.0.24 .
 ```
 
 Для локальной сборки `podman build` нужен **Podman 5.1 или новее**: из-за `HEALTHCHECK --start-interval` в Dockerfile
 более старый Podman завершается с ошибкой `flag provided but not defined: -start-interval`. На более старом Podman используйте опубликованный
-образ или соберите образ в Docker и перенесите его: `docker save aspia-server:3.0.23 | podman load`
-(после этого `Image=localhost/aspia-server:3.0.23` подойдёт, только если `podman images` показывает именно это имя; иначе присвойте образу тег).
+образ или соберите образ в Docker и перенесите его: `docker save aspia-server:3.0.24 | podman load`
+(после этого `Image=localhost/aspia-server:3.0.24` подойдёт, только если `podman images` показывает именно это имя; иначе присвойте образу тег).
 
 ## 2. Установка на всю систему (от root)
 
@@ -192,7 +192,7 @@ sudo ufw allow 8065/udp
 В юните нет метки `io.containers.autoupdate`; не включайте для него `podman-auto-update.timer`.
 
 1. Прочитайте примечания к выпуску и сделайте резервную копию томов (раздел 5) или каталогов.
-2. Измените тег (или дайджест) в строке `Image=`, например `3.0.23` на следующую версию. При локальной
+2. Измените тег (или дайджест) в строке `Image=`, например `3.0.24` на следующую версию. При локальной
    сборке сначала соберите новый образ.
 3. `sudo systemctl daemon-reload`
 4. `sudo systemctl restart aspia-server.service`
@@ -219,7 +219,7 @@ sudo podman run -d --name aspia-server --env-file /etc/aspia-server/aspia-server
   -v aspia-config:/etc/aspia -v aspia-data:/var/lib/aspia \
   --health-cmd /usr/bin/aspia_health --health-interval 30s --health-timeout 10s \
   --health-retries 3 --health-start-period 60s \
-  ghcr.io/<owner>/aspia-server:3.0.23
+  ghcr.io/<owner>/aspia-server:3.0.24
 cd /etc/systemd/system
 sudo podman generate systemd --new --files --name --restart-policy=always aspia-server
 sudo podman rm -f aspia-server
