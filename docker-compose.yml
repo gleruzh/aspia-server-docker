@@ -3,8 +3,8 @@ services:
     # By default the image is built from this repository: docker compose up -d --build
     # (the build pins its base image and checks the Aspia packages against versions.env).
     # To run a published image instead, set ASPIA_IMAGE in .env, pinned to a version or a digest,
-    # e.g. ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.0.23, then docker compose pull (no --build).
-    image: ${ASPIA_IMAGE:-aspia-server:3.0.23}
+    # e.g. ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.0.26, then docker compose pull (no --build).
+    image: ${ASPIA_IMAGE:-aspia-server:3.0.26}
     build: .
     container_name: aspia-server
     hostname: aspia-server

@@ -10,7 +10,7 @@ After=network-online.target
 [Container]
 # The image: podman/README.md, section 1 (the same image as aspia-server.container). The default is
 # the name a local build gives; for the published image use an exact tag or an @sha256 digest.
-Image=localhost/aspia-server:3.0.23
+Image=localhost/aspia-server:3.0.26
 
 ContainerName=aspia-relay
 Environment=ASPIA_ROLE=relay

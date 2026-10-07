@@ -23,7 +23,7 @@ The image is the `Image=` line of `aspia-server.container`, the only place to ch
 image**, pinned to the exact version tag (or to a digest):
 
 ```ini
-Image=ghcr.io/<owner>/aspia-server:3.0.23
+Image=ghcr.io/<owner>/aspia-server:3.0.26
 Image=ghcr.io/<owner>/aspia-server@sha256:<digest>
 ```
 
@@ -32,17 +32,17 @@ verify the cosign signature). The digest of each release is in the summary of it
 docs/ci.md. Never use `latest`, `3` or `3.0`: they change under you on the next pull. Podman pulls a public
 image when the service starts, no login needed.
 
-The default in the file, `localhost/aspia-server:3.0.23`, is the name a local build gives. To build locally,
+The default in the file, `localhost/aspia-server:3.0.26`, is the name a local build gives. To build locally,
 in a checkout of this repository, as the user that will run the service (root for the system-wide install):
 
 ```shell
-podman build -t aspia-server:3.0.23 .
+podman build -t aspia-server:3.0.26 .
 ```
 
 A local `podman build` needs **Podman 5.1 or later**: the Dockerfile's `HEALTHCHECK --start-interval` makes
 older Podman fail with `flag provided but not defined: -start-interval`. On older Podman use the published
-image, or build with Docker and move the image over: `docker save aspia-server:3.0.23 | podman load`
-(then `Image=localhost/aspia-server:3.0.23` fits only if `podman images` shows that name; otherwise tag it).
+image, or build with Docker and move the image over: `docker save aspia-server:3.0.26 | podman load`
+(then `Image=localhost/aspia-server:3.0.26` fits only if `podman images` shows that name; otherwise tag it).
 
 ## 2. Install system-wide (as root)
 
@@ -191,7 +191,7 @@ rules and may be reachable even where the host firewall says they are closed (as
 The unit has no `io.containers.autoupdate` label; do not enable `podman-auto-update.timer` for it.
 
 1. Read the release notes, and back up the volumes (section 5) or the directories.
-2. Change the tag (or digest) in the `Image=` line, for example `3.0.23` to the next version. With a local
+2. Change the tag (or digest) in the `Image=` line, for example `3.0.26` to the next version. With a local
    build, build the new image first.
 3. `sudo systemctl daemon-reload`
 4. `sudo systemctl restart aspia-server.service`
@@ -220,7 +220,7 @@ sudo podman run -d --name aspia-server --env-file /etc/aspia-server/aspia-server
   -v aspia-config:/etc/aspia -v aspia-data:/var/lib/aspia \
   --health-cmd /usr/bin/aspia_health --health-interval 30s --health-timeout 10s \
   --health-retries 3 --health-start-period 60s \
-  ghcr.io/<owner>/aspia-server:3.0.23
+  ghcr.io/<owner>/aspia-server:3.0.26
 cd /etc/systemd/system
 sudo podman generate systemd --new --files --name --restart-policy=always aspia-server
 sudo podman rm -f aspia-server
