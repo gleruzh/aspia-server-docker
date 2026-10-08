@@ -6,15 +6,15 @@ Unofficial packaging of the server programs of [Aspia](https://github.com/dchapy
 
 ## Tags
 
-Use an exact version tag, for example `3.0.23`. Do not use `latest` or a short tag such as `3.0`: they change on the next pull, and an Aspia update can need action from you.
+Use an exact version tag, for example `3.0.30`. Do not use `latest` or a short tag such as `3.0`: they change on the next pull, and an Aspia update can need action from you.
 
 ```shell
-docker pull <namespace>/aspia-server:3.0.23
+docker pull <namespace>/aspia-server:3.0.30
 ```
 
 `<namespace>` is the Docker Hub account name in the address of this page.
 
-The tag `3.0.23` points to the newest build of that version: it moves when the image changes (a Debian base update or a fix). `3.0.23-YYYYMMDD` (a dated tag) never changes. To pin an image exactly, use its digest: `<namespace>/aspia-server@sha256:...`. The digest is the same in every registry the image is published to, and the images are signed (see [docs/ci.md](docs/ci.md)).
+The tag `3.0.30` points to the newest build of that version: it moves when the image changes (a Debian base update or a fix). `3.0.30-YYYYMMDD` (a dated tag) never changes. To pin an image exactly, use its digest: `<namespace>/aspia-server@sha256:...`. The digest is the same in every registry the image is published to, and the images are signed (see [docs/ci.md](docs/ci.md)).
 
 ## Quick start
 
@@ -22,7 +22,7 @@ Follow the "Quick start" section of [README.md](README.md). In short, a `docker-
 
 ```shell
 EXTERNAL_IP=203.0.113.10
-ASPIA_IMAGE=<namespace>/aspia-server:3.0.23
+ASPIA_IMAGE=<namespace>/aspia-server:3.0.30
 ```
 
 `EXTERNAL_IP` is the public address of your server. Replace the example address `203.0.113.10`.
