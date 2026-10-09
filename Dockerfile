@@ -12,7 +12,7 @@
 # file into an ARG, so this default mirrors versions.env for a plain "docker build ." (CI passes
 # --build-arg ASPIA_VERSION from versions.env). The fetch stage fails when the two differ, and
 # scripts/versions.sh bump updates both.
-ARG ASPIA_VERSION=3.0.23
+ARG ASPIA_VERSION=3.0.31
 
 # Debian 13 (trixie) slim, pinned by tag and index digest so that builds are reproducible.
 FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a AS base
