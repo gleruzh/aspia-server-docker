@@ -9,7 +9,7 @@ After=network-online.target
 [Container]
 # The image: podman/README.md, section 1. The default is the name a local build gives; for the
 # published image use an exact tag or an @sha256 digest, never latest.
-Image=localhost/aspia-server:3.0.31
+Image=localhost/aspia-server:3.0.32
 
 ContainerName=aspia-server
 EnvironmentFile=aspia-server.env
