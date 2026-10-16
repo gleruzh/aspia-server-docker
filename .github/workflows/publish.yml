@@ -20,8 +20,8 @@ on:
     inputs:
       version:
         description: >-
-          Aspia version to publish. Must equal ASPIA_VERSION in versions.env of the branch selected
-          above (checksums exist only for that version).
+          Aspia version to publish. Must equal ASPIA_VERSION in versions.env on main (checksums
+          exist only for that version).
         required: true
         type: string
       dated_tag:
@@ -31,6 +31,12 @@ on:
         default: false
 
 permissions: {}
+
+# One group for every run, whatever its version: a second publish waits, so two runs never move the
+# floating tags or edit the Docker Hub description at the same time.
+concurrency:
+  group: publish
+  cancel-in-progress: false
 
 defaults:
   run:
@@ -60,15 +66,18 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_DATED_TAG: ${{ inputs.dated_tag }}
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
-          QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
+          HAS_DOCKERHUB: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+          HAS_QUAY: ${{ secrets.QUAY_USERNAME != '' && secrets.QUAY_TOKEN != '' }}
         run: |
+          # A push runs on main only; a manual run could pick any branch and move the floating tags.
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::Publish runs only from main, not from ${GITHUB_REF}."
+            exit 1
+          fi
           scripts/versions.sh check
           version="$(scripts/versions.sh get ASPIA_VERSION)"
           if [[ "${GITHUB_EVENT_NAME}" == workflow_dispatch && "${INPUT_VERSION}" != "${version}" ]]; then
-            echo "::error::The input version '${INPUT_VERSION}' is not ASPIA_VERSION=${version} in versions.env of ${GITHUB_REF_NAME}. Run the workflow from a branch or tag whose versions.env has that version."
+            echo "::error::The input version '${INPUT_VERSION}' is not ASPIA_VERSION=${version} in versions.env of main. Merge the bump to main first."
             exit 1
           fi
           minor="${version%.*}"
@@ -86,14 +95,14 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
           # Optional registries are enabled by their secrets. Missing secrets are not an error.
-          if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
+          if [[ "${HAS_DOCKERHUB}" == true ]]; then
             echo "dockerhub=true" >> "${GITHUB_OUTPUT}"
             echo "Docker Hub: enabled"
           else
             echo "dockerhub=false" >> "${GITHUB_OUTPUT}"
             echo "::notice title=Docker Hub skipped::Secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are not both set; not publishing to Docker Hub."
           fi
-          if [[ -n "${QUAY_USERNAME}" && -n "${QUAY_TOKEN}" ]]; then
+          if [[ "${HAS_QUAY}" == true ]]; then
             echo "quay=true" >> "${GITHUB_OUTPUT}"
             echo "Quay.io: enabled"
           else
@@ -107,10 +116,6 @@ jobs:
     needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    # Two publishes of the same version never run at once; a second one waits.
-    concurrency:
-      group: publish-${{ needs.prepare.outputs.version }}
-      cancel-in-progress: false
     permissions:
       contents: read
       packages: write       # push to GHCR
@@ -312,7 +317,7 @@ jobs:
             echo
             echo '```'
             echo "cosign verify ${GHCR_IMAGE}@${DIGEST} \\"
-            echo "  --certificate-identity-regexp '^${GITHUB_SERVER_URL}/${REPOSITORY}/\\.github/workflows/publish\\.yml@' \\"
+            echo "  --certificate-identity-regexp '^${GITHUB_SERVER_URL}/${REPOSITORY}/\\.github/workflows/publish\\.yml@refs/heads/main$' \\"
             echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
             echo "gh attestation verify oci://${GHCR_IMAGE}@${DIGEST} -R ${REPOSITORY}"
             echo '```'

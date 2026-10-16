@@ -2,8 +2,9 @@
 #
 # tests/lint.sh: hadolint for every Dockerfile, shellcheck for every shell script, actionlint for
 # the workflows (it also runs shellcheck on their run: blocks), that the podman/*.env.example files
-# list the variables of .env.example that apply to their unit, scripts/versions.sh check, and the
-# input checks of scripts/versions.sh files and scripts/aspia-release.sh (with a stub gh).
+# list the variables of .env.example that apply to their unit, scripts/versions.sh check, the
+# input checks of scripts/versions.sh files and scripts/aspia-release.sh (with a stub gh), and that
+# publish.yml publishes from main only.
 # The linters run as pinned containers, so the result does not depend on what the host has installed.
 
 set -euo pipefail
@@ -93,6 +94,30 @@ check_release fail "${debs//./a}" has-debs 3.0.0
 check_release fail $'aspia-router-3.0.0-x86_64.deb \naspia-relay-3.0.0-x86_64.deb ' fetch 3.0.0 "${tmp}/debs"
 check_release ok "${debs}" fetch 3.0.0 "${tmp}/debs"
 grep -qxF "${STUB_SHA} ${STUB_SHA}" "${tmp}/out" || { echo "fetch printed: $(cat "${tmp}/out")"; status=1; }
+
+# publish.yml may publish only from main: the Plan step refuses any other ref, one workflow-level
+# concurrency group serialises every publish, raw registry secrets never go into a step's env, and
+# every documented cosign identity is pinned to publish.yml@refs/heads/main.
+check_publish_workflow() {
+    local wf=.github/workflows/publish.yml ok=0 line
+    echo "${wf} publishes from main only"
+    # shellcheck disable=SC2016 # the literal text of the check in the workflow
+    grep -qF '[[ "${GITHUB_REF}" != "refs/heads/main" ]]' "${wf}" \
+        || { echo "${wf}: no refs/heads/main check in the Plan step"; ok=1; }
+    [[ "$(sed -n '/^concurrency:/,/^[^ ]/p' "${wf}")" == $'concurrency:\n  group: publish\n  cancel-in-progress: false\n'* ]] \
+        || { echo "${wf}: no workflow-level concurrency group 'publish'"; ok=1; }
+    if grep -nE '^    concurrency:' "${wf}"; then echo "${wf}: job-level concurrency"; ok=1; fi
+    if grep -nE '^ +[A-Z_]+: \$\{\{ *secrets\.(DOCKERHUB|QUAY)_[A-Z]+ *\}\}' "${wf}"; then
+        echo "${wf}: a registry secret is passed to a step's env; pass a boolean instead"; ok=1
+    fi
+    grep -q 'certificate-identity' "${wf}" || { echo "${wf}: no cosign verify command"; ok=1; }
+    while IFS= read -r line; do
+        [[ "${line}" == *'publish\\.yml@refs/heads/main$'* || "${line}" == *'publish\.yml@refs/heads/main$'* ]] \
+            || { echo "cosign identity not pinned to refs/heads/main: ${line}"; ok=1; }
+    done < <(grep -rn --include='*.md' --include='*.yml' -e '--certificate-identity' .github docs README.md podman)
+    return "${ok}"
+}
+check_publish_workflow || status=1
 
 ((status == 0)) && echo "lint: ok"
 exit "${status}"
