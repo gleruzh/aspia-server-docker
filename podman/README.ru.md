@@ -47,6 +47,12 @@ podman build -t aspia-server:3.0.37 .
 
 ## 2. Установка на всю систему (от root)
 
+Защитите первый запуск ([Быстрый старт](../docs/README.ru.md#быстрый-старт), шаг 4): пока вы не вошли как `admin`,
+не сменили его пароль и не настроили двухфакторную аутентификацию, тот, кто первым подключится к 8062, захватит
+Router. До `systemctl start` задайте в `aspia-server.env` переменную `ASPIA_ROUTER_CLIENT_ALLOWED_IPS` с вашим
+адресом или замените в юните `PublishPort=8062:8062/tcp` на `PublishPort=127.0.0.1:8062:8062/tcp` и войдите через
+SSH-туннель (потом верните строку). В rootless Podman 4.x работает только второй способ (раздел 4).
+
 ```shell
 sudo install -d /etc/containers/systemd
 sudo install -m 0644 podman/aspia-server.container podman/aspia-config.volume podman/aspia-data.volume /etc/containers/systemd/
@@ -100,7 +106,7 @@ podman healthcheck run aspia-server
 
 Юнит публикует порты один к одному (порт на сервере = порт в контейнере) через `PublishPort=`: Relay сообщает
 каждому клиенту собственный порт, поэтому `9070:8070` нарушил бы соединения через Relay. Порт 8063 (Router — Relay)
-не публикуется.
+не публикуется. Порт 8060 (Host из Aspia 2.x) закомментирован: раскомментируйте его, если такие Host у вас ещё есть.
 
 | Вариант | Адрес клиента, который видит Router | Что использовать |
 |---|---|---|
@@ -173,15 +179,16 @@ sudo install -d /var/lib/aspia-server/config /var/lib/aspia-server/data
 
 ## 7. Межсетевой экран
 
-Откройте порты, которые нужны программам Client и Host. Порт 8060 нужен только для Host из Aspia 2.x. Порт 8063 не открывайте.
+Откройте порты, которые нужны программам Client и Host. Порт 8063 не открывайте. Порт 8060 нужен только для Host из
+Aspia 2.x: если вы раскомментировали его в юните, откройте и его.
 
 ```shell
 # firewalld (RHEL, AlmaLinux, Rocky, Fedora)
-sudo firewall-cmd --permanent --add-port=8060-8062/tcp --add-port=8070/tcp --add-port=8065/udp
+sudo firewall-cmd --permanent --add-port=8061-8062/tcp --add-port=8070/tcp --add-port=8065/udp
 sudo firewall-cmd --reload
 
 # ufw (Debian, Ubuntu)
-sudo ufw allow 8060:8062/tcp
+sudo ufw allow 8061:8062/tcp
 sudo ufw allow 8070/tcp
 sudo ufw allow 8065/udp
 ```
@@ -217,7 +224,7 @@ sudoedit /etc/aspia-server/aspia-server.env      # укажите EXTERNAL_IP (�
 sudo podman volume create aspia-config
 sudo podman volume create aspia-data
 sudo podman run -d --name aspia-server --env-file /etc/aspia-server/aspia-server.env \
-  -p 8060:8060 -p 8061:8061 -p 8062:8062 -p 8065:8065/udp -p 8070:8070 \
+  -p 8061:8061 -p 8062:8062 -p 8065:8065/udp -p 8070:8070 \
   -v aspia-config:/etc/aspia -v aspia-data:/var/lib/aspia \
   --health-cmd /usr/bin/aspia_health --health-interval 30s --health-timeout 10s \
   --health-retries 3 --health-start-period 60s \
