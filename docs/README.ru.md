@@ -1,4 +1,4 @@
-<!-- canonical: README.md bb21535ca228ffe08c05bd067d67e1060b1208a8 -->
+<!-- canonical: README.md fe6f2d47b753f04459a1e9b28c6ef9bbbfbb06ee -->
 [English](../README.md) | **Русский**
 
 # Aspia Server в Docker (Router + Relay)
@@ -174,7 +174,7 @@ docker compose up -d
 | `ASPIA_RELAY_ROUTER_PORT` | `8063` | Только для `ASPIA_ROLE=relay`: порт Router для Relay. |
 | `ASPIA_RELAY_ROUTER_PUBLIC_KEY` | нет | Только для `ASPIA_ROLE=relay`, и там обязательна: содержимое файла `relay.pub` на Router. |
 | `ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE` | нет | Только для `ASPIA_ROLE=relay`: путь к файлу с этим ключом вместо самого ключа. |
-| `PUID`, `PGID` | `0` (root) | Запускать Router и Relay от имени пользователя и группы с этими ID. Задайте обе переменные или ни одной. При каждом запуске контейнер меняет владельца `./data/config` и `./data/database`. |
+| `PUID`, `PGID` | `0` (root) | Запускать Router и Relay от имени пользователя и группы с этими ID. Рекомендуется, см. [Параметры безопасности](#параметры-безопасности). Задайте обе переменные или ни одной. При каждом запуске контейнер меняет владельца `./data/config` и `./data/database`. |
 | `TZ` | `UTC` | Часовой пояс меток времени в журнале, например `Europe/Berlin`. |
 | `ASPIA_LOG_LEVEL` | `1` | Минимальный уровень журнала: `0` TRACE, `1` INFO, `2` WARNING, `3` ERROR, `4` FATAL. |
 | `ASPIA_IMAGE` | `aspia-server:3.0.37` | Образ, который запускает `docker compose`. Значение по умолчанию — имя локальной сборки. |
@@ -187,24 +187,29 @@ docker compose up -d
 
 Файлы compose и юниты Podman запускают контейнер с минимальными привилегиями:
 
-- Все capabilities Linux (отдельные права root) отключены, кроме пяти. Их список ниже.
+- Все capabilities Linux (отдельные права root) отключены, кроме шести. Их список ниже.
 - Ни один процесс не может получить новые привилегии. Программы с битом setuid не работают. Юниты Podman этого не задают (см. ниже).
+- Router и Relay работают без capabilities, даже от имени root, и не могут получить новые привилегии, в том числе под Podman.
+- Конфигурацию, ключи и базу данных может читать только владелец. У двух каталогов режим 0700, у файлов 0600. `host.pub` остаётся 0644: это открытый ключ, который получает каждый Host, и журнал его показывает. При каждом запуске контейнер исправляет режимы старых файлов.
 - Файлы образа доступны только для чтения. Контейнер пишет только в свои два тома.
 - В контейнере может быть не больше 128 процессов и потоков. Он использует меньше 30.
 
-Пять capabilities, которые остаются:
+По умолчанию Router и Relay работают от имени root, без capabilities. Мы рекомендуем задать `PUID` и `PGID`, например вашего собственного пользователя (`id -u`, `id -g`): тогда они вообще не работают от имени root. Значением по умолчанию остаётся root, чтобы обновление не меняло владельца файлов существующей установки.
+
+Шесть capabilities, которые остаются:
 
 - `CHOWN`: сделать `PUID`/`PGID` владельцем томов и сохранить владельца резервной копии.
-- `DAC_OVERRIDE`: читать и записывать файлы другого пользователя, например в каталоге пользователя на сервере или после прежнего запуска с `PUID`/`PGID`. С `PUID`/`PGID` она нужна проверке состояния, чтобы прочитать конфигурацию.
+- `DAC_OVERRIDE`: читать и записывать файлы другого пользователя, например в каталоге пользователя на сервере или после прежнего запуска с `PUID`/`PGID`. С `PUID`/`PGID` она нужна проверке состояния, чтобы прочитать конфигурацию. Если Router и Relay работают от имени root с такими файлами, у них остаётся только эта capability.
 - `SETUID`: переключиться на пользователя `PUID`.
 - `SETGID`: переключиться на группу `PGID`.
 - `KILL`: передать сигнал остановки процессам, которые работают от имени `PUID`/`PGID`.
+- `SETPCAP`: запустить Router и Relay без capabilities. Без неё они, работая от имени root, сохраняют остальные пять, а в журнале появляется предупреждение.
 
 Те же параметры с `docker run`:
 
 ```shell
 docker run -d --name aspia-server --restart unless-stopped \
-  --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETUID --cap-add SETGID --cap-add KILL \
+  --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETUID --cap-add SETGID --cap-add KILL --cap-add SETPCAP \
   --security-opt no-new-privileges:true --read-only --pids-limit 128 \
   -e EXTERNAL_IP=203.0.113.10 \
   -p 8060:8060 -p 8061:8061 -p 8062:8062 -p 8065:8065/udp -p 8070:8070 \
@@ -212,11 +217,11 @@ docker run -d --name aspia-server --restart unless-stopped \
   ghcr.io/<owner>/aspia-server:3.0.37
 ```
 
-В простейшей установке ни одна из пяти capabilities не нужна: `PUID` и `PGID` не заданы, а тома принадлежат root. В этом случае можно убрать флаги `--cap-add` или `cap_add:` в файле compose.
+В простейшей установке ни одна из шести capabilities не нужна: `PUID` и `PGID` не заданы, а тома принадлежат root. В этом случае можно убрать флаги `--cap-add` или `cap_add:` в файле compose.
 
 Все порты по умолчанию выше 1024. Порту ниже 1024 нужна capability `NET_BIND_SERVICE`. Docker она нужна только тогда, когда контейнер использует сеть сервера: добавьте `--cap-add NET_BIND_SERVICE`. Podman она нужна всегда: добавьте `AddCapability=NET_BIND_SERVICE` в юнит.
 
-Юниты Podman не задают `NoNewPrivileges`. На Ubuntu 24.04 AppArmor тогда блокирует сигнал остановки, и контейнер не останавливается корректно. Docker это не касается. Замеры описаны в [docs/dev/UPSTREAM-3.x-NOTES.md](dev/UPSTREAM-3.x-NOTES.md), раздел 21.
+Юниты Podman не задают `NoNewPrivileges`. На Ubuntu 24.04 AppArmor тогда блокирует сигнал остановки, и контейнер не останавливается корректно. Docker это не касается. Контейнер всё равно запускает Router и Relay так, что они не могут получить новые привилегии. Замеры описаны в [docs/dev/UPSTREAM-3.x-NOTES.md](dev/UPSTREAM-3.x-NOTES.md), раздел 21.
 
 ## Обновление
 
@@ -341,7 +346,7 @@ docker compose up -d
 
     Теперь обычные команды `docker compose` работают с `compose.router.yml`. Добавьте этот файл в резервную копию.
 
-3. Получите открытый ключ для Relay. Router выводит его в журнал как `Public key for relays`. Он есть и в файле `./data/config/relay.pub`.
+3. Получите открытый ключ для Relay. Router выводит его в журнал как `Public key for relays`. Он есть и в файле `./data/config/relay.pub`, который может читать только root (или `PUID`).
 
     ```shell
     docker compose logs aspia-router | grep 'Public key for relays'
