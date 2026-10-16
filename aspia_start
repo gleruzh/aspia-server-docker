@@ -768,6 +768,16 @@ prepare_router() {
             log "Router: created ${ROUTER_CONF}, ${HOST_PUB}, ${RELAY_PUB} and ${ROUTER_DB}."
             log "Router: created the administrator account 'admin' with the upstream default password." \
                 "Change the password in the Aspia Client right after the first login."
+            # Until that first login, whoever reaches the client port first owns the Router.
+            if [[ -z "${ASPIA_ROUTER_CLIENT_ALLOWED_IPS:-}" ]]; then
+                warn "Router: the client port accepts Clients from ANY address (ASPIA_ROUTER_CLIENT_ALLOWED_IPS" \
+                    "is not set), and 'admin' has the default password and no two-factor authentication yet." \
+                    "Whoever logs in first sets up two-factor authentication for 'admin' and takes over the" \
+                    "Router. Log in now and change the password. To close this window on a new install, set" \
+                    "ASPIA_ROUTER_CLIENT_ALLOWED_IPS to your own address, or publish the client port on" \
+                    "127.0.0.1 only (ASPIA_ROUTER_CLIENT_BIND_IP) and log in over an SSH tunnel, before the" \
+                    "first start (README.md, \"Quick start\")."
+            fi
             ;;
         migrate)
             log "Router: found Aspia 2.x data. aspia_router converts ${ROUTER_JSON} to ${ROUTER_CONF}" \
@@ -1088,7 +1098,7 @@ print_summary_all() {
 
 # ASPIA_ROLE=router: everything a Relay on another machine needs, and who may register as one.
 print_summary_router() {
-    local relay_port allowed
+    local relay_port allowed relay_key
     relay_port="$(ini_get "${ROUTER_CONF}" relay port 8063)"
     allowed="$(ini_get "${ROUTER_CONF}" relay white_list "")"
     log_rule
@@ -1107,6 +1117,12 @@ print_summary_router() {
             "reaches ${relay_port}/tcp and has the key above can register as a Relay (at most five at a time)." \
             "Set ASPIA_ROUTER_RELAY_ALLOWED_IPS to the addresses of your Relays, or allow ${relay_port}/tcp" \
             "only from them in the firewall."
+        # After a 2.x migration (adopt_legacy_key) relay.pub is host.pub: every Host knows that key.
+        relay_key="$(read_key "${RELAY_PUB}")"
+        if [[ -n "${relay_key}" && "${relay_key}" == "$(read_key "${HOST_PUB}")" ]]; then
+            warn "The key for relays is the same as the key for hosts (an install migrated from Aspia 2.x)," \
+                "so everyone who has configured a Host knows it."
+        fi
     fi
     log_rule
 }

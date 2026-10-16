@@ -48,14 +48,36 @@ The image is published to the GitHub Container Registry as `ghcr.io/<owner>/aspi
 
 3. Open the ports from the section [Ports](#ports) in the firewall of the server.
 
-4. Download the image and start the container:
+4. Secure the first start. The first start creates the user `admin` with the password `admin`. Until you log in, change this password and set up two-factor authentication, anyone who can reach port 8062 can log in first and take over the Router. Before the first start, add one of these to `.env`:
+
+    - Allow Clients only from your own address. Replace the example address:
+
+        ```shell
+        # .env
+        ASPIA_ROUTER_CLIENT_ALLOWED_IPS=198.51.100.7
+        ```
+
+        To allow other addresses later, change the list. To allow all addresses again, remove the line and clear `white_list` in the section `[client]` of `router.conf`: an empty value does not clear the list.
+
+    - Or publish port 8062 only on the server itself, and log in for the first time over an SSH tunnel:
+
+        ```shell
+        # .env
+        ASPIA_ROUTER_CLIENT_BIND_IP=127.0.0.1
+        ```
+
+        On your computer, open the tunnel with `ssh -L 8062:127.0.0.1:8062 <user>@<server>`, and enter `127.0.0.1` as the address of the Router in the Client. After the [First login](#first-login), remove the line from `.env` and run `docker compose up -d`, so that your users can connect.
+
+    If you skip this step, the log of the first start shows a `WARNING` about it. Then log in and change the password at once.
+
+5. Download the image and start the container:
 
     ```shell
     docker compose pull
     docker compose up -d
     ```
 
-5. Check that the container is healthy. After a few seconds the status shows `(healthy)`:
+6. Check that the container is healthy. After a few seconds the status shows `(healthy)`:
 
     ```shell
     docker compose ps
@@ -108,7 +130,7 @@ Do not use the key in `relay.pub` for Hosts. That key is only for Relays.
 
 ### Connect with the Client and change the password
 
-On the first start the Router creates the user `admin` with the password `admin`. Change this password after the first login.
+On the first start the Router creates the user `admin` with the password `admin`. Change this password after the first login. Do it at once: until then, anyone who can reach port 8062 can log in first and take over the Router (see step 4 of the [Quick start](#quick-start)).
 
 1. Install the Aspia Client. At its first start the Client asks for a master password. The password is mandatory and cannot be recovered.
 2. Add the Router: enter the address of your server (the Router accepts Clients on port 8062), set "Access Level" to "Administrator", and log in as `admin` with the password `admin`.
@@ -131,9 +153,9 @@ Publish every port with the same number on the server and in the container. The 
 
 | Port | Variable | Service | Purpose | Open to the internet |
 |---|---|---|---|---|
-| 8060/tcp | `ASPIA_ROUTER_LEGACY_PORT` | Router | Hosts of Aspia 2.x | Only if you still have Hosts of Aspia 2.x |
+| 8060/tcp | `ASPIA_ROUTER_LEGACY_PORT` | Router | Hosts of Aspia 2.x | Only if you still have Hosts of Aspia 2.x. The compose files do not publish it: uncomment its line in `ports:`. |
 | 8061/tcp | `ASPIA_ROUTER_HOST_PORT` | Router | Hosts of Aspia 3.x | Yes |
-| 8062/tcp | `ASPIA_ROUTER_CLIENT_PORT` | Router | Clients: the address book and the management of the Router | Yes, or only to the networks of your users |
+| 8062/tcp | `ASPIA_ROUTER_CLIENT_PORT` | Router | Clients: the address book and the management of the Router | Yes, or only to the networks of your users. `ASPIA_ROUTER_CLIENT_BIND_IP` publishes it on one address of the server only. |
 | 8065/udp | `ASPIA_ROUTER_STUN_PORT` | Router | Built-in STUN server | Yes |
 | 8070/tcp | `ASPIA_RELAY_PEER_PORT` | Relay | Clients and Hosts in a relayed session | Yes. On a Relay-only server this is the only port to open. |
 | 8063/tcp | none | Router | Relays | No. `docker-compose.yml` does not publish it. Open it only to a Relay on another server (see [Running a Relay on a separate host](#running-a-relay-on-a-separate-host)). |
@@ -177,6 +199,7 @@ The rules:
 | `TZ` | `UTC` | The time zone of the timestamps in the log, for example `Europe/Berlin`. |
 | `ASPIA_LOG_LEVEL` | `1` | The minimum log level: `0` TRACE, `1` INFO, `2` WARNING, `3` ERROR, `4` FATAL. |
 | `ASPIA_IMAGE` | `aspia-server:3.0.37` | The image that `docker compose` runs. The default is the name of a local build. |
+| `ASPIA_ROUTER_CLIENT_BIND_IP` | empty: all addresses | The address of the server on which the compose files publish port 8062, for example `127.0.0.1` for the first login over an SSH tunnel (see [Quick start](#quick-start)). Write an IPv6 address in brackets: `[::1]`. Only the compose files read it. |
 
 Some settings have no variable: the Router port for Relays (`[relay] port` in `router.conf`) and the listen addresses (`listen_interface`). Edit `router.conf` or `relay.conf` for them. The container never overwrites such a change. There is also no variable for the password of `admin` (see [First login](#first-login)).
 
@@ -211,7 +234,7 @@ docker run -d --name aspia-server --restart unless-stopped \
   --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETUID --cap-add SETGID --cap-add KILL --cap-add SETPCAP \
   --security-opt no-new-privileges:true --read-only --pids-limit 128 \
   -e EXTERNAL_IP=203.0.113.10 \
-  -p 8060:8060 -p 8061:8061 -p 8062:8062 -p 8065:8065/udp -p 8070:8070 \
+  -p 8061:8061 -p 8062:8062 -p 8065:8065/udp -p 8070:8070 \
   -v "$PWD/data/config:/etc/aspia" -v "$PWD/data/database:/var/lib/aspia" \
   ghcr.io/<owner>/aspia-server:3.0.37
 ```
@@ -285,14 +308,14 @@ The original image was removed from Docker Hub in October 2026. The same image (
     curl -fsSL -o .env https://raw.githubusercontent.com/<owner>/aspia-server-docker/main/.env.example
     ```
 
-4. Set the image and the address in `.env`, open the ports, then download the image and start the container, as in the [Quick start](#quick-start). Use the `EXTERNAL_IP` from step 1. Keep 8060/tcp open for the Hosts of Aspia 2.x.
+4. Set the image and the address in `.env`, open the ports, then download the image and start the container, as in the [Quick start](#quick-start). Use the `EXTERNAL_IP` from step 1. If you still have Hosts of Aspia 2.x, uncomment the line of port 8060 in the `ports:` list of `docker-compose.yml`, and keep 8060/tcp open.
 
 What happens on the first start:
 
 - The container copies `router.json`, `relay.json` and `router.db3` to files with the suffix `.pre-3.0.37-<time>`, next to the originals.
 - Aspia converts `router.json` to `router.conf` and `relay.json` to `relay.conf`. It renames the old files to `router.json.bak` and `relay.json.bak`.
 - Aspia upgrades the database `router.db3`. Aspia 2.7.0 may not read it after that.
-- The Router keeps its key, so Hosts that use the key from `router.pub` keep working. The container copies `router.pub` to `host.pub` and `relay.pub`, the file names of Aspia 3.x.
+- The Router keeps its key, so Hosts that use the key from `router.pub` keep working. The container copies `router.pub` to `host.pub` and `relay.pub`, the file names of Aspia 3.x. The key for Relays is therefore the key that every Host knows. If you run a Relay on another server, set `ASPIA_ROUTER_RELAY_ALLOWED_IPS` (see [Running a Relay on a separate host](#running-a-relay-on-a-separate-host)).
 - Two settings are not carried over: the administrator allow-list (`AdminWhiteList`; Aspia 3.x has no such setting) and the Relay statistics settings.
 - These variables take effect only from the second start: `ASPIA_ROUTER_CLIENT_PORT`, `ASPIA_ROUTER_HOST_PORT`, `ASPIA_ROUTER_STUN_PORT` and `ASPIA_ROUTER_STUN_ENABLED`. If you set any of them, run `docker compose restart` after the first start.
 
@@ -477,8 +500,8 @@ The tests and the CI are described in [docs/ci.md](docs/ci.md).
 | `EXTERNAL_IP=auto` stops the start with an error about the detection. | The server cannot reach the internet services that report its address. Set the address by hand. |
 | The log shows `sd_login_monitor_new failed` or `Unable to install signal handler for SIGKILL`. | No action needed. These lines are normal in a container. |
 | The status is `(unhealthy)`. | Read the log: `docker compose logs aspia-server`. Healthy means that the Router listens on its ports and the Relay is connected to the Router. |
-| A Host does not connect. | Check that port 8061/tcp (8060/tcp for Aspia 2.x) is open. Check that the Host uses the key from `host.pub`, not from `relay.pub`. |
-| The Client does not connect to the Router. | Check that port 8062/tcp is open. If `ASPIA_ROUTER_CLIENT_ALLOWED_IPS` is set, check that it contains the address of the Client. |
+| A Host does not connect. | Check that port 8061/tcp is open. A Host of Aspia 2.x needs 8060/tcp, which the compose files do not publish (see [Upgrading from 2.x](#upgrading-from-2x)). Check that the Host uses the key from `host.pub`, not from `relay.pub`. |
+| The Client does not connect to the Router. | Check that port 8062/tcp is open. If `ASPIA_ROUTER_CLIENT_ALLOWED_IPS` is set, check that it contains the address of the Client. If `ASPIA_ROUTER_CLIENT_BIND_IP` is set, the port is open only on that address. |
 | Sessions work only in the local network, or relayed sessions fail. | Check that port 8070/tcp is open and that `EXTERNAL_IP` is the public address of the server, not the example address. The port on the server must be the same as in the container. |
 | A user lost the authenticator app. | Reset the two-factor authentication of that user (see below). |
 | You forgot the password of `admin`. | Another administrator can change it in the Client. Aspia 3.x has no command to set a password. |

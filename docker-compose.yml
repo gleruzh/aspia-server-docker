@@ -41,11 +41,14 @@ services:
     # peer port (ASPIA_RELAY_PEER_PORT) to clients and hosts, so a different host port would break
     # relayed connections. Both sides of every mapping come from the same variable, with the
     # upstream default when it is not set, so the ports here always match what aspia_start writes
-    # into router.conf/relay.conf.
+    # into router.conf/relay.conf. ASPIA_ROUTER_CLIENT_BIND_IP (only used here) limits the client
+    # port to one address of this machine, e.g. 127.0.0.1 for the first login over an SSH tunnel;
+    # unset = every address, IPv4 and IPv6 (README.md, "Quick start").
     ports:
-      - "${ASPIA_ROUTER_LEGACY_PORT:-8060}:${ASPIA_ROUTER_LEGACY_PORT:-8060}"       # Router: hosts of Aspia 2.x
+      # Only for Hosts of Aspia 2.x: uncomment if you still have any (README.md, "Upgrading from 2.x").
+      #- "${ASPIA_ROUTER_LEGACY_PORT:-8060}:${ASPIA_ROUTER_LEGACY_PORT:-8060}"       # Router: hosts of Aspia 2.x
       - "${ASPIA_ROUTER_HOST_PORT:-8061}:${ASPIA_ROUTER_HOST_PORT:-8061}"           # Router: hosts of Aspia 3.x
-      - "${ASPIA_ROUTER_CLIENT_PORT:-8062}:${ASPIA_ROUTER_CLIENT_PORT:-8062}"       # Router: clients (address book and Router management)
+      - "${ASPIA_ROUTER_CLIENT_BIND_IP:-}:${ASPIA_ROUTER_CLIENT_PORT:-8062}:${ASPIA_ROUTER_CLIENT_PORT:-8062}" # Router: clients (address book and Router management)
       - "${ASPIA_ROUTER_STUN_PORT:-8065}:${ASPIA_ROUTER_STUN_PORT:-8065}/udp"       # Router: built-in STUN server
       - "${ASPIA_RELAY_PEER_PORT:-8070}:${ASPIA_RELAY_PEER_PORT:-8070}"             # Relay: clients and hosts
       # 8063 is the Router port for Relays. The Relay in this container reaches it internally;
