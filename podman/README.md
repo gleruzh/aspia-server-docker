@@ -167,6 +167,8 @@ Podman reads this file itself, not systemd: one `VAR=value` per line, no quotes,
 A changed port variable needs the matching `PublishPort=` line (see the comments in the unit).
 The default ports are all above 1024; for a port below 1024 also add `AddCapability=NET_BIND_SERVICE` to the unit.
 The units do not set `NoNewPrivileges`: on Ubuntu 24.04 (AppArmor, crun profile) it blocks the clean stop. The compose files keep `no-new-privileges`; Docker is not affected.
+The container itself still starts the Router and the Relay without capabilities and so that they cannot gain new privileges (this needs `SETPCAP` in `AddCapability=`).
+For the system-wide units we recommend `PUID`/`PGID` in `aspia-server.env`: then the Router and the Relay do not run as root ([Security settings](../README.md#security-settings)).
 
 ## 7. Firewall
 

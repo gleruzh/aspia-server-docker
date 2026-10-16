@@ -180,6 +180,12 @@ Candidates from the PR 3 task that were deliberately left out, with the reason:
   checks the wrong ports. It should report "cannot read" instead.
 - **Under PUID/PGID, DAC_OVERRIDE is needed only by the health check** (root reads the 0600 config of PUID). It could
   run through `setpriv` as PUID instead. Root on volumes of another uid still needs DAC_OVERRIDE.
+- **PUID/PGID as the default.** The Router and the Relay now run without capabilities as root too (SETPCAP,
+  notes section 22), but still as uid 0. A default PUID/PGID (or a `USER` in the image) would change the owner of
+  the volumes of every existing installation on its first start: a breaking change, its own PR.
+- **Podman on Ubuntu 24.04 with no_new_privs on the Aspia processes.** `aspia_start` sets it for them under Podman
+  too; tini signals `aspia_start`, which has no no_new_privs as root, so the AppArmor stacking of section 21 should
+  not apply. Not checked locally (no AppArmor in Docker Desktop): the CI job `podman` is the check.
 - **Ports below 1024 under Docker with host networking** need `--cap-add NET_BIND_SERVICE` (the compose files
   use a bridge network, where Docker allows them; the Quadlet units do not add it either). The README says so; nothing checks it.
 

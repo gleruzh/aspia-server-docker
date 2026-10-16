@@ -173,7 +173,7 @@ wait_healthy() { wait_until "${HEALTHY_TIMEOUT}" is_healthy; }
 # check_hardening CONTAINER: the running container has the hardening the units ship (one list, here;
 # README "Security settings"): capabilities, no security options (no-new-privileges breaks the stop on Ubuntu 24.04), read-only root without tmpfs, pids limit.
 check_hardening() {
-    local file got want="[CAP_CHOWN CAP_DAC_OVERRIDE CAP_KILL CAP_SETGID CAP_SETUID] [] true 128"
+    local file got want="[CAP_CHOWN CAP_DAC_OVERRIDE CAP_KILL CAP_SETGID CAP_SETPCAP CAP_SETUID] [] true 128"
     got="$(run podman inspect --format '{{.EffectiveCaps}} {{.HostConfig.SecurityOpt}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.PidsLimit}}' "$1")"
     [[ "${got}" == "${want}" ]] || die "$1: capabilities, security options, read-only root, pids limit are '${got}', expected '${want}'"
     for file in /tmp/probe /usr/bin/aspia_start; do

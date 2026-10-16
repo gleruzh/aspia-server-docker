@@ -173,7 +173,7 @@ The rules:
 | `ASPIA_RELAY_ROUTER_PORT` | `8063` | Only for `ASPIA_ROLE=relay`: the Router port for Relays. |
 | `ASPIA_RELAY_ROUTER_PUBLIC_KEY` | none | Only for `ASPIA_ROLE=relay`, and required there: the content of the file `relay.pub` of the Router. |
 | `ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE` | none | Only for `ASPIA_ROLE=relay`: the path of a file with that key, instead of the key itself. |
-| `PUID`, `PGID` | `0` (root) | Run the Router and the Relay as this user ID and group ID. Set both or neither. The container changes the owner of `./data/config` and `./data/database` at every start. |
+| `PUID`, `PGID` | `0` (root) | Run the Router and the Relay as this user ID and group ID. Recommended, see [Security settings](#security-settings). Set both or neither. The container changes the owner of `./data/config` and `./data/database` at every start. |
 | `TZ` | `UTC` | The time zone of the timestamps in the log, for example `Europe/Berlin`. |
 | `ASPIA_LOG_LEVEL` | `1` | The minimum log level: `0` TRACE, `1` INFO, `2` WARNING, `3` ERROR, `4` FATAL. |
 | `ASPIA_IMAGE` | `aspia-server:3.0.37` | The image that `docker compose` runs. The default is the name of a local build. |
@@ -186,24 +186,29 @@ Some settings have no variable: the Router port for Relays (`[relay] port` in `r
 
 The compose files and the Podman units start the container with few privileges:
 
-- All Linux capabilities are dropped, except five. The list is below.
+- All Linux capabilities are dropped, except six. The list is below.
 - No process can gain new privileges. Programs with the setuid bit do not work. The Podman units do not set this (see below).
+- The Router and the Relay run without any capability, also as root, and cannot gain new privileges, also under Podman.
+- Only the owner can read the configuration, the keys and the database. The two directories have the mode 0700, the files 0600. `host.pub` stays 0644: it is the public key that every Host gets, and the log shows it. The container corrects the modes of older files at every start.
 - The files of the image are read-only. The container writes only to its two volumes.
 - The container can have at most 128 processes and threads. It uses fewer than 30.
 
-The five capabilities that stay:
+By default the Router and the Relay run as root, without capabilities. We recommend `PUID` and `PGID`, for example with your own user (`id -u`, `id -g`): then they do not run as root at all. Root stays the default, so that an update does not change the owner of the files of an existing installation.
+
+The six capabilities that stay:
 
 - `CHOWN`: give the volumes to `PUID`/`PGID`, and keep the owner of a backup copy.
-- `DAC_OVERRIDE`: read and write files of another user, for example in a directory of a user on the server, or from an earlier start with `PUID`/`PGID`. With `PUID`/`PGID` the health check needs it to read the configuration.
+- `DAC_OVERRIDE`: read and write files of another user, for example in a directory of a user on the server, or from an earlier start with `PUID`/`PGID`. With `PUID`/`PGID` the health check needs it to read the configuration. As root on such files, the Router and the Relay keep this one capability.
 - `SETUID`: switch to the user `PUID`.
 - `SETGID`: switch to the group `PGID`.
 - `KILL`: pass the stop signal to the processes that run as `PUID`/`PGID`.
+- `SETPCAP`: start the Router and the Relay without any capability. Without it, they keep the other five when they run as root, and the log shows a warning.
 
 The same settings with `docker run`:
 
 ```shell
 docker run -d --name aspia-server --restart unless-stopped \
-  --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETUID --cap-add SETGID --cap-add KILL \
+  --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETUID --cap-add SETGID --cap-add KILL --cap-add SETPCAP \
   --security-opt no-new-privileges:true --read-only --pids-limit 128 \
   -e EXTERNAL_IP=203.0.113.10 \
   -p 8060:8060 -p 8061:8061 -p 8062:8062 -p 8065:8065/udp -p 8070:8070 \
@@ -211,11 +216,11 @@ docker run -d --name aspia-server --restart unless-stopped \
   ghcr.io/<owner>/aspia-server:3.0.37
 ```
 
-The simplest setup needs none of the five capabilities: no `PUID` and `PGID`, and the volumes belong to root. For this setup you can remove the `--cap-add` flags, or `cap_add:` in the compose file.
+The simplest setup needs none of the six capabilities: no `PUID` and `PGID`, and the volumes belong to root. For this setup you can remove the `--cap-add` flags, or `cap_add:` in the compose file.
 
 All default ports are above 1024. A port below 1024 needs the capability `NET_BIND_SERVICE`. Docker needs it only with host networking: add `--cap-add NET_BIND_SERVICE`. Podman always needs it: add `AddCapability=NET_BIND_SERVICE` to the unit.
 
-The Podman units do not set `NoNewPrivileges`. On Ubuntu 24.04 AppArmor then blocks the stop signal, and the container does not stop cleanly. Docker is not affected. The measurements are in [docs/dev/UPSTREAM-3.x-NOTES.md](docs/dev/UPSTREAM-3.x-NOTES.md), section 21.
+The Podman units do not set `NoNewPrivileges`. On Ubuntu 24.04 AppArmor then blocks the stop signal, and the container does not stop cleanly. Docker is not affected. The container still starts the Router and the Relay so that they cannot gain new privileges. The measurements are in [docs/dev/UPSTREAM-3.x-NOTES.md](docs/dev/UPSTREAM-3.x-NOTES.md), section 21.
 
 ## Updating
 
@@ -340,7 +345,7 @@ These steps run the Router alone from `compose.router.yml`. To keep the Router a
 
     Plain `docker compose` commands now act on `compose.router.yml`. Add this file to your backup.
 
-3. Get the public key for Relays. The Router prints it in the log as `Public key for relays`. It is also in the file `./data/config/relay.pub`.
+3. Get the public key for Relays. The Router prints it in the log as `Public key for relays`. It is also in the file `./data/config/relay.pub`, which only root (or `PUID`) can read.
 
     ```shell
     docker compose logs aspia-router | grep 'Public key for relays'

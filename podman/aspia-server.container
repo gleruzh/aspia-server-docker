@@ -34,8 +34,9 @@ Volume=aspia-data.volume:/var/lib/aspia
 
 # Least privilege, as in the compose files (README "Security settings").
 DropCapability=ALL
-AddCapability=CHOWN DAC_OVERRIDE SETUID SETGID KILL
+AddCapability=CHOWN DAC_OVERRIDE SETUID SETGID KILL SETPCAP
 # No NoNewPrivileges: on Ubuntu 24.04 AppArmor then blocks tini's SIGTERM (docs/dev/UPSTREAM-3.x-NOTES.md, section 21).
+# The Router and the Relay get no_new_privs and no capability from aspia_start itself (SETPCAP above).
 ReadOnly=true
 # PidsLimit= needs Podman 4.7; --read-only-tmpfs=false: no tmpfs on /tmp, /run (as in compose).
 PodmanArgs=--pids-limit=128 --read-only-tmpfs=false

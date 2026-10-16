@@ -13,9 +13,11 @@
 #   0. build: a tampered checksum makes the build fail; 0b. a docker run command replaces the server,
 #      and the image runs the Aspia version in versions.env
 #   0c. docker-compose.yml: local build by default, ASPIA_IMAGE override, EXTERNAL_IP required
-#   1. clean start
-#   2. restart keeps keys and configuration; 2b. a changed EXTERNAL_IP is applied, with a copy
-#   3. upgrade from 2.7.0 (an archived copy of paprikkafox/aspia-server:2.7.0)
+#   1. clean start; only the owner can read the volumes (directories 700, files 600, host.pub 644)
+#   2. restart keeps keys and configuration, and restricts files an older image left readable (a
+#      symbolic link is skipped); 2b. a changed EXTERNAL_IP is applied, with a copy
+#   3. upgrade from 2.7.0 (an archived copy of paprikkafox/aspia-server:2.7.0); the 2.x files and
+#      the backups are readable by their owner only
 #   4. docker stop is fast and clean
 #   5. a crashed process stops the container with a non-zero exit code
 #   6. EXTERNAL_IP unset, empty or blank
@@ -51,8 +53,9 @@
 # Hardening (PR 5b). Every server container above starts with HARDENING, the settings the compose files ship.
 #   0e. the compose files, the Podman units and the README carry exactly those settings
 # Scenario 1 also checks a running container (capabilities, no-new-privileges, read-only root, pids
-# limit); 14 does the same with PUID/PGID (Aspia processes without capabilities), then starts its
-# volumes as root with another EXTERNAL_IP (the backup keeps owner, mode, mtime) and with a changed port.
+# limit; the Aspia processes without any capability, also as root); 14 does the same with PUID/PGID,
+# then starts its volumes as root with another EXTERNAL_IP (the backup keeps owner, mode, mtime; the
+# Aspia processes keep only DAC_OVERRIDE, for the files of uid 1000) and with a changed port.
 # Lint (hadolint, shellcheck) is in tests/lint.sh.
 
 set -euo pipefail
@@ -71,7 +74,7 @@ readonly IP_NEW=203.0.113.11   # EXTERNAL_IP given to the new image
 readonly HEALTH_TIMEOUT=180    # seconds; generous because CI or emulation may be slow
 IMAGE="${ASPIA_TEST_IMAGE:-aspia-server:test}"
 # The hardening the compose files and Quadlet units ship (scenario 0e checks them against it).
-readonly CAPS=(CHOWN DAC_OVERRIDE SETUID SETGID KILL)
+readonly CAPS=(CHOWN DAC_OVERRIDE SETUID SETGID KILL SETPCAP)
 readonly PIDS_LIMIT=128
 HARDENING=(--cap-drop ALL --security-opt no-new-privileges:true --read-only --pids-limit "${PIDS_LIMIT}")
 for cap in "${CAPS[@]}"; do HARDENING+=(--cap-add "${cap}"); done
@@ -257,6 +260,16 @@ config_sums() {
     helper "$1" "$2" sha256sum /etc/aspia/router.conf /etc/aspia/relay.conf /etc/aspia/host.pub /etc/aspia/relay.pub
 }
 
+# check_modes <config volume> <database volume>: only the owner can read what is in the volumes: the
+# two directories 700, every file 600, except host.pub (the public key for Hosts) 644. Links are not judged.
+check_modes() {
+    local bad
+    bad="$(helper "$1" "$2" find /etc/aspia /var/lib/aspia -maxdepth 1 ! -type l -exec stat -c '%a %n' {} + \
+        | awk '{ want = 600 } $2 ~ /\/host\.pub$/ { want = 644 } $2 == "/etc/aspia" || $2 == "/var/lib/aspia" { want = 700 }
+               $1 != want')"
+    [[ -z "${bad}" ]] || fail "other modes than 700 (the directories), 600 (files) and 644 (host.pub):"$'\n'"${bad}"
+}
+
 # ---------------------------------------------------------------------------------------------
 # Scenarios
 
@@ -375,6 +388,8 @@ scenario_clean_start() {
     [[ "$(lower "$(ini_value "${relay_conf}" router public_key)")" == "$(lower "${relay_pub}")" ]] \
         || fail "relay.conf [router] public_key is not relay.pub"
     ok "relay.conf [router] public_key = relay.pub"
+    check_modes "${S1_CFG}" "${S1_DB}"
+    ok "only the owner can read the volumes: directories 700, router.conf, relay.conf, relay.pub, router.db3* 600; host.pub 644"
 
     logs="$(docker logs "${name}" 2>&1)"
     grep -qF "${host_pub}" <<<"${logs}" || fail "the log does not contain the public key for hosts"
@@ -396,16 +411,28 @@ scenario_clean_start() {
         bash -c 'for p in 8060 8061 8062 8070; do timeout 5 bash -c "exec 3<>/dev/tcp/aspia/$p" 2>/dev/null || echo "$p"; done')"
     [[ -z "${unreachable}" ]] || fail "cannot connect from another container to: ${unreachable//$'\n'/ }"
     ok "8060, 8061, 8062 and 8070 accept TCP connections from another container"
-    check_hardening "${name}" "$(cap_mask "${CAPS[@]}")"
+    check_hardening "${name}" "$(cap_mask "${CAPS[@]}")"   # aspia_start is root: the full set
 }
 
 scenario_restart() {
     local before after logs
-    log "2. Restart: keys and configuration unchanged"
+    log "2. Restart: keys and configuration unchanged; files an older image left readable are restricted"
     CURRENT_CONTAINER="${S1_NAME}"
     before="$(config_sums "${S1_CFG}" "${S1_DB}")"
+    # The modes an image before the permission fix left, and a link to a file of the read-only root:
+    # following it would fail the chmod (a warning in the log).
+    # shellcheck disable=SC2016  # expanded by sh inside the helper container
+    helper_rw "${S1_CFG}" "${S1_DB}" sh -ec 'chmod 755 /etc/aspia /var/lib/aspia; chmod 644 /etc/aspia/* /var/lib/aspia/*
+        ln -s /usr/bin/aspia_health /etc/aspia/link'
     docker restart "${S1_NAME}" >/dev/null
     wait_healthy "${S1_NAME}"
+    check_modes "${S1_CFG}" "${S1_DB}"
+    logs="$(docker logs "${S1_NAME}" 2>&1)"
+    grep -q 'Permissions: set the mode of /etc/aspia (755 -> 700), /var/lib/aspia (755 -> 700),.* /etc/aspia/relay.pub (644 -> 600)' <<<"${logs}" \
+        || fail "the log does not show the restricted modes"
+    if grep -q 'Cannot change the mode' <<<"${logs}"; then fail "the symbolic link was followed: $(grep 'Cannot change the mode' <<<"${logs}")"; fi
+    helper_rw "${S1_CFG}" "${S1_DB}" rm /etc/aspia/link
+    ok "0755 directories and 0644 files are 0700 and 0600 again (host.pub 0644) after a restart; the link was skipped"
     after="$(config_sums "${S1_CFG}" "${S1_DB}")"
     [[ "${before}" == "${after}" ]] || fail "configs or keys changed on restart:"$'\n'"${before}"$'\n'"${after}"
     ok "sha256 of router.conf, relay.conf, host.pub, relay.pub unchanged"
@@ -573,6 +600,8 @@ scenario_upgrade() {
     [[ "$(helper "${cfg}" "${db}" sh -c 'sha256sum /etc/aspia/router.json.pre-* /etc/aspia/relay.json.pre-*' | awk '{print $1}')" == "${old_json_sum}" ]] \
         || fail "the router.json/relay.json backups are not the originals"
     ok "backups of router.json, relay.json and router.db3 exist and equal the 2.7.0 files"
+    check_modes "${cfg}" "${db}"
+    ok "only the owner can read the migrated files, router.pub, router.json.bak and the backups (2.7.0 left them 0644)"
 
     # Restart on migrated data: nothing changes, no new backups.
     out="$(config_sums_migrated "${cfg}" "${db}")"
@@ -850,6 +879,8 @@ scenario_puid_pgid() {
     log "14. PUID/PGID: the Router and the Relay run as that uid/gid, and the files they write are owned by it"
     cfg="$(new_volume s14-config)"
     db="$(new_volume s14-db)"
+    # A link to a file of the read-only root: chown -R must re-own the link, never follow it.
+    helper_rw "${cfg}" "${db}" ln -s /usr/bin/aspia_health /etc/aspia/link
     run_new s14 "${cfg}" "${db}" -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e PUID=1000 -e PGID=1000
     name="${CURRENT_CONTAINER}"
     wait_healthy "${name}"
@@ -858,7 +889,10 @@ scenario_puid_pgid() {
         || fail "router.conf is not owned by 1000:1000"
     [[ "$(helper "${cfg}" "${db}" stat -c '%u:%g' /var/lib/aspia/router.db3)" == "1000:1000" ]] \
         || fail "router.db3 is not owned by 1000:1000"
-    ok "router.conf and router.db3 are owned by uid=1000 gid=1000"
+    [[ "$(helper "${cfg}" "${db}" stat -c '%u:%g' /etc/aspia/link)" == "1000:1000" ]] \
+        || fail "the link in /etc/aspia was not re-owned itself"
+    check_modes "${cfg}" "${db}"
+    ok "router.conf, router.db3 and the link itself are owned by uid=1000 gid=1000; only that owner can read the files"
 
     # shellcheck disable=SC2016  # expanded by sh inside the container, not by this shell
     uid_lines="$(docker exec "${name}" sh -c '
@@ -871,7 +905,7 @@ scenario_puid_pgid() {
     [[ "$(grep -c ' 1000$' <<<"${uid_lines}")" == 2 ]] \
         || fail "aspia_router and aspia_relay are not both running as uid 1000: ${uid_lines}"
     ok "aspia_router and aspia_relay both run as uid 1000 (${uid_lines//$'\n'/; })"
-    check_hardening "${name}" 0000000000000000   # setpriv drops the capabilities of the Aspia processes
+    check_hardening "${name}" 0000000000000000   # setpriv drops the capabilities of aspia_start too
     stop_check "${name}" 2   # tini signals uid 1000: needs KILL
 
     # As root, without PUID, on these volumes (files of uid 1000, mode 600): the new address needs
@@ -882,6 +916,8 @@ scenario_puid_pgid() {
     [[ "$(helper "${cfg}" "${db}" sh -c 'stat -c "%u:%g %a %Y" /etc/aspia/relay.conf.pre-*')" == "${before}" ]] \
         || fail "the relay.conf backup is not 1000:1000, mode 600 and the mtime of ${before}"
     ok "as root on files of uid 1000: healthy, the relay.conf backup keeps owner, mode and mtime (${before})"
+    # Root reads the files of uid 1000 with DAC_OVERRIDE: the only capability the Aspia processes keep then.
+    check_hardening "${CURRENT_CONTAINER}" "$(cap_mask "${CAPS[@]}")" "$(cap_mask DAC_OVERRIDE)"
     docker rm -fv "${CURRENT_CONTAINER}" >/dev/null
 
     # PUID again with a non-default port: the health check (root) reads the 0600 router.conf of uid 1000.
@@ -1367,6 +1403,7 @@ cap_mask() {
             KILL) bit=5 ;;
             SETGID) bit=6 ;;
             SETUID) bit=7 ;;
+            SETPCAP) bit=8 ;;
             *) fail "cap_mask does not know ${cap}" ;;
         esac
         mask=$((mask | (1 << bit)))
@@ -1374,25 +1411,30 @@ cap_mask() {
     printf '%016x\n' "${mask}"
 }
 
-# check_hardening <container> <CapEff of the Aspia processes>: tini and the Aspia processes (role all) have NoNewPrivs 1 and
-# that CapEff (tini, PID 1, always the full set: it forwards signals); the root is read-only; the pids limit is set.
+# check_hardening <container> <CapEff of aspia_start> [CapEff of the Aspia processes, default none]: tini, aspia_start and
+# the Aspia processes (role all) have NoNewPrivs 1; tini (PID 1) has the full set (it forwards signals), aspia_start the
+# given CapEff, the Aspia processes the given CapEff and the same bounding set; the root is read-only; the pids limit is set.
 check_hardening() {
-    local status host full name
+    local status host full name aspia="${3:-0000000000000000}"
     full="$(cap_mask "${CAPS[@]}")"
     # cat, not awk: a process that exits during the read must not fail it. Parsed here, on the host.
     # Only tini and the Aspia processes are judged: a health check (root, full set under PUID) may run at any time.
+    # aspia_start shows up under that name only natively (under Rosetta its name is bash).
     status="$(docker exec "$1" sh -c 'cat /proc/[0-9]*/status 2>/dev/null; true' \
-        | awk '/^Name:/ {n = $2} /^CapEff:/ {c = $2} /^NoNewPrivs:/ {print n, c, $2}')"
+        | awk '/^Name:/ {n = $2} /^CapEff:/ {c = $2} /^CapBnd:/ {b = $2} /^NoNewPrivs:/ {print n, c, b, $2}')"
     for name in tini aspia_router aspia_relay; do
         grep -q "^${name} " <<<"${status}" || fail "$1: no ${name} in the process list: ${status}"
     done
     # "" forces a string comparison: awk reads 00000000000000e3 as the number 0e3 = 0.
-    [[ -z "$(awk -v m="$2" -v f="${full}" '$1 ~ /^(tini|aspia_start|aspia_router|aspia_relay)$/ && ($3 != 1 || $2"" != ($1 == "tini" ? f : m)"")' <<<"${status}")" ]] \
-        || fail "$1: expected NoNewPrivs 1 and CapEff $2 (tini ${full}), got:"$'\n'"${status}"
+    [[ -z "$(awk -v s="$2" -v a="${aspia}" -v f="${full}" '
+            $1 == "tini" && ($4 != 1 || $2"" != f"") { print }
+            $1 == "aspia_start" && ($4 != 1 || $2"" != s"") { print }
+            $1 ~ /^aspia_(router|relay)$/ && ($4 != 1 || $2"" != a"" || $3"" != a"") { print }' <<<"${status}")" ]] \
+        || fail "$1: expected NoNewPrivs 1, CapEff ${full} (tini), $2 (aspia_start), ${aspia} (Aspia, also CapBnd); got"$'\n'"${status}"
     host="$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.PidsLimit}}' "$1")"
     [[ "${host}" == "true ${PIDS_LIMIT}" ]] || fail "$1: ReadonlyRootfs and PidsLimit are '${host}'"
     if docker exec "$1" touch /usr/bin/aspia_start 2>/dev/null; then fail "$1: the root filesystem is writable"; fi
-    ok "$1: NoNewPrivs 1, CapEff $2 (tini ${full}), read-only root, pids limit ${PIDS_LIMIT}"
+    ok "$1: NoNewPrivs 1; CapEff: tini ${full}, aspia_start $2, aspia_router and aspia_relay ${aspia}; read-only root, pids limit ${PIDS_LIMIT}"
 }
 
 # ---------------------------------------------------------------------------------------------
