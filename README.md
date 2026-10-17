@@ -44,7 +44,7 @@ The image is published to the GitHub Container Registry as `ghcr.io/<owner>/aspi
     ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.0.37
     ```
 
-    `EXTERNAL_IP` is the address that the Relay gives to the Clients and the Hosts. It can be an IP address or a DNS name. The value `auto` detects the public IP address at every start.
+    `EXTERNAL_IP` is the address that the Relay gives to the Clients and the Hosts. It can be an IP address or a DNS name. The value `auto` detects the public IP address at every start: it asks internet services over HTTPS and uses the first public address that one of them reports.
 
 3. Open the ports from the section [Ports](#ports) in the firewall of the server.
 
@@ -183,7 +183,7 @@ The rules:
 
 | Variable | Default | What it sets |
 |---|---|---|
-| `EXTERNAL_IP` | none, required | The public address that the Relay gives to the Clients and the Hosts. An IP address, a DNS name of at most 64 characters, or `auto`. |
+| `EXTERNAL_IP` | none, required | The public address that the Relay gives to the Clients and the Hosts. An IP address, a DNS name of at most 64 characters, or `auto`. With `auto`, the container asks `api.ipify.org`, `ifconfig.me` and `icanhazip.com` over HTTPS, in this order, at every start. It uses the first answer that is a public IP address. It refuses private, loopback, link-local, CGNAT (`100.64.0.0/10`), multicast and documentation addresses. |
 | `ASPIA_RELAY_PUBLIC_ADDRESS` | none | The new name of `EXTERNAL_IP`, with the same effect. If both are set to different values, this one is used. |
 | `ASPIA_RELAY_IDLE_TIMEOUT` | `5` | Minutes that the Relay keeps an idle connection. |
 | `ASPIA_RELAY_MAX_PEERS` | `100` | The maximum number of Clients and Hosts that the Relay serves at the same time. |
@@ -266,7 +266,7 @@ Do not run `aspia_router --check-update` or `aspia_router --install-update` in t
 
 ### Tags and digests
 
-The tag `3.0.37` moves with every publish: a change to the image (a new Aspia version, a Debian base update, a fix) or a manual run. The tag `3.0.37-YYYYMMDD`, for example `3.0.37-20261005`, never moves. Every publish after a change creates one. Short tags such as `3.0` move too. Do not use them on a server. [docs/ci.md](docs/ci.md) has the details and shows how to verify the signature of the image.
+The tag `3.0.37` moves with every publish: a change to the image (a new Aspia version, a Debian base update, a Debian security fix, a fix) or a manual run. The tag `3.0.37-YYYYMMDD`, for example `3.0.37-20261005`, never moves. Every publish after a change creates one. Short tags such as `3.0` move too. Do not use them on a server. [docs/ci.md](docs/ci.md) has the details and shows how to verify the signature of the image.
 
 For an image that never changes, use its digest. Show the digests of the image that you have downloaded:
 
@@ -285,7 +285,9 @@ The digest in this example is only an example. The summary of each publish run o
 
 ### Upgrade notes
 
-Changes to the files of this repository that need action when you take the new files for an existing installation. Updating only the image tag in `.env` changes none of them.
+Changes that can need action on an existing installation. The changes to the files of this repository apply only when you take the new files. Updating only the image tag in `.env` changes none of them.
+
+- October 2026: the image no longer contains `curl`. If your own scripts run `curl` in the container (for example `docker compose exec aspia-server curl ...`), run `curl` on the server instead. `EXTERNAL_IP=auto` asks the same services as before, now with `openssl`, which checks their certificates. It also refuses an answer that is not a public address (private, loopback, link-local, CGNAT, multicast and documentation addresses) and asks the next service. If no service gives a public address, the container stops with an error. Then set `EXTERNAL_IP` to the address. The log shows the detected address and the service that reported it. An `EXTERNAL_IP` that you set to an address is checked as before.
 
 - October 2026: port 8060/tcp is no longer published by default. Only Hosts of Aspia 2.x use it. In `docker-compose.yml`, `compose.router.yml` and `podman/aspia-server.container` its line is commented out. If you take the new file and still have Hosts of Aspia 2.x, uncomment the line `#- "${ASPIA_ROUTER_LEGACY_PORT:-8060}:${ASPIA_ROUTER_LEGACY_PORT:-8060}"` in `ports:` and run `docker compose up -d`. In the Podman unit, uncomment `#PublishPort=8060:8060/tcp`; if you changed `ASPIA_ROUTER_LEGACY_PORT`, use that port on both sides (see [podman/README.md](podman/README.md), section 8). Until then these Hosts cannot connect. On data migrated from 2.x the container log names this line at every start.
 
@@ -512,7 +514,7 @@ The tests and the CI are described in [docs/ci.md](docs/ci.md).
 | The container restarts again and again (status `Restarting`). The log says `ERROR: ASPIA_RELAY_PUBLIC_ADDRESS is not set`. | Set `EXTERNAL_IP` in `.env`. Then run `docker compose up -d`. |
 | The container restarts again and again. The log names another variable. | Correct the value of that variable in `.env`. Then run `docker compose up -d`. |
 | `docker compose pull` says `no matching manifest for linux/arm64`. | The server has an ARM processor. The image exists only for x86_64. |
-| `EXTERNAL_IP=auto` stops the start with an error about the detection. | The server cannot reach the internet services that report its address. Set the address by hand. |
+| `EXTERNAL_IP=auto` stops the start with an error about the detection. | The server cannot reach the internet services that report its address over HTTPS, or none of them reported a public address. The log names the reason for each service. Set the address by hand. |
 | The log shows `sd_login_monitor_new failed` or `Unable to install signal handler for SIGKILL`. | No action needed. These lines are normal in a container. |
 | The status is `(unhealthy)`. | Read the log: `docker compose logs aspia-server`. Healthy means that the Router listens on its ports and the Relay is connected to the Router. |
 | A Host does not connect. | Check that port 8061/tcp is open. A Host of Aspia 2.x needs 8060/tcp, which the compose files do not publish (see [Upgrading from 2.x](#upgrading-from-2x)). Check that the Host uses the key from `host.pub`, not from `relay.pub`. |
