@@ -1,17 +1,8 @@
 # Rebuild for fixed vulnerabilities: once a day, scan the published image (the GHCR digest of the tag
-# ASPIA_VERSION of versions.env on main) with Trivy for vulnerabilities that have a fix, and start
-# publish.yml on main only when a rebuild would install such a fix: the Dockerfile runs
-# "apt-get upgrade", so a fresh build gets every Debian package that has a newer version. A finding
-# without a fix, or a fix that is not in the Debian archive yet, starts nothing. So, as before
-# (PR 15, no weekly rebuild), an image is published only when it changes; there is no rebuild on a
-# timer alone.
-#
-# The started run is an ordinary publish of main (workflow_dispatch with the version of versions.env
-# and a dated tag): the same Plan check (main only), tests, signature identity and concurrency group
-# "publish". It is not started while another publish is queued or running: that one builds the
-# current main with the current packages anyway, and a new waiting run would cancel a waiting one.
-# This workflow runs no code of the image except "apt-get update; apt-get -s upgrade" in the
-# published image itself, and holds actions: write only in the job that starts the publish.
+# ASPIA_VERSION of versions.env on main) with Trivy and start publish.yml on main only when a rebuild
+# would install a fix: a package with a finding that has a fix, which "apt-get upgrade" in the
+# Dockerfile gets in a new version. Nothing else starts a publish, and none is started while another
+# is queued or running. Why it is built like this: docs/ci.md.
 name: Rebuild for fixed vulnerabilities
 
 on:
@@ -77,14 +68,25 @@ jobs:
           image="${GHCR_IMAGE}@${digest}"
           echo "Published image: ${image}"
           docker pull -q --platform linux/amd64 "${image}"
-          docker save -o "${RUNNER_TEMP}/image.tar" "${image}"
-          docker run --rm -v "${RUNNER_TEMP}:/work" -v trivy-cache:/root/.cache/trivy "${TRIVY_IMAGE}" \
-            image --quiet --scanners vuln --ignore-unfixed --format json --output /work/trivy.json --input /work/image.tar
-          # Packages with a finding that has a fix, and packages that Debian has a newer version of.
-          jq -r '[.Results[]?.Vulnerabilities[]?.PkgName] | unique | .[]' "${RUNNER_TEMP}/trivy.json" > "${RUNNER_TEMP}/fixable"
+          # Packages that Debian has a newer version of. If there are none, a rebuild changes nothing:
+          # skip the image export and the Trivy run (and its database download).
           docker run --rm --platform linux/amd64 --user 0 "${image}" \
             sh -c 'apt-get update -qq >/dev/null && apt-get -s upgrade' \
             | sed -n 's/^Inst \([^ :]*\).*/\1/p' | sort -u > "${RUNNER_TEMP}/upgradable"
+          if [[ ! -s "${RUNNER_TEMP}/upgradable" ]]; then
+            {
+              echo "### Fixable vulnerabilities in ${GHCR_IMAGE}:${version}"
+              echo
+              echo "Digest \`${digest}\`. Debian has no newer version of any installed package: nothing to rebuild, scan skipped."
+            } | tee -a "${GITHUB_STEP_SUMMARY}"
+            echo "rebuild=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          docker save -o "${RUNNER_TEMP}/image.tar" "${image}"
+          docker run --rm -v "${RUNNER_TEMP}:/work" -v trivy-cache:/root/.cache/trivy "${TRIVY_IMAGE}" \
+            image --quiet --scanners vuln --ignore-unfixed --format json --output /work/trivy.json --input /work/image.tar
+          # Packages with a finding that has a fix.
+          jq -r '[.Results[]?.Vulnerabilities[]?.PkgName] | unique | .[]' "${RUNNER_TEMP}/trivy.json" > "${RUNNER_TEMP}/fixable"
           fixed="$(sort -u "${RUNNER_TEMP}/fixable" | comm -12 - "${RUNNER_TEMP}/upgradable" | tr '\n' ' ')"
           {
             echo "### Fixable vulnerabilities in ${GHCR_IMAGE}:${version}"

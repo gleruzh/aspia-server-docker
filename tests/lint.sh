@@ -62,7 +62,7 @@ fi
 # uses openssl s_client for ASPIA_RELAY_PUBLIC_ADDRESS=auto. No line of the Dockerfile outside its
 # comments may name curl (a package list or a download alike).
 echo "Dockerfile installs no curl"
-if grep -nE '^[^#]*(^|[^[:alnum:]_-])curl([^[:alnum:]_-]|$)' Dockerfile; then
+if grep -nEw '^[^#]*curl' Dockerfile; then
     echo "Dockerfile: curl is back in the image; aspia_start does not need it (openssl s_client)" >&2
     status=1
 fi

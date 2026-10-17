@@ -304,11 +304,18 @@ ipv4_to_int() {
     echo $(( (10#${a} << 24) | (10#${b} << 16) | (10#${c} << 8) | 10#${d} ))
 }
 
+# ipv4_in_subnet <address as a number (ipv4_to_int)> <subnet a.b.c.d> <prefix length>: succeeds if the
+# address is in the subnet.
+ipv4_in_subnet() {
+    local mask=$(( (0xFFFFFFFF << (32 - 10#$3)) & 0xFFFFFFFF ))
+    (( ($(ipv4_to_int "$2") & mask) == ($1 & mask) ))
+}
+
 # allowed_ips_covers_ipv4 <list> <ipv4>: true if the comma-separated allow-list (already validated
 # by require_allowed_ips) contains <ipv4> itself or a CIDR subnet it falls in. IPv6 entries never
 # match an IPv4 target (this image has no IPv6-mapped loopback case to cover).
 allowed_ips_covers_ipv4() {
-    local list="$1" target="$2" entry addr prefix mask
+    local list="$1" target="$2" entry addr prefix
     local target_int
     target_int="$(ipv4_to_int "${target}")"
     local -a entries
@@ -320,8 +327,7 @@ allowed_ips_covers_ipv4() {
             prefix="${entry#*/}"
             is_valid_ipv4 "${addr}" || continue
             ((10#${prefix} == 0)) && return 0
-            mask=$(( (0xFFFFFFFF << (32 - 10#${prefix})) & 0xFFFFFFFF ))
-            (( ($(ipv4_to_int "${addr}") & mask) == (target_int & mask) )) && return 0
+            ipv4_in_subnet "${target_int}" "${addr}" "${prefix}" && return 0
         elif [[ "${entry}" == "${target}" ]]; then
             return 0
         fi
@@ -417,14 +423,12 @@ ipv6_expand() {
 # auto_address_rejected <ip>: if a valid IP literal is in a range that an auto-detected address is
 # never in, prints what it is ("a private address (RFC 1918)") and succeeds; fails for a public one.
 auto_address_rejected() {
-    local ip="$1" entry subnet prefix mask target
+    local ip="$1" entry subnet target
     if is_valid_ipv4 "${ip}"; then
         target="$(ipv4_to_int "${ip}")"
         for entry in "${AUTO_ADDRESS_REJECTED_IPV4[@]}"; do
             subnet="${entry%% *}"
-            prefix="${subnet#*/}"
-            mask=$(( (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF ))
-            if (( ($(ipv4_to_int "${subnet%/*}") & mask) == (target & mask) )); then
+            if ipv4_in_subnet "${target}" "${subnet%/*}" "${subnet#*/}"; then
                 printf '%s\n' "${entry#* }"
                 return 0
             fi
@@ -478,9 +482,8 @@ parse_address_response() {
 # s_client aborts the handshake unless the certificate chains to a CA of ca-certificates and is valid
 # for the host name; -quiet also keeps reading after the request until the server closes, and
 # -ignore_unexpected_eof accepts a close without close_notify (parse_address_response checks the
-# length). The request
-# never takes longer than AUTO_ADDRESS_TIMEOUT seconds. Returns the exit code of openssl, or 124
-# (from timeout) when the time ran out.
+# length). The request never takes longer than AUTO_ADDRESS_TIMEOUT seconds. Returns the exit code
+# of openssl, or 124 (from timeout) when the time ran out.
 fetch_https() {
     local rest="${1#https://}" host path
     host="${rest%%/*}"

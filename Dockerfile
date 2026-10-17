@@ -65,16 +65,14 @@ ENV ASPIA_VERSION=${ASPIA_VERSION} \
 # The packages are bind-mounted from the fetch stage, so they never become part of a layer.
 # apt resolves their dependencies (libdbus-1-3). tini is PID 1, jq edits the 2.x relay.json
 # before upstream's migration. openssl and ca-certificates are only for ASPIA_RELAY_PUBLIC_ADDRESS
-# (EXTERNAL_IP)=auto: aspia_start queries a public "what is my IP" endpoint over HTTPS with
-# "openssl s_client", which ca-certificates needs anyway. There is no curl: with its libraries it
+# (EXTERNAL_IP)=auto: aspia_start asks a public "what is my IP" endpoint over HTTPS with "openssl
+# s_client" (ca-certificates depends on openssl anyway). There is no curl: with its libraries it
 # brought more than a third of the image's known vulnerabilities, for this one request. The package
 # postinst runs "--install", a no-op while no configuration exists; no user data is mounted during
 # the build.
 # Package versions are not pinned, and "apt-get upgrade" brings the packages of the pinned base image
-# up to date too: every build gets the current Debian security fixes, so that a rebuild alone fixes
-# them (.github/workflows/rebuild.yml starts one when the published image has a fixable
-# vulnerability). The base digest still pins the Debian release; Debian stable only receives
-# security and bug fixes.
+# up to date too, so that a rebuild alone installs the current Debian security fixes
+# (.github/workflows/rebuild.yml starts one when the published image has a fixable vulnerability).
 # hadolint ignore=DL3008
 RUN --mount=type=bind,from=fetch,source=/pkg,target=/tmp/pkg \
     apt-get update \

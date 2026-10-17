@@ -228,11 +228,11 @@ gh workflow run upstream-watch.yml --ref main
 ## Rebuild for fixed vulnerabilities (rebuild.yml)
 
 Once a day the workflow takes the digest that the tag `X.Y.Z` (the version in `versions.env` of
-`main`) has in GHCR, and scans that image with Trivy (`--ignore-unfixed`: only findings that have a
-fixed version). If there are any, it runs `apt-get update` and `apt-get -s upgrade` in the same
-image, which shows the packages that a new build would upgrade. Only when one of them has a
-finding with a fix does it start `publish.yml` on `main`, with the version of `versions.env` and a
-dated tag. The run summary lists the findings and the packages.
+`main`) has in GHCR, and runs `apt-get update` and `apt-get -s upgrade` in that image, which shows
+the packages that a new build would upgrade. If there are none, it stops there. Otherwise it scans
+the image with Trivy (`--ignore-unfixed`: only findings that have a fixed version). Only when one of
+the upgradable packages has a finding with a fix does it start `publish.yml` on `main`, with the
+version of `versions.env` and a dated tag. The run summary lists the findings and the packages.
 
 Why it is built like this:
 

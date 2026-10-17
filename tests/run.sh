@@ -1387,10 +1387,10 @@ run_invalid_relay() {
 }
 
 # router_address_verdicts <value>...: "valid <value>" or "invalid <value>" per value, from
-# is_valid_router_address of the image under test (aspia_start without its final call of main).
+# is_valid_router_address of the image under test (sourcing aspia_start does not run main).
 router_address_verdicts() {
     docker run --rm --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" --entrypoint bash "${IMAGE}" -c '
-        source <(sed "\$d" /usr/bin/aspia_start)
+        source /usr/bin/aspia_start
         for v in "$@"; do
             if is_valid_router_address "$v"; then echo "valid $v"; else echo "invalid $v"; fi
         done' _ "$@"
