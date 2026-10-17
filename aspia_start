@@ -1074,16 +1074,21 @@ log_ports_header() { log "Ports (publish them unchanged, host port = container p
 
 # log_router_ports: the summary lines for the Router ports that clients and hosts use.
 log_router_ports() {
-    local legacy_port
+    local legacy_port podman_hint
     legacy_port="$(ini_get "${ROUTER_CONF}" host legacy_port 8060)"
     log "  ${legacy_port}/tcp  Router: hosts of Aspia 2.x"
     # Only on data migrated from 2.x (router.pub, see adopt_legacy_key): a new install has no 2.x Hosts.
+    # Deleting router.pub turns it off (README.md, "Upgrade notes"). The compose line takes the port
+    # from the variable; the commented line of the Quadlet unit has the default port.
     if [[ -n "$(read_key "${ROUTER_PUB}")" ]]; then
+        podman_hint="uncomment #PublishPort=8060:8060/tcp in aspia-server.container"
+        [[ "${legacy_port}" == 8060 ]] \
+            || podman_hint="add PublishPort=${legacy_port}:${legacy_port}/tcp to aspia-server.container"
         log "    The compose files and the Quadlet unit of this repository no longer publish ${legacy_port}/tcp:" \
             "Hosts of Aspia 2.x cannot connect until you uncomment the line" \
             "#- \"\${ASPIA_ROUTER_LEGACY_PORT:-8060}:\${ASPIA_ROUTER_LEGACY_PORT:-8060}\" in the ports: list of" \
-            "docker-compose.yml or compose.router.yml, or #PublishPort=8060:8060/tcp in aspia-server.container" \
-            "(README.md, \"Upgrade notes\")."
+            "docker-compose.yml or compose.router.yml, or ${podman_hint}. With no 2.x Hosts left, delete" \
+            "${ROUTER_PUB} to turn this note off (README.md, \"Upgrade notes\")."
     fi
     log "  $(ini_get "${ROUTER_CONF}" host port 8061)/tcp  Router: hosts"
     log "  $(ini_get "${ROUTER_CONF}" client port 8062)/tcp  Router: clients"

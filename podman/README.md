@@ -211,8 +211,12 @@ To go back, put the old tag in the unit and repeat steps 3 and 4 (the data may n
 why step 1 is there). Remove an unused old image with `podman image rm`.
 
 Upgrade note, October 2026: the unit no longer publishes 8060/tcp (Hosts of Aspia 2.x). If you install the new
-`aspia-server.container` and still have such Hosts, uncomment `#PublishPort=8060:8060/tcp` in it, then repeat
-steps 3 and 4. See [Upgrade notes](../README.md#upgrade-notes) in the main README.
+`aspia-server.container` and still have such Hosts, uncomment `#PublishPort=8060:8060/tcp` in it (with another
+`ASPIA_ROUTER_LEGACY_PORT`, that port on both sides), then repeat steps 3 and 4. On data migrated from 2.x the
+log reminds you at every start. When no 2.x Hosts are left, turn the reminder off as described in
+[Upgrade notes](../README.md#upgrade-notes) in the main README, with
+`sudo podman exec aspia-server sh -c 'cmp /etc/aspia/router.pub /etc/aspia/host.pub && rm /etc/aspia/router.pub'`
+and `sudo systemctl restart aspia-server.service`.
 
 ## 9. Older Podman: no Quadlet (fallback)
 

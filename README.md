@@ -287,7 +287,16 @@ The digest in this example is only an example. The summary of each publish run o
 
 Changes to the files of this repository that need action when you take the new files for an existing installation. Updating only the image tag in `.env` changes none of them.
 
-- October 2026: port 8060/tcp is no longer published by default. Only Hosts of Aspia 2.x use it. In `docker-compose.yml`, `compose.router.yml` and `podman/aspia-server.container` its line is commented out. If you take the new file and still have Hosts of Aspia 2.x, uncomment the line `#- "${ASPIA_ROUTER_LEGACY_PORT:-8060}:${ASPIA_ROUTER_LEGACY_PORT:-8060}"` in `ports:` and run `docker compose up -d`. In the Podman unit, uncomment `#PublishPort=8060:8060/tcp` (see [podman/README.md](podman/README.md), section 8). Until then these Hosts cannot connect. On data migrated from 2.x the container log names this line at every start.
+- October 2026: port 8060/tcp is no longer published by default. Only Hosts of Aspia 2.x use it. In `docker-compose.yml`, `compose.router.yml` and `podman/aspia-server.container` its line is commented out. If you take the new file and still have Hosts of Aspia 2.x, uncomment the line `#- "${ASPIA_ROUTER_LEGACY_PORT:-8060}:${ASPIA_ROUTER_LEGACY_PORT:-8060}"` in `ports:` and run `docker compose up -d`. In the Podman unit, uncomment `#PublishPort=8060:8060/tcp`; if you changed `ASPIA_ROUTER_LEGACY_PORT`, use that port on both sides (see [podman/README.md](podman/README.md), section 8). Until then these Hosts cannot connect. On data migrated from 2.x the container log names this line at every start.
+
+    When no Hosts of Aspia 2.x are left, you can turn this note off: delete `router.pub`. The note is shown only while that file exists. After the migration it holds the same key as `host.pub`, and the container does not need it once `host.pub` and `relay.pub` exist. The command deletes it only if it equals `host.pub`. Then restart the container:
+
+    ```shell
+    docker compose exec aspia-server sh -c 'cmp /etc/aspia/router.pub /etc/aspia/host.pub && rm /etc/aspia/router.pub'
+    docker compose restart
+    ```
+
+    The backup from step 2 of [Upgrading from 2.x](#upgrading-from-2x) still has the file, for a return to 2.7.0.
 
 ## Upgrading from 2.x
 

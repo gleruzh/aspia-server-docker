@@ -33,7 +33,8 @@
 #  11. an invalid value: one clear error naming the variable, non-zero exit, nothing written
 #  12. ASPIA_RELAY_PUBLIC_ADDRESS=auto with no network: clear error, non-zero exit
 #  13. a 2.x migration start also applies a new Relay variable (one the upstream migration itself copies);
-#      started as root on 2.x data of uid 1000: host.pub is created 0644, owned by 1000
+#      started as root on 2.x data of uid 1000: host.pub is created 0644, owned by 1000; the note about
+#      8060 names ASPIA_ROUTER_LEGACY_PORT for the Quadlet unit, and deleting router.pub turns it off
 #  14. PUID/PGID: both processes run as that uid/gid, and the files they write are owned by it
 #  15. an allow-list variable set to an empty value does not clear an existing list
 #  16. PUID/PGID with an invalid variable: refused, and no file's ownership was changed
@@ -633,6 +634,8 @@ scenario_upgrade() {
     if grep -qF "${FIRST_LOGIN_WARNING}" <<<"${logs}"; then fail "a migration warns about the first login of a new install"; fi
     ok "no warning about the first login of a new install: 'admin' has the 2.x password"
     grep -qF "${LEGACY_PORT_NOTE}" <<<"${logs}" || fail "migrated data does not log which 8060 line to uncomment"
+    grep -qF 'or uncomment #PublishPort=8060:8060/tcp in aspia-server.container.' <<<"${logs}" \
+        || fail "migrated data does not log which PublishPort= line of the Quadlet unit to uncomment"
     ok "migrated data logs that 8060 is not published by default and which line to uncomment"
 
     relay_conf="$(helper "${cfg}" "${db}" cat /etc/aspia/relay.conf)"
@@ -919,8 +922,8 @@ scenario_env_auto_no_network() {
 }
 
 scenario_env_migration() {
-    local cfg db name relay_conf value
-    log "13. A 2.x migration start also applies ASPIA_RELAY_MAX_PEERS (a field the upstream migration itself copies)"
+    local cfg db name relay_conf value logs
+    log "13. A 2.x migration start also applies ASPIA_RELAY_MAX_PEERS and ASPIA_ROUTER_LEGACY_PORT; deleting router.pub drops the 8060 note"
     cfg="$(new_volume s13-config)"
     db="$(new_volume s13-db)"
     CURRENT_CONTAINER="${RUN_ID}-s13-old"
@@ -931,7 +934,8 @@ scenario_env_migration() {
     # so host.pub, created from router.pub, must get its 0644 when it is copied (root, without FOWNER).
     helper_rw "${cfg}" "${db}" chown -R 1000:1000 /etc/aspia /var/lib/aspia
 
-    run_new s13-new "${cfg}" "${db}" -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e ASPIA_RELAY_MAX_PEERS=42
+    run_new s13-new "${cfg}" "${db}" -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e ASPIA_RELAY_MAX_PEERS=42 \
+        -e ASPIA_ROUTER_LEGACY_PORT=19060
     name="${CURRENT_CONTAINER}"
     wait_healthy "${name}"
     [[ "$(helper "${cfg}" "${db}" stat -c '%u:%g %a' /etc/aspia/host.pub /etc/aspia/relay.pub)" == $'1000:1000 644
@@ -943,6 +947,24 @@ scenario_env_migration() {
     [[ "${value}" == 42 ]] \
         || fail "ASPIA_RELAY_MAX_PEERS was not carried through the 2.x migration (peer/max_count = '${value}')"
     ok "ASPIA_RELAY_MAX_PEERS=42 took effect on the migration start itself (written to relay.json first)"
+
+    # The note about the 2.x port names the configured port for the Quadlet unit, whose commented
+    # line has the default one.
+    grep -qF 'or add PublishPort=19060:19060/tcp to aspia-server.container.' <<<"$(docker logs "${name}" 2>&1)" \
+        || fail "the note about the 2.x port does not name ASPIA_ROUTER_LEGACY_PORT=19060 for the Quadlet unit"
+    ok "the note about the 2.x port names PublishPort=19060:19060/tcp for the Quadlet unit"
+
+    # README.md, "Upgrade notes": without 2.x Hosts, router.pub can go (it equals host.pub). The same
+    # command as there, on files of uid 1000 (the container runs as root, with DAC_OVERRIDE).
+    docker exec "${name}" sh -c 'cmp /etc/aspia/router.pub /etc/aspia/host.pub && rm /etc/aspia/router.pub' \
+        || fail "the README command did not delete router.pub"
+    docker restart "${name}" >/dev/null
+    wait_healthy "${name}"
+    logs="$(docker logs "${name}" 2>&1)"
+    [[ "$(grep -c 'no longer publish 19060/tcp' <<<"${logs}")" == 1 ]] || fail "the 8060 note is still logged without router.pub"
+    [[ "$(grep 'Public key for hosts' <<<"${logs}" | awk '{print $NF}' | sort -u | wc -l | tr -d ' ')" == 1 ]] \
+        || fail "the key for hosts changed after router.pub was deleted"
+    ok "without router.pub: healthy, the same key for hosts, and no note about the 2.x port"
 }
 
 scenario_puid_pgid() {
