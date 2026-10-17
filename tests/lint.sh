@@ -5,8 +5,8 @@
 # list the variables of .env.example that apply to their unit, that the Quadlet unit does not publish
 # the Aspia 2.x port 8060 by default, that the Dockerfile installs no curl, scripts/versions.sh check,
 # the input checks of scripts/versions.sh files and scripts/aspia-release.sh (with a stub gh), that
-# publish.yml publishes from main only, and that rebuild.yml starts it on main only (and skips only a
-# version that is not published yet).
+# publish.yml and dockerhub-description.yml publish from main only, and that rebuild.yml starts
+# publish.yml on main only (and skips only a version that is not published yet).
 # The linters run as pinned containers, so the result does not depend on what the host has installed.
 
 set -euo pipefail
@@ -115,20 +115,45 @@ check_release fail $'aspia-router-3.0.0-x86_64.deb \naspia-relay-3.0.0-x86_64.de
 check_release ok "${debs}" fetch 3.0.0 "${tmp}/debs"
 grep -qxF "${STUB_SHA} ${STUB_SHA}" "${tmp}/out" || { echo "fetch printed: $(cat "${tmp}/out")"; status=1; }
 
-# publish.yml may publish only from main: the Plan step refuses any other ref, one workflow-level
-# concurrency group serialises every publish, raw registry secrets never go into a step's env, and
-# every documented cosign identity is pinned to publish.yml@refs/heads/main.
+# publish.yml and dockerhub-description.yml act from main only: the Plan step refuses any other ref,
+# no run is cancelled halfway, and raw registry secrets never go into a step's env.
 wf=.github/workflows/publish.yml
-echo "${wf} publishes from main only"
-# shellcheck disable=SC2016 # the literal text of the check in the workflow
-grep -qF '[[ "${GITHUB_REF}" != "refs/heads/main" ]]' "${wf}" \
-    || { echo "${wf}: no refs/heads/main check in the Plan step"; status=1; }
+dwf=.github/workflows/dockerhub-description.yml
+for f in "${wf}" "${dwf}"; do
+    echo "${f} runs from main only"
+    # shellcheck disable=SC2016 # the literal text of the check in the workflow
+    grep -qF '[[ "${GITHUB_REF}" != "refs/heads/main" ]]' "${f}" \
+        || { echo "${f}: no refs/heads/main check in the Plan step"; status=1; }
+    if grep -n 'cancel-in-progress: true' "${f}"; then echo "${f}: a publish must never be cancelled halfway"; status=1; fi
+    if grep -nE '^ +[A-Z_]+: \$\{\{ *secrets\.(DOCKERHUB|QUAY)_[A-Z]+ *\}\}' "${f}"; then
+        echo "${f}: a registry secret is passed to a step's env; pass a boolean instead"; status=1
+    fi
+done
+
+# dockerhub-description.yml joins the concurrency group 'publish' (on its job) only when no publish
+# waits there, leaves pushes that start publish.yml to it (same paths), and its steps are those of
+# publish.yml's description job, except that it skips the update when main has a newer
+# docs/dockerhub.md.
+grep -qxE ' +group: publish' "${dwf}" || { echo "${dwf}: no concurrency group 'publish'"; status=1; }
+# A waiting publish is any unfinished run that is not in progress; one is enough to be cancelled.
+if ! grep -qF 'select(.status != "completed" and .status != "in_progress")' "${dwf}" \
+    || ! grep -qxF '            if ((waiting > 0)); then' "${dwf}"; then
+    echo "${dwf}: no check for a waiting publish before joining the group 'publish'"; status=1
+fi
+diff --label "${wf} paths" --label "${dwf} PUBLISH_PATHS" \
+    <(sed -n '/^    paths:$/,/^  [a-z_]*:$/s/^      - //p' "${wf}") \
+    <(sed -n 's/^ *PUBLISH_PATHS: //p' "${dwf}" | tr ' ' '\n') || status=1
+description_steps() { sed -n '/- name: Repository name on Docker Hub/,/enable-url-completion: true/p' "$1"; }
+[[ -n "$(description_steps "${dwf}")" ]] || { echo "${dwf}: no Docker Hub description steps"; status=1; }
+newest_gate="        if: steps.newest.outputs.newest == 'true'"
+grep -qxF "${newest_gate}" "${dwf}" || { echo "${dwf}: the update does not check for a newer docs/dockerhub.md"; status=1; }
+diff --label "${wf}" --label "${dwf}" <(description_steps "${wf}") \
+    <(description_steps "${dwf}" | grep -vxF "${newest_gate}") || status=1
+
+# publish.yml: one workflow-level concurrency group serialises every publish, and every documented
+# cosign identity is pinned to publish.yml@refs/heads/main.
 # Two-space indent: only the workflow-level concurrency block matches, not a job-level one.
 grep -qxF '  group: publish' "${wf}" || { echo "${wf}: no workflow-level concurrency group 'publish'"; status=1; }
-if grep -n 'cancel-in-progress: true' "${wf}"; then echo "${wf}: a publish must never be cancelled halfway"; status=1; fi
-if grep -nE '^ +[A-Z_]+: \$\{\{ *secrets\.(DOCKERHUB|QUAY)_[A-Z]+ *\}\}' "${wf}"; then
-    echo "${wf}: a registry secret is passed to a step's env; pass a boolean instead"; status=1
-fi
 grep -q 'certificate-identity' "${wf}" || { echo "${wf}: no cosign verify command"; status=1; }
 # The workflow echoes the regexp with a doubled backslash, the docs have a single one.
 # Captured, not piped into if: under pipefail a grep writing to /dev/null quits early and hides a hit.

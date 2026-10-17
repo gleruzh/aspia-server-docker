@@ -1,15 +1,16 @@
 # CI and publishing
 
-Four GitHub Actions workflows build, test and publish the image. The same files work in any
+Five GitHub Actions workflows build, test and publish the image. The same files work in any
 repository without edits: the image is published as `ghcr.io/<repository owner>/aspia-server`, and
 to Docker Hub or Quay.io only when the owner has set their secrets.
 
 | Workflow | Runs on | What it does |
 |---|---|---|
-| [`ci.yml`](../.github/workflows/ci.yml) | every pull request, weekly (Mondays), manual | `tests/lint.sh` (hadolint, shellcheck, actionlint, `scripts/versions.sh check`, the main-only checks of `publish.yml`), builds the image, runs `tests/run.sh` against it, and scans it with Trivy. The scan is reported in the log, the run summary and the Security tab; it never fails the run. |
+| [`ci.yml`](../.github/workflows/ci.yml) | every pull request, weekly (Mondays), manual | `tests/lint.sh` (hadolint, shellcheck, actionlint, `scripts/versions.sh check`, the main-only checks of `publish.yml` and `dockerhub-description.yml`), builds the image, runs `tests/run.sh` against it, and scans it with Trivy. The scan is reported in the log, the run summary and the Security tab; it never fails the run. |
 | [`publish.yml`](../.github/workflows/publish.yml) | push to `main` that changes `versions.env` or the image files; manual | Builds the image once, pushes it to GHCR by digest only, runs `tests/run.sh` against that digest, then tags it and copies it to the other registries. Signs it and attests its provenance. |
 | [`upstream-watch.yml`](../.github/workflows/upstream-watch.yml) | every 6 hours; manual | Opens a pull request "chore: bump Aspia to X.Y.Z" when Aspia publishes a newer stable release with both x86_64 server packages. |
 | [`rebuild.yml`](../.github/workflows/rebuild.yml) | daily; manual | Scans the published image with Trivy for vulnerabilities that have a fix, and starts `publish.yml` on `main` only if a rebuild would install such a fix. |
+| [`dockerhub-description.yml`](../.github/workflows/dockerhub-description.yml) | push to `main` that changes `docs/dockerhub.md`; manual | Replaces the Docker Hub description with `docs/dockerhub.md` when the push starts no publish (see [Enabling Docker Hub](#enabling-docker-hub)). |
 
 Dependabot ([`.github/dependabot.yml`](../.github/dependabot.yml)) opens pull requests, weekly, for
 the pinned action SHAs and for the pinned digest of the Debian base image. Nothing is updated
@@ -99,6 +100,19 @@ an error: the run logs "Docker Hub skipped" or "Quay.io skipped" and continues.
 4. Run a publish manually (below). The run copies the tested image to Docker Hub with the same
    digest, signs it there, and a separate job replaces the Docker Hub description with `docs/dockerhub.md`: a short page (Docker Hub cuts a description at 25,000 bytes, and the action truncates without an error) that links to the full `README.md` on GitHub. Its links are relative to the repository root, and the action completes them. Keep it in sync with `README.md` by hand.
 
+A change to `docs/dockerhub.md` alone does not publish an image. `dockerhub-description.yml` updates
+the description then, with the same job. When the push also changes a file that starts
+`publish.yml` (a bump pull request changes both), it does nothing and leaves the update to
+`publish.yml`, which makes it only after the image is published, so the page never names a version
+that does not exist yet. It runs from `main` only and does nothing without the Docker Hub secrets.
+If it has waited for a publish and `docs/dockerhub.md` on `main` has changed since its push, it
+leaves the update to the run of that newer push, so an older file never replaces a newer one.
+To update the description by hand:
+
+```shell
+gh workflow run dockerhub-description.yml --ref main
+```
+
 ## Enabling Quay.io
 
 1. Create the repository on Quay.io, and a robot account with write permission to it.
@@ -154,7 +168,14 @@ package's version list if you like.
 
 Two publishes never run at the same time, whatever their versions: the whole workflow, including
 the Docker Hub description job, is in one concurrency group, so a second run waits until the first
-has finished. GitHub keeps only the newest waiting run; an older waiting run is cancelled.
+has finished. GitHub keeps only the newest waiting run; an older waiting run is cancelled. The
+description job of `dockerhub-description.yml` is in the same group, so it never edits the
+description during a publish. Because a new waiting run would cancel a waiting publish, it does not
+join the group while any publish waits to start (behind another publish or another description
+update): the run fails with an error instead, and you re-run it once that publish has started. A
+running publish is no reason to stop: the description job just waits for it. The check and the
+moment the job joins the group are a few seconds apart, so a publish queued in exactly that gap can
+still be cancelled; re-run it if that happens.
 
 ## Verifying a published image
 
