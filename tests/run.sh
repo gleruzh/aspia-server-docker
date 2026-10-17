@@ -5,6 +5,13 @@
 #
 #   tests/run.sh                  build the image from this checkout, then test it
 #   ASPIA_TEST_IMAGE=img tests/run.sh   test an existing image instead of building one
+#   tests/run.sh --list           print the scenario groups, their weights and scenarios, and exit
+#   tests/run.sh --shard 2/3      run only the groups of shard 2 of 3 (how CI splits the run)
+#   tests/run.sh clean-start upgrade   run only these groups (names from --list)
+#
+# A group is the unit of selection: its scenarios share containers or volumes and run in order. Any
+# selection first builds the image and the helper. --shard spreads the groups over the shards by
+# weight (see GROUP_TABLE at the end), the same way on every machine.
 #
 # Every container, volume and network the tests create carries the label aspia-test=<run id>, has
 # the run id in its name, and is removed on exit, also when a scenario fails; the images it builds
@@ -309,19 +316,9 @@ check_modes() {
 # ---------------------------------------------------------------------------------------------
 # Scenarios
 
-scenario_build() {
-    log "0. Build: the image, and a build with a tampered checksum must fail"
-    TAMPER_DIR="$(mktemp -d)"
-    cp Dockerfile aspia_start aspia_health aspia_common.sh versions.env .dockerignore "${TAMPER_DIR}/"
-    # Flip the first hex digit of the router checksum.
-    awk 'BEGIN { FS = OFS = "=" } $1 == "ASPIA_ROUTER_SHA256" { c = substr($2, 1, 1); $2 = (c == "0" ? "1" : "0") substr($2, 2) } { print }' \
-        versions.env > "${TAMPER_DIR}/versions.env"
-    if docker build --progress=plain --platform "${PLATFORM}" "${TAMPER_DIR}" > "${TAMPER_DIR}/build.log" 2>&1; then
-        fail "the build succeeded with a wrong checksum"
-    fi
-    grep -q 'FAILED' "${TAMPER_DIR}/build.log" || { cat "${TAMPER_DIR}/build.log" >&2; fail "the build failed, but not on the checksum"; }
-    ok "a wrong checksum fails the build: $(grep -m1 -o 'aspia-router[^ ]*: FAILED' "${TAMPER_DIR}/build.log")"
-
+# setup: the image under test (unless ASPIA_TEST_IMAGE names one) and the helper; every selection needs both.
+setup() {
+    log "Setup: the image under test and the helper image"
     if [[ -n "${ASPIA_TEST_IMAGE:-}" ]]; then
         ok "testing the given image ${IMAGE}"
     else
@@ -334,6 +331,20 @@ scenario_build() {
     docker build -q --platform "${PLATFORM}" -t "${HELPER_IMAGE}" \
         --build-arg "BASE_IMAGE=$(awk '/^FROM / { print $2; exit }' Dockerfile)" tests/helper >/dev/null
     ok "built ${HELPER_IMAGE}"
+}
+
+scenario_build() {
+    log "0. Build: a build with a tampered checksum must fail"
+    TAMPER_DIR="$(mktemp -d)"
+    cp Dockerfile aspia_start aspia_health aspia_common.sh versions.env .dockerignore "${TAMPER_DIR}/"
+    # Flip the first hex digit of the router checksum.
+    awk 'BEGIN { FS = OFS = "=" } $1 == "ASPIA_ROUTER_SHA256" { c = substr($2, 1, 1); $2 = (c == "0" ? "1" : "0") substr($2, 2) } { print }' \
+        versions.env > "${TAMPER_DIR}/versions.env"
+    if docker build --progress=plain --platform "${PLATFORM}" "${TAMPER_DIR}" > "${TAMPER_DIR}/build.log" 2>&1; then
+        fail "the build succeeded with a wrong checksum"
+    fi
+    grep -q 'FAILED' "${TAMPER_DIR}/build.log" || { cat "${TAMPER_DIR}/build.log" >&2; fail "the build failed, but not on the checksum"; }
+    ok "a wrong checksum fails the build: $(grep -m1 -o 'aspia-router[^ ]*: FAILED' "${TAMPER_DIR}/build.log")"
 }
 
 scenario_compose() {
@@ -1613,39 +1624,118 @@ check_hardening() {
 }
 
 # ---------------------------------------------------------------------------------------------
+# Scenario groups and selection
 
-scenario_build
-scenario_command
-scenario_compose
-scenario_compose_roles
-scenario_compose_hardening
-scenario_clean_start
-scenario_restart
-scenario_new_external_ip
-scenario_stop
-scenario_crash
-scenario_relay_not_connected
-scenario_upgrade
-scenario_no_external_ip
-scenario_orphan_database
-scenario_refused_relay_data
-scenario_env_apply
-scenario_env_persistence
-scenario_env_invalid
-scenario_env_auto_no_network
-scenario_env_auto_stub
-scenario_env_migration
-scenario_puid_pgid
-scenario_env_empty_allowlist
-scenario_puid_pgid_refused
-scenario_split
-scenario_two_relays
-start_failing_relays
-scenario_relay_wrong_key
-scenario_relay_unreachable
-scenario_router_allow_list
-scenario_relay_invalid
-scenario_single_process
-scenario_role_all_explicit
+# One line per group: name, weight, and its functions in the order they run. The groups run in this
+# order. The weight is the group's duration in seconds in CI (ubuntu-24.04, image given), rounded;
+# --shard uses it only to spread the slow groups, so update it when a group gets much faster or slower.
+readonly GROUP_TABLE=(
+    "build               4  scenario_build"
+    "command             1  scenario_command"
+    "compose             6  scenario_compose"
+    "compose-roles       2  scenario_compose_roles"
+    "compose-hardening   1  scenario_compose_hardening"
+    "clean-start        27  scenario_clean_start scenario_restart scenario_new_external_ip scenario_stop scenario_crash scenario_relay_not_connected"
+    "upgrade            37  scenario_upgrade"
+    "no-external-ip      1  scenario_no_external_ip"
+    "orphan-database     1  scenario_orphan_database"
+    "refused-data        6  scenario_refused_relay_data"
+    "env-apply           3  scenario_env_apply"
+    "env-persistence    11  scenario_env_persistence"
+    "env-invalid         6  scenario_env_invalid"
+    "auto-no-network     2  scenario_env_auto_no_network"
+    "auto-stub          10  scenario_env_auto_stub"
+    "env-migration       8  scenario_env_migration"
+    "puid               11  scenario_puid_pgid"
+    "empty-allowlist     7  scenario_env_empty_allowlist"
+    "puid-refused        5  scenario_puid_pgid_refused"
+    "split              84  scenario_split scenario_two_relays start_failing_relays scenario_relay_wrong_key scenario_relay_unreachable scenario_router_allow_list scenario_relay_invalid scenario_single_process scenario_role_all_explicit"
+)
 
-log "All scenarios passed (image ${IMAGE})"
+# shard_groups <i> <n>: the names of the groups of shard i of n, one per line. The heaviest group first,
+# each to the shard with the least weight so far (the lowest shard on a tie): the same on every machine.
+shard_groups() {
+    local -a load=()
+    local k best weight index name
+    for ((k = 1; k <= $2; k++)); do load[k]=0; done
+    while read -r weight index name; do
+        best=1
+        for ((k = 2; k <= $2; k++)); do
+            if ((load[k] < load[best])); then best=${k}; fi
+        done
+        load[best]=$((load[best] + weight))
+        if ((best == $1)); then echo "${name}"; fi
+    done < <(for index in "${!GROUP_TABLE[@]}"; do
+        read -r name weight _ <<<"${GROUP_TABLE[index]}"
+        echo "${weight} ${index} ${name}"
+    done | sort -k1,1nr -k2,2n)
+}
+
+usage_error() {
+    trap - EXIT
+    printf 'tests/run.sh: %s\nUsage: tests/run.sh [--list] [--shard I/N | GROUP...]\n' "$1" >&2
+    exit 2
+}
+
+LIST=0 SHARD="" SELECTED=()
+while (($#)); do
+    case "$1" in
+        --list) LIST=1 ;;
+        --shard)
+            if [[ ! "${2:-}" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] || ((BASH_REMATCH[1] > BASH_REMATCH[2])); then
+                usage_error "--shard needs I/N with 1 <= I <= N, not '${2:-}'"
+            fi
+            SHARD="$2"
+            shift
+            ;;
+        -*) usage_error "unknown option $1" ;;
+        *)
+            printf '%s\n' "${GROUP_TABLE[@]}" | awk -v g="$1" '$1 == g { found = 1 } END { exit !found }' \
+                || usage_error "no group '$1' (tests/run.sh --list prints them)"
+            SELECTED+=("$1")
+            ;;
+    esac
+    shift
+done
+[[ -z "${SHARD}" || ${#SELECTED[@]} == 0 ]] || usage_error "--shard and group names do not go together"
+if [[ -n "${SHARD}" ]]; then
+    while read -r name; do SELECTED+=("${name}"); done < <(shard_groups "${SHARD%/*}" "${SHARD#*/}")
+fi
+ALL=0
+[[ -n "${SHARD}" || ${#SELECTED[@]} != 0 ]] || ALL=1
+
+# selected <group name>: the group runs in this selection.
+selected() { ((ALL)) || [[ " ${SELECTED[*]-} " == *" $1 "* ]]; }
+
+if ((LIST)); then
+    trap - EXIT
+    total=0
+    for entry in "${GROUP_TABLE[@]}"; do
+        read -r name weight functions <<<"${entry}"
+        selected "${name}" || continue
+        printf '%-18s %3d  %s\n' "${name}" "${weight}" "${functions}"
+        total=$((total + weight))
+    done
+    printf '%-18s %3d\n' total "${total}"
+    exit 0
+fi
+
+RUN=()   # the selected groups, in the order they run
+for entry in "${GROUP_TABLE[@]}"; do
+    read -r name _ <<<"${entry}"
+    if selected "${name}"; then RUN+=("${name}"); fi
+done
+((ALL)) || log "Groups${SHARD:+ of shard ${SHARD}}: ${RUN[*]-(none)}"
+
+setup
+for entry in "${GROUP_TABLE[@]}"; do
+    read -r -a functions <<<"${entry}"
+    selected "${functions[0]}" || continue
+    for function in "${functions[@]:2}"; do "${function}"; done
+done
+
+if ((ALL)); then
+    log "All scenarios passed (image ${IMAGE})"
+else
+    log "All scenarios passed in ${SHARD:+shard ${SHARD}: }${RUN[*]-(no group)} (image ${IMAGE})"
+fi
