@@ -67,7 +67,8 @@ jobs:
         run: tests/run.sh
 
       # The scan reports; it never fails the build: the findings are in Debian packages that this
-      # repository does not control. Their fixes arrive with Dependabot's base image updates.
+      # repository does not control. Every build installs their fixes (apt-get upgrade), and
+      # rebuild.yml republishes when the published image has one that a build would fix.
       - name: Scan the image with Trivy
         id: scan
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}

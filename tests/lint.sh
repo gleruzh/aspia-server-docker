@@ -4,8 +4,8 @@
 # the workflows (it also runs shellcheck on their run: blocks), that the podman/*.env.example files
 # list the variables of .env.example that apply to their unit, that the Quadlet unit does not publish
 # the Aspia 2.x port 8060 by default, that the Dockerfile installs no curl, scripts/versions.sh check,
-# the input checks of scripts/versions.sh files and scripts/aspia-release.sh (with a stub gh), and
-# that publish.yml publishes from main only.
+# the input checks of scripts/versions.sh files and scripts/aspia-release.sh (with a stub gh), that
+# publish.yml publishes from main only, and that rebuild.yml starts it on main only.
 # The linters run as pinned containers, so the result does not depend on what the host has installed.
 
 set -euo pipefail
@@ -134,6 +134,16 @@ grep -q 'certificate-identity' "${wf}" || { echo "${wf}: no cosign verify comman
 unpinned="$(grep -rn --include='*.md' --include='*.yml' -e '--certificate-identity' .github docs README.md podman \
     | grep -vE 'publish\\{1,2}\.yml@refs/heads/main\$' || true)"
 [[ -z "${unpinned}" ]] || { printf '%s\n' "${unpinned}" "cosign identity not pinned to refs/heads/main"; status=1; }
+
+# rebuild.yml starts publish.yml on main only, and scans with the Trivy that ci.yml pins.
+wf=.github/workflows/rebuild.yml
+echo "${wf} starts publish.yml on main only, with the Trivy of ci.yml"
+dispatches="$(grep -n 'gh workflow run' "${wf}" || true)"
+if [[ -z "${dispatches}" ]] || grep -v 'gh workflow run publish\.yml --ref main ' <<<"${dispatches}"; then
+    echo "${wf}: every 'gh workflow run' must be 'gh workflow run publish.yml --ref main ...'"; status=1
+fi
+trivy_pins="$(grep -h '^  TRIVY_IMAGE: ' .github/workflows/ci.yml "${wf}" | sort -u)"
+(($(wc -l <<<"${trivy_pins}") == 1)) || { printf '%s\n' "${trivy_pins}" "ci.yml and ${wf} pin different Trivy images"; status=1; }
 
 ((status == 0)) && echo "lint: ok"
 exit "${status}"

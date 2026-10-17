@@ -1,6 +1,6 @@
 # CI and publishing
 
-Three GitHub Actions workflows build, test and publish the image. The same files work in any
+Four GitHub Actions workflows build, test and publish the image. The same files work in any
 repository without edits: the image is published as `ghcr.io/<repository owner>/aspia-server`, and
 to Docker Hub or Quay.io only when the owner has set their secrets.
 
@@ -9,12 +9,16 @@ to Docker Hub or Quay.io only when the owner has set their secrets.
 | [`ci.yml`](../.github/workflows/ci.yml) | every pull request, weekly (Mondays), manual | `tests/lint.sh` (hadolint, shellcheck, actionlint, `scripts/versions.sh check`, the main-only checks of `publish.yml`), builds the image, runs `tests/run.sh` against it, and scans it with Trivy. The scan is reported in the log, the run summary and the Security tab; it never fails the run. |
 | [`publish.yml`](../.github/workflows/publish.yml) | push to `main` that changes `versions.env` or the image files; manual | Builds the image once, pushes it to GHCR by digest only, runs `tests/run.sh` against that digest, then tags it and copies it to the other registries. Signs it and attests its provenance. |
 | [`upstream-watch.yml`](../.github/workflows/upstream-watch.yml) | every 6 hours; manual | Opens a pull request "chore: bump Aspia to X.Y.Z" when Aspia publishes a newer stable release with both x86_64 server packages. |
+| [`rebuild.yml`](../.github/workflows/rebuild.yml) | daily; manual | Scans the published image with Trivy for vulnerabilities that have a fix, and starts `publish.yml` on `main` only if a rebuild would install such a fix. |
 
 Dependabot ([`.github/dependabot.yml`](../.github/dependabot.yml)) opens pull requests, weekly, for
 the pinned action SHAs and for the pinned digest of the Debian base image. Nothing is updated
-silently. There is no scheduled rebuild: the base image is pinned by digest, so a rebuild would not
-update it. Security updates of Debian arrive as a Dependabot pull request for the base digest; once
-merged, it changes the Dockerfile and `publish.yml` publishes the new image.
+silently. Security updates of Debian reach the image in two ways. A Dependabot pull request for the
+base digest changes the Dockerfile; once merged, `publish.yml` publishes the new image. Between
+those, the Dockerfile runs `apt-get upgrade`, so every build installs the current Debian packages,
+and `rebuild.yml` starts a publish when the published image has a vulnerability that such a build
+fixes (see [Rebuild for fixed vulnerabilities](#rebuild-for-fixed-vulnerabilities-rebuildyml)).
+There is no rebuild on a timer alone: an image is published only when it changes.
 
 ## The version file
 
@@ -214,11 +218,45 @@ Two GitHub limitations, and how they are handled:
 - **Scheduled workflows are disabled after 60 days without activity in the repository** (GitHub
   emails the owner before), and in a fork they do not run until Actions is enabled. Merged bump
   pull requests count as activity. If it happens, re-enable the workflows in the Actions tab or with
-  `gh workflow enable upstream-watch.yml` and `gh workflow enable publish.yml`. A manual run always
-  works:
+  `gh workflow enable upstream-watch.yml`, `gh workflow enable rebuild.yml` and
+  `gh workflow enable publish.yml`. A manual run always works:
 
 ```shell
 gh workflow run upstream-watch.yml --ref main
+```
+
+## Rebuild for fixed vulnerabilities (rebuild.yml)
+
+Once a day the workflow takes the digest that the tag `X.Y.Z` (the version in `versions.env` of
+`main`) has in GHCR, and scans that image with Trivy (`--ignore-unfixed`: only findings that have a
+fixed version). If there are any, it runs `apt-get update` and `apt-get -s upgrade` in the same
+image, which shows the packages that a new build would upgrade. Only when one of them has a
+finding with a fix does it start `publish.yml` on `main`, with the version of `versions.env` and a
+dated tag. The run summary lists the findings and the packages.
+
+Why it is built like this:
+
+- **No rebuild on a timer.** The weekly rebuild was removed (PR 15) because it changed nothing: the
+  base image is pinned by digest, and the Dockerfile ran no `apt-get upgrade`. The Dockerfile now
+  runs `apt-get upgrade`, so a build does install fixed Debian packages. A rebuild is started only
+  when it fixes a known vulnerability. A finding without a fix, or a fix that is not in the Debian
+  archive yet, starts nothing, and the next day's run checks again.
+- **An ordinary publish.** The started run is `publish.yml` on `main` like a manual run: the Plan
+  step accepts only `main` and the version of its `versions.env`, `tests/run.sh` runs against the
+  new digest, the signature identity is `publish.yml@refs/heads/main`, and the run is in the
+  concurrency group `publish`. The tag `X.Y.Z` moves to the new digest, and a new dated tag is the
+  rollback point (an existing dated tag of the same day is kept).
+- **No second publish.** If a publish is already queued or running, nothing is started: that run
+  builds `main` with the current packages anyway, and a new waiting run would cancel a waiting one.
+- **Least privilege.** The job `scan` has `contents: read` and `packages: read`; the job that starts
+  the publish has only `actions: write` and runs no code from the repository. `tests/lint.sh` checks
+  that the workflow starts `publish.yml` with `--ref main` only, and that it pins the same Trivy image
+  as `ci.yml`.
+
+A manual run checks at once:
+
+```shell
+gh workflow run rebuild.yml --ref main
 ```
 
 ## Running the checks locally

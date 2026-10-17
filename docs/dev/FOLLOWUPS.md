@@ -225,11 +225,10 @@ Correctness points not fixed in PR 1, each small and open for discussion:
 - **Tool images are not tracked by Dependabot.** hadolint, shellcheck and actionlint (`tests/lint.sh`) and
   Trivy (`ci.yml`) are pinned by tag and digest, but Dependabot's docker ecosystem reads only Dockerfiles
   and compose files. Update them by hand, or move them into a small Dockerfile that Dependabot watches.
-- **Base packages between Debian point releases.** The base image is pinned by digest, so the weekly
-  rebuild picks up new versions only of the packages the Dockerfile installs (jq, tini, libdbus-1-3 and
-  their dependencies); fixes to packages already in `debian:trixie-slim` arrive when Dependabot bumps the
-  digest. An `apt-get upgrade` in the Dockerfile would pick them up weekly too, at the cost of a less
-  reproducible build. Out of scope for PR 2 (no Dockerfile changes beyond the version).
+- **Base packages between Debian point releases.** Done after PR 30: the Dockerfile runs `apt-get
+  upgrade`, so every build installs the fixes to packages that are already in `debian:trixie-slim`, at
+  the cost of a less reproducible build. `rebuild.yml` publishes a new build when the published image has
+  a vulnerability with a fix that such a build installs (docs/ci.md).
 - **Untested digests in GHCR.** When `tests/run.sh` fails in `publish.yml`, the digest that was pushed
   for testing stays in GHCR untagged. Harmless, but a cleanup job (for example
   `actions/delete-package-versions` for untagged versions) could remove them.
