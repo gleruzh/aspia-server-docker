@@ -142,7 +142,6 @@ cleanup() {
     [[ -z "${TAMPER_DIR:-}" ]] || rm -rf "${TAMPER_DIR}"
     [[ -z "${STUB_DIR:-}" ]] || rm -rf "${STUB_DIR}"
 }
-trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 # ---------------------------------------------------------------------------------------------
@@ -184,17 +183,18 @@ log_has() { grep -qE -- "$2" <<<"$(docker logs "$1" 2>&1)"; }
 # sigterm_lines <container>: how many times an Aspia process logged a received SIGTERM.
 sigterm_lines() { grep -cE 'Signal received: +"SIGTERM"' <<<"$(docker logs "$1" 2>&1)" || true; }
 
-# wait_healthy <container>: fails if the container stops or is not healthy within HEALTH_TIMEOUT.
+# wait_healthy <container>: fails if the container stops or is not healthy within HEALTH_TIMEOUT. Polled
+# every 0.5 s: the health probe runs every 2 s while the container starts (--start-interval).
 wait_healthy() {
     local i status
-    for ((i = 0; i < HEALTH_TIMEOUT; i++)); do
+    for ((i = 0; i < HEALTH_TIMEOUT * 2; i++)); do
         [[ "$(state .State.Running "$1")" == true ]] || fail "$1 exited (code $(state .State.ExitCode "$1")) instead of becoming healthy"
         status="$(state .State.Health.Status "$1")"
         if [[ "${status}" == healthy ]]; then
-            ok "$1 is healthy after ~${i} s"
+            ok "$1 is healthy after ~$((i / 2)) s"
             return 0
         fi
-        sleep 1
+        sleep 0.5
     done
     fail "$1 is not healthy after ${HEALTH_TIMEOUT} s (status ${status}); last check: $(docker inspect -f '{{range .State.Health.Log}}{{.Output}}{{end}}' "$1" | tail -3)"
 }
@@ -277,9 +277,9 @@ ip_of() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{
 # wait_log <container> <extended regex> <count> <timeout s>: waits until the log has <count> such lines.
 wait_log() {
     local i
-    for ((i = 0; i < $4; i++)); do
+    for ((i = 0; i < $4 * 2; i++)); do
         (($(grep -cE -- "$2" <<<"$(docker logs "$1" 2>&1)" || true) >= $3)) && return 0
-        sleep 1
+        sleep 0.5
     done
     fail "$1: fewer than $3 log line(s) matching '$2' after $4 s"
 }
@@ -302,7 +302,7 @@ not_yet_healthy() {
         [[ "$(state .State.Running "$1")" == true ]] || fail "$1 exited (code $(state .State.ExitCode "$1"))"
         [[ "$(state .State.Health.Status "$1")" != healthy ]] || fail "$1 became healthy"
         codes="$(docker inspect -f '{{range .State.Health.Log}}{{.ExitCode}} {{end}}' "$1")"
-        if [[ -n "${codes// /}" ]]; then
+        if [[ -n "${codes}" ]]; then
             [[ " ${codes}" != *" 0 "* ]] || fail "$1 passed a health probe (exit codes: ${codes})"
             return 0
         fi
@@ -328,21 +328,23 @@ check_modes() {
 # ---------------------------------------------------------------------------------------------
 # Scenarios
 
+# build_image <tag> <docker build arguments...>: builds the image and untags it on exit.
+build_image() {
+    BUILT_IMAGES+=("$1")
+    docker build -q --platform "${PLATFORM}" -t "$@" >/dev/null
+    ok "built $1"
+}
+
 # setup: the image under test (unless ASPIA_TEST_IMAGE names one) and the helper; every selection needs both.
 setup() {
     log "Setup: the image under test and the helper image"
     if [[ -n "${ASPIA_TEST_IMAGE:-}" ]]; then
         ok "testing the given image ${IMAGE}"
     else
-        BUILT_IMAGES+=("${IMAGE}")
-        docker build -q --platform "${PLATFORM}" -t "${IMAGE}" . >/dev/null
-        ok "built ${IMAGE}"
+        build_image "${IMAGE}" .
     fi
     # The helper uses the product's base image, taken from the Dockerfile so that one edit updates both.
-    BUILT_IMAGES+=("${HELPER_IMAGE}")
-    docker build -q --platform "${PLATFORM}" -t "${HELPER_IMAGE}" \
-        --build-arg "BASE_IMAGE=$(awk '/^FROM / { print $2; exit }' Dockerfile)" tests/helper >/dev/null
-    ok "built ${HELPER_IMAGE}"
+    build_image "${HELPER_IMAGE}" --build-arg "BASE_IMAGE=$(awk '/^FROM / { print $2; exit }' Dockerfile)" tests/helper
 }
 
 scenario_build() {
@@ -1171,17 +1173,16 @@ RELAY_A_IP="" RELAY_B_IP=""   # set by split_network: above the range Docker han
 # of a concurrent run); then the next /24 is tried, from 10.213.48.0/24 on (earlier versions of this
 # script take 10.213.47.0/24 unconditionally, and may run at the same time from another checkout).
 split_network() {
-    local i n out
+    local n out
     [[ -z "${SPLIT_NET}" ]] || return 0
-    for ((i = 0; i < 256; i++)); do
-        n=$(((48 + i) % 256))
+    for ((n = 48; n < 256; n++)); do
         if out="$(docker network create --label "aspia-test=${RUN_ID}" --subnet "10.213.${n}.0/24" "${RUN_ID}-split" 2>&1)"; then
             SPLIT_NET="${RUN_ID}-split" RELAY_A_IP="10.213.${n}.200" RELAY_B_IP="10.213.${n}.201"
             return 0
         fi
         grep -qi overlap <<<"${out}" || fail "docker network create failed: ${out}"
     done
-    fail "no /24 of 10.213.0.0/16 is free for ${RUN_ID}-split"
+    fail "no /24 of 10.213.48.0-10.213.255.0 is free for ${RUN_ID}-split"
 }
 
 scenario_compose_roles() {
@@ -1331,9 +1332,9 @@ scenario_two_relays() {
 
 FAIL_WRONGKEY="" FAIL_NOHOST="" FAIL_NOPORT="" S21_ROUTER="" S21_RELAY_A="" S21_RELAY_B=""
 
-# start_failing_relays: starts the Relays of scenarios 19, 20 and 21 together, so that their retry
-# cycles (15 s, fixed in Aspia) run side by side: a wrong key, an unknown Router name, a closed Router
-# port, and the Router with an allow-list (where only one of two Relays is listed).
+# start_failing_relays: starts the Relays of scenarios 19, 20 and 21 together, so that their 15 s
+# retry cycles run side by side: a wrong key, an unknown Router name, a closed Router port, and the
+# Router with an allow-list (where only one of two Relays is listed).
 start_failing_relays() {
     local cfg db key
     log "19-21 (setup). Start the Relays that must fail, and the Router with an allow-list, together"
@@ -1373,7 +1374,7 @@ scenario_relay_wrong_key_retry() {
     log "19b. The Relay with the wrong key retried on its own: ACCESS_DENIED again; recreated with the right key"
     # Two attempts: this is the one place that shows the Relay retries on its own (the reconnect in 20b does too).
     expect_relay_refused "${name}" 'Connection to the router has been lost: .*ACCESS_DENIED' 2
-    ok "ACCESS_DENIED logged on the retry too (Aspia retries after 15 s); still running, not healthy"
+    ok "ACCESS_DENIED logged on the retry too; still running, not healthy"
 
     # The same volume, a different Router address and the right key: relay.conf follows the variables.
     router_ip="$(ip_of "${ROUTER_NAME}")"
@@ -1417,7 +1418,7 @@ scenario_relay_reconnect() {
     CURRENT_CONTAINER="${RELAY1_NAME}"
     wait_log "${RELAY1_NAME}" 'Connection to the router is established \(session count' 2 60
     docker exec "${RELAY1_NAME}" /usr/bin/aspia_health >/dev/null || fail "the Relay reconnected but aspia_health fails"
-    ok "Router back: the Relay reconnected on its own (Aspia retries after 15 s) and is healthy again"
+    ok "Router back: the Relay reconnected on its own (it retries every 15 s) and is healthy again"
 }
 
 scenario_router_allow_list() {
@@ -1684,23 +1685,19 @@ readonly GROUP_TABLE=(
 # each to the shard with the least weight so far (the lowest shard on a tie): the same on every machine.
 shard_groups() {
     local -a load=()
-    local k best weight index name
+    local k best weight name
     for ((k = 1; k <= $2; k++)); do load[k]=0; done
-    while read -r weight index name; do
+    while read -r weight _ name; do
         best=1
         for ((k = 2; k <= $2; k++)); do
             if ((load[k] < load[best])); then best=${k}; fi
         done
         load[best]=$((load[best] + weight))
         if ((best == $1)); then echo "${name}"; fi
-    done < <(for index in "${!GROUP_TABLE[@]}"; do
-        read -r name weight _ <<<"${GROUP_TABLE[index]}"
-        echo "${weight} ${index} ${name}"
-    done | sort -k1,1nr -k2,2n)
+    done < <(printf '%s\n' "${GROUP_TABLE[@]}" | awk '{ print $2, NR, $1 }' | sort -k1,1nr -k2,2n)
 }
 
 usage_error() {
-    trap - EXIT
     printf 'tests/run.sh: %s\nUsage: tests/run.sh [--list] [--shard I/N | GROUP...]\n' "$1" >&2
     exit 2
 }
@@ -1735,12 +1732,16 @@ ALL=0
 # selected <group name>: the group runs in this selection.
 selected() { ((ALL)) || [[ " ${SELECTED[*]-} " == *" $1 "* ]]; }
 
+RUN=() RUN_NAMES=()   # the selected GROUP_TABLE lines and group names, in the order they run
+for entry in "${GROUP_TABLE[@]}"; do
+    read -r name _ <<<"${entry}"
+    if selected "${name}"; then RUN+=("${entry}") RUN_NAMES+=("${name}"); fi
+done
+
 if ((LIST)); then
-    trap - EXIT
     total=0
-    for entry in "${GROUP_TABLE[@]}"; do
+    for entry in ${RUN[@]+"${RUN[@]}"}; do
         read -r name weight functions <<<"${entry}"
-        selected "${name}" || continue
         printf '%-18s %3d  %s\n' "${name}" "${weight}" "${functions}"
         total=$((total + weight))
     done
@@ -1748,22 +1749,20 @@ if ((LIST)); then
     exit 0
 fi
 
-RUN=()   # the selected groups, in the order they run
-for entry in "${GROUP_TABLE[@]}"; do
-    read -r name _ <<<"${entry}"
-    if selected "${name}"; then RUN+=("${name}"); fi
-done
-((ALL)) || log "Groups${SHARD:+ of shard ${SHARD}}: ${RUN[*]-(none)}"
+((ALL)) || log "Groups${SHARD:+ of shard ${SHARD}}: ${RUN_NAMES[*]-(none)}"
 
+trap cleanup EXIT   # only a run that builds and starts things has anything to remove
 setup
-for entry in "${GROUP_TABLE[@]}"; do
+for entry in ${RUN[@]+"${RUN[@]}"}; do
     read -r -a functions <<<"${entry}"
-    selected "${functions[0]}" || continue
+    started=${SECONDS}
     for function in "${functions[@]:2}"; do "${function}"; done
+    # The time to compare with the weight in GROUP_TABLE (from a CI log, when updating the weights).
+    printf '  time %s: %d s (weight in GROUP_TABLE: %d)\n' "${functions[0]}" $((SECONDS - started)) "${functions[1]}"
 done
 
 if ((ALL)); then
     log "All scenarios passed (image ${IMAGE})"
 else
-    log "All scenarios passed in ${SHARD:+shard ${SHARD}: }${RUN[*]-(no group)} (image ${IMAGE})"
+    log "All scenarios passed in ${SHARD:+shard ${SHARD}: }${RUN_NAMES[*]-(no group)} (image ${IMAGE})"
 fi

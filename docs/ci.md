@@ -107,8 +107,9 @@ an error: the run logs "Docker Hub skipped" or "Quay.io skipped" and continues.
 - **Branch protection on `main`.** Merges only through a pull request; the three CI checks (Lint, Build, test
   and scan, Podman Quadlet) must pass and the branch must be up to date with `main`; no force pushes, no
   deletion. "Build, test and scan (linux/amd64)" is a job that only collects the test shards: it passes when
-  every shard passed, so adding or removing a shard needs no change here. No approval is required (a single maintainer cannot approve their own pull requests), and admins can
-  bypass the rules. A bump pull request opened with `GITHUB_TOKEN` gets no CI run, so its checks stay missing:
+  every shard passed, so adding or removing a shard needs no change here. No approval is required (a single
+  maintainer cannot approve their own pull requests), and admins can bypass the rules. A bump pull request
+  opened with `GITHUB_TOKEN` gets no CI run, so its checks stay missing:
   approve the run in the merge box (if shown), close and reopen the pull request, push a commit to the branch,
   or set `UPSTREAM_WATCH_TOKEN`. Do not merge it as admin on the upstream-watch result alone: that run has no
   Podman test and no Trivy scan, and its result is reported by the job that ran the new packages.
@@ -324,6 +325,6 @@ tests/run.sh upgrade split       # only these groups
 The scenarios are in groups; the scenarios of a group share containers or volumes, so a group is
 the unit of selection. `--shard` spreads the groups over the shards by the weights in `GROUP_TABLE`
 at the end of `tests/run.sh`, the same way on every machine; update a weight when a group's time
-in CI changes much. Every run has its own container, volume and network names, image tags and
+in CI changes much (after each group the log prints `time <group>: N s (weight in GROUP_TABLE: W)`). Every run has its own container, volume and network names, image tags and
 subnet, so several runs (other worktrees, shards) can share one Docker host. `publish.yml` and
 `upstream-watch.yml` run the whole suite, unsharded.
