@@ -56,11 +56,13 @@
 #      Router log shows the Relay registered; each container runs and stores only its part
 #  18. a second Relay (key from a root-only mounted file, PUID/PGID set): both Relays registered
 #      with the one Router; the Relay's files belong to PUID/PGID
-#  19. a Relay with a wrong Router key: never healthy, and the log says ACCESS_DENIED; recreated on
-#      its volume with the right key and another Router address: relay.conf updated (with a backup)
-#      and healthy. The Relays of 19, 20 and 21 start together, so their 15 s retries overlap.
+#  19. a Relay with a wrong Router key: never healthy, and the log says ACCESS_DENIED, also on its own
+#      retry (19b); recreated on its volume with the right key and another Router address: relay.conf
+#      updated (with a backup) and healthy
 #  20. a Relay whose Router is unreachable: keeps running and retrying, unhealthy, log says why;
-#      after the Router is back, it reconnects and is healthy again
+#      after the Router is back, it reconnects and is healthy again (20b)
+#      The Relays of 19, 20 and 21 start together. Aspia retries a Router connection after a fixed 15 s,
+#      so the checks that need a retry (19b, 20b) run after 21 and 22 instead of waiting for it.
 #  21. ASPIA_ROUTER_RELAY_ALLOWED_IPS in role router: the listed Relay registers, another is refused
 #  22. role relay with a required setting missing or invalid (also a bad Router address, a key file
 #      inside the volumes with PUID/PGID): one clear message, non-zero exit, nothing written; a
@@ -197,12 +199,13 @@ wait_healthy() {
     fail "$1 is not healthy after ${HEALTH_TIMEOUT} s (status ${status}); last check: $(docker inspect -f '{{range .State.Health.Log}}{{.Output}}{{end}}' "$1" | tail -3)"
 }
 
-# wait_exited <container> <timeout seconds>: waits until the container has stopped.
+# wait_exited <container> <timeout seconds>: waits until the container has stopped. Polled every
+# 0.2 s: a refused start exits within a fraction of a second.
 wait_exited() {
     local i
-    for ((i = 0; i < $2; i++)); do
+    for ((i = 0; i < $2 * 5; i++)); do
         [[ "$(state .State.Running "$1")" == false ]] && return 0
-        sleep 1
+        sleep 0.2
     done
     fail "$1 is still running after $2 s"
 }
@@ -289,14 +292,23 @@ health_says() {
     grep -qF -- "$2" <<<"${out}" || fail "$1: unexpected aspia_health output: ${out}"
 }
 
-# never_healthy <container> <seconds>: fails if the container stops or reports healthy within that time.
-never_healthy() {
-    local i
-    for ((i = 0; i < $2; i++)); do
+# not_yet_healthy <container>: running, not healthy, and every health probe Docker kept (the last 5)
+# failed, at least one ran. A container that passed one probe stays healthy for ~90 s (interval 30 s,
+# 3 retries), so this covers its whole life so far without waiting; up to 60 s for the first probe
+# (Docker before 25 has no start interval).
+not_yet_healthy() {
+    local i codes
+    for ((i = 0; i < 60; i++)); do
         [[ "$(state .State.Running "$1")" == true ]] || fail "$1 exited (code $(state .State.ExitCode "$1"))"
         [[ "$(state .State.Health.Status "$1")" != healthy ]] || fail "$1 became healthy"
+        codes="$(docker inspect -f '{{range .State.Health.Log}}{{.ExitCode}} {{end}}' "$1")"
+        if [[ -n "${codes// /}" ]]; then
+            [[ " ${codes}" != *" 0 "* ]] || fail "$1 passed a health probe (exit codes: ${codes})"
+            return 0
+        fi
         sleep 1
     done
+    fail "$1: no health probe ran in 60 s"
 }
 
 config_sums() {
@@ -1230,11 +1242,11 @@ relay_helper() {
 }
 
 # expect_relay_refused <container> <log regex> [count, default 1]: the Relay logged the failure <count>
-# times, is still running and not healthy for a few seconds, and aspia_health says it is not connected.
+# times, is still running and has failed every health probe so far, and aspia_health says it is not connected.
 expect_relay_refused() {
     CURRENT_CONTAINER="$1"
     wait_log "$1" "$2" "${3:-1}" 60
-    never_healthy "$1" 3
+    not_yet_healthy "$1"
     health_says "$1" 'the Relay is not connected to the Router'
 }
 
@@ -1319,9 +1331,9 @@ scenario_two_relays() {
 
 FAIL_WRONGKEY="" FAIL_NOHOST="" FAIL_NOPORT="" S21_ROUTER="" S21_RELAY_A="" S21_RELAY_B=""
 
-# start_failing_relays: starts the Relays of scenarios 19, 20 and 21 together, so that their 15 s
-# retry cycles run side by side: a wrong key, an unknown Router name, a closed Router port, and the
-# Router with an allow-list (where only one of two Relays is listed).
+# start_failing_relays: starts the Relays of scenarios 19, 20 and 21 together, so that their retry
+# cycles (15 s, fixed in Aspia) run side by side: a wrong key, an unknown Router name, a closed Router
+# port, and the Router with an allow-list (where only one of two Relays is listed).
 start_failing_relays() {
     local cfg db key
     log "19-21 (setup). Start the Relays that must fail, and the Router with an allow-list, together"
@@ -1346,12 +1358,22 @@ start_failing_relays() {
 }
 
 scenario_relay_wrong_key() {
-    local name="${FAIL_WRONGKEY}" router_ip conf
-    log "19. A Relay with a wrong Router key: never healthy, and the log says why"
-    # Two attempts: this is the one place that shows the Relay retries on its own (the reconnect in 20 does too).
-    expect_relay_refused "${name}" 'Connection to the router has been lost: .*ACCESS_DENIED' 2
+    local name="${FAIL_WRONGKEY}"
+    log "19a. A Relay with a wrong Router key: not healthy, and the log says why"
+    expect_relay_refused "${name}" 'Connection to the router has been lost: .*ACCESS_DENIED'
     health_says "${name}" 'the Router is at aspia-router'
-    ok "ACCESS_DENIED logged on every attempt (retried every 15 s); still running, not healthy; aspia_health names the Router"
+    wait_log "${name}" 'Reconnect after [0-9]+ seconds' 1 10
+    ok "ACCESS_DENIED logged and another attempt scheduled; still running, not healthy; aspia_health names the Router"
+}
+
+# scenario_relay_wrong_key_retry: runs after 22, when the Relay of 19a has had its retry (15 s after
+# its first attempt), so that the second ACCESS_DENIED needs (almost) no wait.
+scenario_relay_wrong_key_retry() {
+    local name="${FAIL_WRONGKEY}" router_ip conf
+    log "19b. The Relay with the wrong key retried on its own: ACCESS_DENIED again; recreated with the right key"
+    # Two attempts: this is the one place that shows the Relay retries on its own (the reconnect in 20b does too).
+    expect_relay_refused "${name}" 'Connection to the router has been lost: .*ACCESS_DENIED' 2
+    ok "ACCESS_DENIED logged on the retry too (Aspia retries after 15 s); still running, not healthy"
 
     # The same volume, a different Router address and the right key: relay.conf follows the variables.
     router_ip="$(ip_of "${ROUTER_NAME}")"
@@ -1371,7 +1393,7 @@ scenario_relay_wrong_key() {
 
 scenario_relay_unreachable() {
     local name
-    log "20. A Relay whose Router is unreachable: keeps running and retrying, unhealthy, the log says why"
+    log "20a. A Relay whose Router is unreachable: keeps running and retrying, unhealthy, the log says why"
     expect_relay_refused "${FAIL_NOHOST}" 'Connection to the router has been lost: .*SPECIFIED_HOST_NOT_FOUND'
     health_says "${FAIL_NOHOST}" 'the Router is at no-such-router.invalid'
     expect_relay_refused "${FAIL_NOPORT}" 'Connection to the router has been lost: .*CONNECTION_REFUSED'
@@ -1387,9 +1409,15 @@ scenario_relay_unreachable() {
     ok "Router stopped: the Relay logged the lost connection, keeps running, and aspia_health fails"
     docker start "${ROUTER_NAME}" >/dev/null
     wait_healthy "${ROUTER_NAME}"
+}
+
+# scenario_relay_reconnect: runs after 19b, when the Relay of 20a has had its retry since the Router came back.
+scenario_relay_reconnect() {
+    log "20b. The Router is back: the Relay reconnects on its own"
+    CURRENT_CONTAINER="${RELAY1_NAME}"
     wait_log "${RELAY1_NAME}" 'Connection to the router is established \(session count' 2 60
     docker exec "${RELAY1_NAME}" /usr/bin/aspia_health >/dev/null || fail "the Relay reconnected but aspia_health fails"
-    ok "Router back: the Relay reconnected on its own (it retries every 15 s) and is healthy again"
+    ok "Router back: the Relay reconnected on its own (Aspia retries after 15 s) and is healthy again"
 }
 
 scenario_router_allow_list() {
@@ -1635,21 +1663,21 @@ readonly GROUP_TABLE=(
     "compose             6  scenario_compose"
     "compose-roles       2  scenario_compose_roles"
     "compose-hardening   1  scenario_compose_hardening"
-    "clean-start        27  scenario_clean_start scenario_restart scenario_new_external_ip scenario_stop scenario_crash scenario_relay_not_connected"
+    "clean-start        26  scenario_clean_start scenario_restart scenario_new_external_ip scenario_stop scenario_crash scenario_relay_not_connected"
     "upgrade            37  scenario_upgrade"
     "no-external-ip      1  scenario_no_external_ip"
     "orphan-database     1  scenario_orphan_database"
-    "refused-data        6  scenario_refused_relay_data"
+    "refused-data        4  scenario_refused_relay_data"
     "env-apply           3  scenario_env_apply"
     "env-persistence    11  scenario_env_persistence"
-    "env-invalid         6  scenario_env_invalid"
+    "env-invalid         4  scenario_env_invalid"
     "auto-no-network     2  scenario_env_auto_no_network"
     "auto-stub          10  scenario_env_auto_stub"
     "env-migration       8  scenario_env_migration"
     "puid               11  scenario_puid_pgid"
     "empty-allowlist     7  scenario_env_empty_allowlist"
-    "puid-refused        5  scenario_puid_pgid_refused"
-    "split              84  scenario_split scenario_two_relays start_failing_relays scenario_relay_wrong_key scenario_relay_unreachable scenario_router_allow_list scenario_relay_invalid scenario_single_process scenario_role_all_explicit"
+    "puid-refused        4  scenario_puid_pgid_refused"
+    "split              46  scenario_split scenario_two_relays start_failing_relays scenario_relay_wrong_key scenario_relay_unreachable scenario_router_allow_list scenario_relay_invalid scenario_relay_wrong_key_retry scenario_relay_reconnect scenario_single_process scenario_role_all_explicit"
 )
 
 # shard_groups <i> <n>: the names of the groups of shard i of n, one per line. The heaviest group first,
