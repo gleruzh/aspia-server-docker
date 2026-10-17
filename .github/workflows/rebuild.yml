@@ -64,7 +64,21 @@ jobs:
         run: |
           version="$(scripts/versions.sh get ASPIA_VERSION)"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
-          digest="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${GHCR_IMAGE}:${version}" | jq -r .digest)"
+          # Right after a version bump, publish.yml may not have pushed the tag X.Y.Z yet: nothing to
+          # scan, not an error. Only that case ends here with success: the tag is "not found" while the
+          # image has a tag latest. Any other error fails the run, and so does a missing tag in an image
+          # without latest (a wrong image name, or nothing published yet).
+          if ! manifest="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${GHCR_IMAGE}:${version}" 2> "${RUNNER_TEMP}/inspect.err")"; then
+            cat "${RUNNER_TEMP}/inspect.err" >&2
+            if grep -qF ': not found' "${RUNNER_TEMP}/inspect.err" \
+              && docker buildx imagetools inspect "${GHCR_IMAGE}:latest" > /dev/null; then
+              echo "::notice::${GHCR_IMAGE}:${version} is not in GHCR yet (publish.yml has not published this version yet); nothing to scan."
+              echo "rebuild=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            exit 1
+          fi
+          digest="$(jq -r .digest <<<"${manifest}")"
           image="${GHCR_IMAGE}@${digest}"
           echo "Published image: ${image}"
           docker pull -q --platform linux/amd64 "${image}"

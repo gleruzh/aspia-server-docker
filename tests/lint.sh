@@ -5,7 +5,8 @@
 # list the variables of .env.example that apply to their unit, that the Quadlet unit does not publish
 # the Aspia 2.x port 8060 by default, that the Dockerfile installs no curl, scripts/versions.sh check,
 # the input checks of scripts/versions.sh files and scripts/aspia-release.sh (with a stub gh), that
-# publish.yml publishes from main only, and that rebuild.yml starts it on main only.
+# publish.yml publishes from main only, and that rebuild.yml starts it on main only (and skips only a
+# version that is not published yet).
 # The linters run as pinned containers, so the result does not depend on what the host has installed.
 
 set -euo pipefail
@@ -137,10 +138,17 @@ unpinned="$(grep -rn --include='*.md' --include='*.yml' -e '--certificate-identi
 
 # rebuild.yml starts publish.yml on main only, and scans with the Trivy that ci.yml pins.
 wf=.github/workflows/rebuild.yml
-echo "${wf} starts publish.yml on main only, with the Trivy of ci.yml"
+echo "${wf} starts publish.yml on main only, skips only an unpublished version, uses the Trivy of ci.yml"
 dispatches="$(grep -n 'gh workflow run' "${wf}" || true)"
 if [[ -z "${dispatches}" ]] || grep -v 'gh workflow run publish\.yml --ref main ' <<<"${dispatches}"; then
     echo "${wf}: every 'gh workflow run' must be 'gh workflow run publish.yml --ref main ...'"; status=1
+fi
+# A tag X.Y.Z that is not in GHCR yet (right after a version bump) ends the run with success, but only
+# when the error is "not found" and the image has a tag latest; every other error fails it.
+# shellcheck disable=SC2016 # the literal text of the checks in the workflow
+if ! grep -qF "grep -qF ': not found' \"\${RUNNER_TEMP}/inspect.err\"" "${wf}" \
+    || ! grep -qF 'docker buildx imagetools inspect "${GHCR_IMAGE}:latest"' "${wf}"; then
+    echo "${wf}: a missing tag X.Y.Z must end the run only for 'not found' with a tag latest present"; status=1
 fi
 trivy_pins="$(grep -h '^  TRIVY_IMAGE: ' .github/workflows/ci.yml "${wf}" | sort -u)"
 (($(wc -l <<<"${trivy_pins}") == 1)) || { printf '%s\n' "${trivy_pins}" "ci.yml and ${wf} pin different Trivy images"; status=1; }
