@@ -115,47 +115,41 @@ check_release fail $'aspia-router-3.0.0-x86_64.deb \naspia-relay-3.0.0-x86_64.de
 check_release ok "${debs}" fetch 3.0.0 "${tmp}/debs"
 grep -qxF "${STUB_SHA} ${STUB_SHA}" "${tmp}/out" || { echo "fetch printed: $(cat "${tmp}/out")"; status=1; }
 
-# publish.yml may publish only from main: the Plan step refuses any other ref, one workflow-level
-# concurrency group serialises every publish, raw registry secrets never go into a step's env, and
-# every documented cosign identity is pinned to publish.yml@refs/heads/main.
+# publish.yml and dockerhub-description.yml act from main only: the Plan step refuses any other ref,
+# no run is cancelled halfway, and raw registry secrets never go into a step's env.
 wf=.github/workflows/publish.yml
-echo "${wf} publishes from main only"
-# shellcheck disable=SC2016 # the literal text of the check in the workflow
-grep -qF '[[ "${GITHUB_REF}" != "refs/heads/main" ]]' "${wf}" \
-    || { echo "${wf}: no refs/heads/main check in the Plan step"; status=1; }
-# Two-space indent: only the workflow-level concurrency block matches, not a job-level one.
-grep -qxF '  group: publish' "${wf}" || { echo "${wf}: no workflow-level concurrency group 'publish'"; status=1; }
-if grep -n 'cancel-in-progress: true' "${wf}"; then echo "${wf}: a publish must never be cancelled halfway"; status=1; fi
-if grep -nE '^ +[A-Z_]+: \$\{\{ *secrets\.(DOCKERHUB|QUAY)_[A-Z]+ *\}\}' "${wf}"; then
-    echo "${wf}: a registry secret is passed to a step's env; pass a boolean instead"; status=1
-fi
-grep -q 'certificate-identity' "${wf}" || { echo "${wf}: no cosign verify command"; status=1; }
-# The workflow echoes the regexp with a doubled backslash, the docs have a single one.
-# Captured, not piped into if: under pipefail a grep writing to /dev/null quits early and hides a hit.
-unpinned="$(grep -rn --include='*.md' --include='*.yml' -e '--certificate-identity' .github docs README.md podman \
-    | grep -vE 'publish\\{1,2}\.yml@refs/heads/main\$' || true)"
-[[ -z "${unpinned}" ]] || { printf '%s\n' "${unpinned}" "cosign identity not pinned to refs/heads/main"; status=1; }
-
-# dockerhub-description.yml updates the Docker Hub description from main only, like publish.yml: the
-# Plan step refuses any other ref, the job joins the concurrency group 'publish', no raw registry
-# secret goes into a step's env, it leaves pushes that start publish.yml to it (same paths), and its
-# steps are those of publish.yml's dockerhub-description job.
 dwf=.github/workflows/dockerhub-description.yml
-echo "${dwf} updates the description from main only"
-# shellcheck disable=SC2016 # the literal text of the check in the workflow
-grep -qF '[[ "${GITHUB_REF}" != "refs/heads/main" ]]' "${dwf}" \
-    || { echo "${dwf}: no refs/heads/main check in the Plan step"; status=1; }
+for f in "${wf}" "${dwf}"; do
+    echo "${f} runs from main only"
+    # shellcheck disable=SC2016 # the literal text of the check in the workflow
+    grep -qF '[[ "${GITHUB_REF}" != "refs/heads/main" ]]' "${f}" \
+        || { echo "${f}: no refs/heads/main check in the Plan step"; status=1; }
+    if grep -n 'cancel-in-progress: true' "${f}"; then echo "${f}: a publish must never be cancelled halfway"; status=1; fi
+    if grep -nE '^ +[A-Z_]+: \$\{\{ *secrets\.(DOCKERHUB|QUAY)_[A-Z]+ *\}\}' "${f}"; then
+        echo "${f}: a registry secret is passed to a step's env; pass a boolean instead"; status=1
+    fi
+done
+
+# dockerhub-description.yml joins the concurrency group 'publish' (on its job), leaves pushes that
+# start publish.yml to it (same paths), and its steps are those of publish.yml's description job.
 grep -qxE ' +group: publish' "${dwf}" || { echo "${dwf}: no concurrency group 'publish'"; status=1; }
-if grep -n 'cancel-in-progress: true' "${dwf}"; then echo "${dwf}: must not cancel a running publish"; status=1; fi
-if grep -nE '^ +[A-Z_]+: \$\{\{ *secrets\.(DOCKERHUB|QUAY)_[A-Z]+ *\}\}' "${dwf}"; then
-    echo "${dwf}: a registry secret is passed to a step's env; pass a boolean instead"; status=1
-fi
 diff --label "${wf} paths" --label "${dwf} PUBLISH_PATHS" \
     <(sed -n '/^    paths:$/,/^  [a-z_]*:$/s/^      - //p' "${wf}") \
     <(sed -n 's/^ *PUBLISH_PATHS: //p' "${dwf}" | tr ' ' '\n') || status=1
 description_steps() { sed -n '/- name: Repository name on Docker Hub/,/enable-url-completion: true/p' "$1"; }
 [[ -n "$(description_steps "${dwf}")" ]] || { echo "${dwf}: no Docker Hub description steps"; status=1; }
 diff --label "${wf}" --label "${dwf}" <(description_steps "${wf}") <(description_steps "${dwf}") || status=1
+
+# publish.yml: one workflow-level concurrency group serialises every publish, and every documented
+# cosign identity is pinned to publish.yml@refs/heads/main.
+# Two-space indent: only the workflow-level concurrency block matches, not a job-level one.
+grep -qxF '  group: publish' "${wf}" || { echo "${wf}: no workflow-level concurrency group 'publish'"; status=1; }
+grep -q 'certificate-identity' "${wf}" || { echo "${wf}: no cosign verify command"; status=1; }
+# The workflow echoes the regexp with a doubled backslash, the docs have a single one.
+# Captured, not piped into if: under pipefail a grep writing to /dev/null quits early and hides a hit.
+unpinned="$(grep -rn --include='*.md' --include='*.yml' -e '--certificate-identity' .github docs README.md podman \
+    | grep -vE 'publish\\{1,2}\.yml@refs/heads/main\$' || true)"
+[[ -z "${unpinned}" ]] || { printf '%s\n' "${unpinned}" "cosign identity not pinned to refs/heads/main"; status=1; }
 
 # rebuild.yml starts publish.yml on main only, and scans with the Trivy that ci.yml pins.
 wf=.github/workflows/rebuild.yml
