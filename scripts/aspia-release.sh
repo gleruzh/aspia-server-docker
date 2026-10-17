@@ -42,12 +42,12 @@ latest() {
     echo "${version}"
 }
 
-valid_version() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
+require_version() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version '$1' is not X.Y.Z"; }
 
 assets() { gh api "repos/${UPSTREAM}/releases/tags/v$1" --jq '.assets[] | "\(.name) \(.digest // "")"'; }
 
 has_debs() {
-    valid_version "$1" || die "version '$1' is not X.Y.Z"
+    require_version "$1"
     local list name
     list="$(assets "$1")"
     while IFS= read -r name; do
@@ -57,7 +57,7 @@ has_debs() {
 }
 
 fetch() {
-    valid_version "$1" || die "version '$1' is not X.Y.Z"
+    require_version "$1"
     local version="$1" dir="$2" list name api sum sums=()
     list="$(assets "${version}")"
     mkdir -p "${dir}"

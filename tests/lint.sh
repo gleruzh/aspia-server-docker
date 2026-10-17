@@ -80,11 +80,14 @@ check_release() {
     [[ "${got}" == "${want}" ]] || { echo "got: ${got}"; cat "${tmp}/out"; status=1; }
 }
 
+# expect_out TEXT: the output of the last check_release contains TEXT.
+expect_out() { grep -qF -- "$1" "${tmp}/out" || { cat "${tmp}/out"; status=1; }; }
+
 debs=$'aspia-router-3.0.0-x86_64.deb sha256:'"${STUB_SHA}"$'\naspia-relay-3.0.0-x86_64.deb sha256:'"${STUB_SHA}"
 check_release fail "${debs}" has-debs '3.0.0 x'
-grep -qF "is not X.Y.Z" "${tmp}/out" || { cat "${tmp}/out"; status=1; }
+expect_out "is not X.Y.Z"
 check_release fail "${debs}" fetch '3.0.0/../x' "${tmp}/debs"
-grep -qF "is not X.Y.Z" "${tmp}/out" || { cat "${tmp}/out"; status=1; }
+expect_out "is not X.Y.Z"
 check_release ok "${debs}" has-debs 3.0.0
 check_release fail "${debs//./a}" has-debs 3.0.0
 check_release fail $'aspia-router-3.0.0-x86_64.deb \naspia-relay-3.0.0-x86_64.deb ' fetch 3.0.0 "${tmp}/debs"

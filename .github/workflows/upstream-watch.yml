@@ -218,7 +218,6 @@ jobs:
           git diff --stat
 
       - name: Push the branch and open the pull request
-        id: pr
         env:
           GH_TOKEN: ${{ secrets.UPSTREAM_WATCH_TOKEN || github.token }}
           VERSION: ${{ needs.check.outputs.version }}
@@ -234,10 +233,8 @@ jobs:
           # The exit codes come from the job that ran the new packages: anything but a number is a failure.
           [[ "${LINT}" =~ ^[0-9]+$ ]] || LINT=255
           [[ "${STATUS}" =~ ^[0-9]+$ ]] || STATUS=255
-          {
-            echo "lint=${LINT}"
-            echo "status=${STATUS}"
-          } >> "${GITHUB_OUTPUT}"
+          failed=false
+          [[ "${LINT}" == 0 && "${STATUS}" == 0 ]] || failed=true
           log="${RUNNER_TEMP}/tests/tests.log"
 
           result() { if [[ "$1" == 0 ]]; then echo passed; else echo "FAILED (exit $1)"; fi; }
@@ -284,7 +281,7 @@ jobs:
             echo '```'
             echo
             echo "## tests/lint.sh: $(result "${LINT}"); tests/run.sh: $(result "${STATUS}")"
-            if [[ "${LINT}" != 0 || "${STATUS}" != 0 ]]; then
+            if [[ "${failed}" == true ]]; then
               echo
               echo "This pull request is a draft because the tests failed on the new version. Read the log below and the upstream changelog before doing anything else."
             fi
@@ -302,7 +299,7 @@ jobs:
             echo
             fenced "${RUNNER_TEMP}/summary.txt"
             echo "</details>"
-            if [[ "${LINT}" != 0 || "${STATUS}" != 0 ]]; then
+            if [[ "${failed}" == true ]]; then
               echo
               echo "<details open><summary>Failure log (last lines)</summary>"
               echo
@@ -312,18 +309,13 @@ jobs:
           } > "${body}"
 
           draft=()
-          [[ "${LINT}" == 0 && "${STATUS}" == 0 ]] || draft=(--draft)
+          [[ "${failed}" == false ]] || draft=(--draft)
           if ! gh pr create --repo "${GITHUB_REPOSITORY}" --base "${BASE}" --head "${BRANCH}" \
               --title "${title}" --body-file "${body}" "${draft[@]}"; then
             echo "::error::The branch ${BRANCH} was pushed, but the pull request could not be opened. If GitHub says Actions may not create pull requests, enable Settings > Actions > General > Allow GitHub Actions to create and approve pull requests, or set the UPSTREAM_WATCH_TOKEN secret (docs/ci.md)."
             exit 1
           fi
-
-      - name: Fail the run when the tests failed
-        if: steps.pr.outputs.lint != '0' || steps.pr.outputs.status != '0'
-        env:
-          LINT: ${{ steps.pr.outputs.lint }}
-          STATUS: ${{ steps.pr.outputs.status }}
-        run: |
-          echo "::error::The tests failed on the new Aspia version (tests/lint.sh exit ${LINT}, tests/run.sh exit ${STATUS}); a draft pull request with the log was opened."
-          exit 1
+          if [[ "${failed}" == true ]]; then
+            echo "::error::The tests failed on the new Aspia version (tests/lint.sh exit ${LINT}, tests/run.sh exit ${STATUS}); a draft pull request with the log was opened."
+            exit 1
+          fi
