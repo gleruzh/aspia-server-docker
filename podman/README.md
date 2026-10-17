@@ -210,6 +210,10 @@ not `/etc/containers/systemd/`. The first start of a new image may convert the d
 To go back, put the old tag in the unit and repeat steps 3 and 4 (the data may not go back with it, which is
 why step 1 is there). Remove an unused old image with `podman image rm`.
 
+Upgrade note, October 2026: the unit no longer publishes 8060/tcp (Hosts of Aspia 2.x). If you install the new
+`aspia-server.container` and still have such Hosts, uncomment `#PublishPort=8060:8060/tcp` in it, then repeat
+steps 3 and 4. See [Upgrade notes](../README.md#upgrade-notes) in the main README.
+
 ## 9. Older Podman: no Quadlet (fallback)
 
 Podman 4.4 and older cannot use the unit: its health check keys need 4.5 (Quadlet itself appeared in 4.4). On Debian 12

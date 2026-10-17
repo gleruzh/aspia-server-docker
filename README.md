@@ -68,7 +68,7 @@ The image is published to the GitHub Container Registry as `ghcr.io/<owner>/aspi
 
         On your computer, open the tunnel with `ssh -L 8062:127.0.0.1:8062 <user>@<server>`, and enter `127.0.0.1` as the address of the Router in the Client. After the [First login](#first-login), remove the line from `.env` and run `docker compose up -d`, so that your users can connect.
 
-    If you skip this step, the log of the first start shows a `WARNING` about it. Then log in and change the password at once.
+    Without `ASPIA_ROUTER_CLIENT_ALLOWED_IPS` the log of the first start shows a `WARNING` about this, also with the SSH tunnel: the container cannot see `ASPIA_ROUTER_CLIENT_BIND_IP`. If you skipped this step, log in and change the password at once.
 
 5. Download the image and start the container:
 
@@ -283,6 +283,12 @@ ASPIA_IMAGE=ghcr.io/<owner>/aspia-server@sha256:2ff06f77e1e364bf03245bc5453646a6
 
 The digest in this example is only an example. The summary of each publish run on GitHub shows it too.
 
+### Upgrade notes
+
+Changes to the files of this repository that need action when you take the new files for an existing installation. Updating only the image tag in `.env` changes none of them.
+
+- October 2026: port 8060/tcp is no longer published by default. Only Hosts of Aspia 2.x use it. In `docker-compose.yml`, `compose.router.yml` and `podman/aspia-server.container` its line is commented out. If you take the new file and still have Hosts of Aspia 2.x, uncomment the line `#- "${ASPIA_ROUTER_LEGACY_PORT:-8060}:${ASPIA_ROUTER_LEGACY_PORT:-8060}"` in `ports:` and run `docker compose up -d`. In the Podman unit, uncomment `#PublishPort=8060:8060/tcp` (see [podman/README.md](podman/README.md), section 8). Until then these Hosts cannot connect. On data migrated from 2.x the container log names this line at every start.
+
 ## Upgrading from 2.x
 
 This section is for a server that runs the old image `paprikkafox/aspia-server` (version 2.7.0, usually with the tag `latest`) with a `docker-compose.yml` and a `data` directory. The image 3.0.37 keeps your users, Hosts and keys. The official [migration guide](https://aspia.org/docs/migration) covers the order of the updates, the Console, the address books and two-factor authentication.
@@ -308,7 +314,7 @@ The original image was removed from Docker Hub in October 2026. The same image (
     curl -fsSL -o .env https://raw.githubusercontent.com/<owner>/aspia-server-docker/main/.env.example
     ```
 
-4. Set the image and the address in `.env`, open the ports, then download the image and start the container, as in the [Quick start](#quick-start). Use the `EXTERNAL_IP` from step 1. If you still have Hosts of Aspia 2.x, uncomment the line of port 8060 in the `ports:` list of `docker-compose.yml`, and keep 8060/tcp open.
+4. Set the image and the address in `.env`, open the ports, then download the image and start the container, as in the [Quick start](#quick-start). Use the `EXTERNAL_IP` from step 1. If you still have Hosts of Aspia 2.x, uncomment the line of port 8060 in the `ports:` list of `docker-compose.yml`, and keep 8060/tcp open. The container log names this line at every start.
 
 What happens on the first start:
 

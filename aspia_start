@@ -768,15 +768,15 @@ prepare_router() {
             log "Router: created ${ROUTER_CONF}, ${HOST_PUB}, ${RELAY_PUB} and ${ROUTER_DB}."
             log "Router: created the administrator account 'admin' with the upstream default password." \
                 "Change the password in the Aspia Client right after the first login."
-            # Until that first login, whoever reaches the client port first owns the Router.
+            # Until that first login, whoever reaches the client port first owns the Router. Who can
+            # reach it also depends on ASPIA_ROUTER_CLIENT_BIND_IP, which this container cannot see.
             if [[ -z "${ASPIA_ROUTER_CLIENT_ALLOWED_IPS:-}" ]]; then
-                warn "Router: the client port accepts Clients from ANY address (ASPIA_ROUTER_CLIENT_ALLOWED_IPS" \
-                    "is not set), and 'admin' has the default password and no two-factor authentication yet:" \
-                    "whoever logs in first takes over the Router. Log in now and change the password. On a new" \
-                    "install, before the first start, set ASPIA_ROUTER_CLIENT_ALLOWED_IPS to your own address, or" \
-                    "publish the client port on 127.0.0.1 only (ASPIA_ROUTER_CLIENT_BIND_IP) and use an SSH tunnel" \
-                    "(README.md, \"Quick start\"). This container cannot see ASPIA_ROUTER_CLIENT_BIND_IP: if you" \
-                    "have set it, only that address reaches the port."
+                warn "Router: first start without a client allow-list (ASPIA_ROUTER_CLIENT_ALLOWED_IPS), and" \
+                    "'admin' has the default password and no two-factor authentication yet: whoever reaches the" \
+                    "client port and logs in first takes over the Router. Log in now and change the password." \
+                    "On a new install, before the first start, set ASPIA_ROUTER_CLIENT_ALLOWED_IPS to your own" \
+                    "address, or publish the client port on 127.0.0.1 only (ASPIA_ROUTER_CLIENT_BIND_IP) and use" \
+                    "an SSH tunnel (README.md, \"Quick start\")."
             fi
             ;;
         migrate)
@@ -1074,7 +1074,17 @@ log_ports_header() { log "Ports (publish them unchanged, host port = container p
 
 # log_router_ports: the summary lines for the Router ports that clients and hosts use.
 log_router_ports() {
-    log "  $(ini_get "${ROUTER_CONF}" host legacy_port 8060)/tcp  Router: hosts of Aspia 2.x"
+    local legacy_port
+    legacy_port="$(ini_get "${ROUTER_CONF}" host legacy_port 8060)"
+    log "  ${legacy_port}/tcp  Router: hosts of Aspia 2.x"
+    # Only on data migrated from 2.x (router.pub, see adopt_legacy_key): a new install has no 2.x Hosts.
+    if [[ -n "$(read_key "${ROUTER_PUB}")" ]]; then
+        log "    The compose files and the Quadlet unit of this repository no longer publish ${legacy_port}/tcp:" \
+            "Hosts of Aspia 2.x cannot connect until you uncomment the line" \
+            "#- \"\${ASPIA_ROUTER_LEGACY_PORT:-8060}:\${ASPIA_ROUTER_LEGACY_PORT:-8060}\" in the ports: list of" \
+            "docker-compose.yml or compose.router.yml, or #PublishPort=8060:8060/tcp in aspia-server.container" \
+            "(README.md, \"Upgrade notes\")."
+    fi
     log "  $(ini_get "${ROUTER_CONF}" host port 8061)/tcp  Router: hosts"
     log "  $(ini_get "${ROUTER_CONF}" client port 8062)/tcp  Router: clients"
     if stun_enabled "${ROUTER_CONF}"; then
