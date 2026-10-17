@@ -6,7 +6,7 @@ to Docker Hub or Quay.io only when the owner has set their secrets.
 
 | Workflow | Runs on | What it does |
 |---|---|---|
-| [`ci.yml`](../.github/workflows/ci.yml) | every pull request, weekly (Mondays), manual | `tests/lint.sh` (hadolint, shellcheck, actionlint, `scripts/versions.sh check`), builds the image, runs `tests/run.sh` against it, and scans it with Trivy. The scan is reported in the log, the run summary and the Security tab; it never fails the run. |
+| [`ci.yml`](../.github/workflows/ci.yml) | every pull request, weekly (Mondays), manual | `tests/lint.sh` (hadolint, shellcheck, actionlint, `scripts/versions.sh check`, the main-only checks of `publish.yml`), builds the image, runs `tests/run.sh` against it, and scans it with Trivy. The scan is reported in the log, the run summary and the Security tab; it never fails the run. |
 | [`publish.yml`](../.github/workflows/publish.yml) | push to `main` that changes `versions.env` or the image files; manual | Builds the image once, pushes it to GHCR by digest only, runs `tests/run.sh` against that digest, then tags it and copies it to the other registries. Signs it and attests its provenance. |
 | [`upstream-watch.yml`](../.github/workflows/upstream-watch.yml) | every 6 hours; manual | Opens a pull request "chore: bump Aspia to X.Y.Z" when Aspia publishes a newer stable release with both x86_64 server packages. |
 
@@ -60,7 +60,8 @@ an error: the run logs "Docker Hub skipped" or "Quay.io skipped" and continues.
   **Actions** tab and enables them. Scheduled workflows do not run before that either.
 - **Default branch.** Manual runs (`workflow_dispatch`) and schedules work only for workflow files
   that exist on the default branch; a manual run can then use the file from another branch
-  (`--ref`). Until these workflows are merged, only `ci.yml` runs (on pull requests).
+  (`--ref`), except `publish.yml`, which stops unless it runs from `main`. Until these workflows are
+  merged, only `ci.yml` runs (on pull requests).
 - **Pull requests from Actions.** For the bump pull request with `GITHUB_TOKEN`, enable
   **Settings > Actions > General > Workflow permissions > Allow GitHub Actions to create and
   approve pull requests** (or set `UPSTREAM_WATCH_TOKEN`). The workflows declare their own
@@ -103,7 +104,7 @@ an error: the run logs "Docker Hub skipped" or "Quay.io skipped" and continues.
 
 ## Publishing manually
 
-In **Actions > Publish > Run workflow**, pick the branch and enter the version that its
+In **Actions > Publish > Run workflow**, leave the branch on `main` and enter the version that its
 `versions.env` contains (the run stops if they differ, because checksums exist for that version
 only). Tick "dated tag" to also push `X.Y.Z-YYYYMMDD`. With the GitHub CLI:
 
@@ -112,8 +113,12 @@ gh workflow run publish.yml --ref main -f version=3.0.37
 gh workflow run publish.yml --ref main -f version=3.0.37 -f dated_tag=true
 ```
 
-A manual run publishes whatever the selected branch contains, including the floating tags. Run it
-from `main` unless you are testing the workflow itself.
+A run from any other branch or tag stops in its Plan step, before anything is built, so untested
+code cannot move `latest` or the version tags. This guards against mistakes, not against someone with
+write access: a manual run uses the copy of `publish.yml` from its own branch, and that copy can be
+edited (its signature still fails the `cosign verify` below). For a hard barrier (optional), move the
+Docker Hub and Quay.io secrets into a GitHub Environment limited to `main` and add `environment:` to
+the jobs that use them; GHCR uses `GITHUB_TOKEN`, which an environment does not restrict.
 
 ## Tags
 
@@ -143,13 +148,18 @@ packages.
 If the tests fail, the untagged digest stays in GHCR and nothing refers to it; delete it from the
 package's version list if you like.
 
-Two publishes of the same version never run at the same time (a second one waits).
+Two publishes never run at the same time, whatever their versions: the whole workflow, including
+the Docker Hub description job, is in one concurrency group, so a second run waits until the first
+has finished. GitHub keeps only the newest waiting run; an older waiting run is cancelled.
 
 ## Verifying a published image
 
+The signature identity is pinned to `publish.yml` on `main`; a signature made by a run from any other
+branch or tag does not verify.
+
 ```shell
 cosign verify ghcr.io/<owner>/aspia-server@sha256:<digest> \
-  --certificate-identity-regexp '^https://github.com/<owner>/aspia-server-docker/\.github/workflows/publish\.yml@' \
+  --certificate-identity-regexp '^https://github.com/<owner>/aspia-server-docker/\.github/workflows/publish\.yml@refs/heads/main$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 gh attestation verify oci://ghcr.io/<owner>/aspia-server@sha256:<digest> -R <owner>/aspia-server-docker
 docker buildx imagetools inspect ghcr.io/<owner>/aspia-server@sha256:<digest> --format '{{ json .SBOM }}'
