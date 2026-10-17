@@ -189,7 +189,7 @@ The compose files and the Podman units start the container with few privileges:
 - All Linux capabilities are dropped, except six. The list is below.
 - No process can gain new privileges. Programs with the setuid bit do not work. The Podman units do not set this (see below).
 - The Router and the Relay run without any capability, also as root, and cannot gain new privileges, also under Podman.
-- Only the owner can read the configuration, the keys and the database. The two directories have the mode 0700, the files 0600. `host.pub` stays 0644: it is the public key that every Host gets, and the log shows it. The container corrects the modes of older files at every start.
+- Only the owner can read the configuration, the keys and the database. The two directories have the mode 0700, the files 0600. `host.pub` stays 0644: it is the public key that every Host gets, and the log shows it. At every start the container corrects the modes of older files that belong to the user it runs as. A start as root without `PUID`/`PGID` leaves the files of another user as they are.
 - The files of the image are read-only. The container writes only to its two volumes.
 - The container can have at most 128 processes and threads. It uses fewer than 30.
 

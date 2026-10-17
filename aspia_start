@@ -111,12 +111,13 @@ replace_file() {
     mv -f -- "$2" "$1"
 }
 
-# copy_file <src> <dest>: cp -a without CAP_FOWNER (mode first, then owner), but mode 0600: the
-# copies are backups of the configuration and the database, and keys (restrict_permissions makes
-# host.pub 0644 again). Never writes through a symbolic link at <dest>.
+# copy_file <src> <dest> [mode]: cp -a without CAP_FOWNER (mode first, then owner), but with
+# <mode>, by default 0600: the copies are backups of the configuration and the database, and keys.
+# The mode is set while root still owns the copy: after the chown, root could not change it any
+# more on files of another uid. Never writes through a symbolic link at <dest>.
 copy_file() {
     cp --preserve=timestamps --remove-destination -- "$1" "$2"
-    chmod 0600 -- "$2"
+    chmod "${3:-0600}" -- "$2"
     chown -h --reference="$1" -- "$2"
 }
 
@@ -193,11 +194,14 @@ has_cap() { (( (16#$(cap_eff) >> $1) & 1 )); }
 # relay.pub. Copy router.pub to the missing ones, so a migrated install has the same key files as
 # a new one. router.pub itself is left as it is.
 adopt_legacy_key() {
-    local file
+    local file mode
     [[ -n "$(read_key "${ROUTER_PUB}")" ]] || return 0
     for file in "${HOST_PUB}" "${RELAY_PUB}"; do
         [[ -e "${file}" ]] && continue
-        copy_file "${ROUTER_PUB}" "${file}"
+        # host.pub is the public key for Hosts: 0644, as restrict_permissions keeps it. relay.pub: 0600.
+        mode=0600
+        [[ "${file}" == "${HOST_PUB}" ]] && mode=0644
+        copy_file "${ROUTER_PUB}" "${file}" "${mode}"
         log "Router: created ${file} from the Aspia 2.x key ${ROUTER_PUB}."
     done
 }

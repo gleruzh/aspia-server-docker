@@ -28,7 +28,8 @@
 #  10. a variable removed: the hand edit in the file survives; setting it again overwrites it
 #  11. an invalid value: one clear error naming the variable, non-zero exit, nothing written
 #  12. ASPIA_RELAY_PUBLIC_ADDRESS=auto with no network: clear error, non-zero exit
-#  13. a 2.x migration start also applies a new Relay variable (one the upstream migration itself copies)
+#  13. a 2.x migration start also applies a new Relay variable (one the upstream migration itself copies);
+#      started as root on 2.x data of uid 1000: host.pub is created 0644, owned by 1000
 #  14. PUID/PGID: both processes run as that uid/gid, and the files they write are owned by it
 #  15. an allow-list variable set to an empty value does not clear an existing list
 #  16. PUID/PGID with an invalid variable: refused, and no file's ownership was changed
@@ -862,10 +863,17 @@ scenario_env_migration() {
     docker run -d --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" --name "${CURRENT_CONTAINER}" \
         -e "EXTERNAL_IP=${IP_OLD}" -v "${cfg}:/etc/aspia" -v "${db}:/var/lib/aspia" "${OLD_IMAGE}" >/dev/null
     wait_exited "${CURRENT_CONTAINER}" 60   # 2.7.0 only creates its configs on the first start
+    # The data of another uid (as after a start with PUID/PGID): restrict_permissions skips those files,
+    # so host.pub, created from router.pub, must get its 0644 when it is copied (root, without FOWNER).
+    helper_rw "${cfg}" "${db}" chown -R 1000:1000 /etc/aspia /var/lib/aspia
 
     run_new s13-new "${cfg}" "${db}" -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e ASPIA_RELAY_MAX_PEERS=42
     name="${CURRENT_CONTAINER}"
     wait_healthy "${name}"
+    [[ "$(helper "${cfg}" "${db}" stat -c '%u:%g %a' /etc/aspia/host.pub /etc/aspia/relay.pub)" == $'1000:1000 644
+1000:1000 600' ]] \
+        || fail "host.pub and relay.pub created from router.pub are not 1000:1000 644 and 600: $(helper "${cfg}" "${db}" stat -c '%u:%g %a %n' /etc/aspia/host.pub /etc/aspia/relay.pub)"
+    ok "as root on 2.x data of uid 1000: host.pub created 0644 and relay.pub 0600, both owned by 1000"
     relay_conf="$(helper "${cfg}" "${db}" cat /etc/aspia/relay.conf)"
     value="$(ini_value "${relay_conf}" peer max_count)"
     [[ "${value}" == 42 ]] \
