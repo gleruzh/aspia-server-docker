@@ -1,4 +1,4 @@
-<!-- canonical: podman/README.md fe6f2d47b753f04459a1e9b28c6ef9bbbfbb06ee -->
+<!-- canonical: podman/README.md 08383a3c509948e38e099878d0c554010d0419e5 -->
 [English](README.md) | **Русский**
 
 # Сервер Aspia под Podman (systemd, Quadlet)
@@ -212,8 +212,12 @@ Rootless: то же самое без `sudo` и с `systemctl --user ...`. Фа�
 нужен шаг 1). Ненужный старый образ удалите командой `podman image rm`.
 
 Примечание к обновлению, октябрь 2026: юнит больше не публикует 8060/tcp (Host из Aspia 2.x). Если вы устанавливаете
-новый `aspia-server.container` и такие Host у вас ещё есть, раскомментируйте в нём `#PublishPort=8060:8060/tcp`,
-затем повторите шаги 3 и 4. См. [Примечания к обновлению](../docs/README.ru.md#примечания-к-обновлению) в основном README.
+новый `aspia-server.container` и такие Host у вас ещё есть, раскомментируйте в нём `#PublishPort=8060:8060/tcp` (при другом
+`ASPIA_ROUTER_LEGACY_PORT` — с этим портом с обеих сторон), затем повторите шаги 3 и 4. На данных, перенесённых с 2.x,
+журнал напоминает об этом при каждом запуске. Когда Host версии 2.x не останется, отключите напоминание, как описано в
+разделе [Примечания к обновлению](../docs/README.ru.md#примечания-к-обновлению) основного README, командами
+`sudo podman exec aspia-server sh -c 'cmp /etc/aspia/router.pub /etc/aspia/host.pub && rm /etc/aspia/router.pub'`
+и `sudo systemctl restart aspia-server.service`.
 
 ## 9. Старый Podman: без Quadlet (запасной вариант)
 

@@ -1,4 +1,4 @@
-<!-- canonical: README.md 9cf1cb841951e86ca4a5b3108fc2b122de3375f0 -->
+<!-- canonical: README.md 08383a3c509948e38e099878d0c554010d0419e5 -->
 [English](../README.md) | **Русский**
 
 # Aspia Server в Docker (Router + Relay)
@@ -288,7 +288,16 @@ ASPIA_IMAGE=ghcr.io/<owner>/aspia-server@sha256:2ff06f77e1e364bf03245bc5453646a6
 
 Изменения в файлах этого репозитория, которые требуют действий, когда вы берёте новые файлы для существующей установки. Если вы меняете в `.env` только тег образа, ни одно из них вас не касается.
 
-- Октябрь 2026: порт 8060/tcp больше не публикуется по умолчанию. Его используют только Host версии Aspia 2.x. В `docker-compose.yml`, `compose.router.yml` и `podman/aspia-server.container` его строка закомментирована. Если вы берёте новый файл и у вас ещё есть Host версии Aspia 2.x, раскомментируйте строку `#- "${ASPIA_ROUTER_LEGACY_PORT:-8060}:${ASPIA_ROUTER_LEGACY_PORT:-8060}"` в `ports:` и выполните `docker compose up -d`. В юните Podman раскомментируйте `#PublishPort=8060:8060/tcp` (см. [podman/README.ru.md](../podman/README.ru.md), раздел 8). До этого такие Host не могут подключиться. На данных, перенесённых с 2.x, журнал контейнера называет эту строку при каждом запуске.
+- Октябрь 2026: порт 8060/tcp больше не публикуется по умолчанию. Его используют только Host версии Aspia 2.x. В `docker-compose.yml`, `compose.router.yml` и `podman/aspia-server.container` его строка закомментирована. Если вы берёте новый файл и у вас ещё есть Host версии Aspia 2.x, раскомментируйте строку `#- "${ASPIA_ROUTER_LEGACY_PORT:-8060}:${ASPIA_ROUTER_LEGACY_PORT:-8060}"` в `ports:` и выполните `docker compose up -d`. В юните Podman раскомментируйте `#PublishPort=8060:8060/tcp`; если вы изменили `ASPIA_ROUTER_LEGACY_PORT`, укажите этот порт с обеих сторон (см. [podman/README.ru.md](../podman/README.ru.md), раздел 8). До этого такие Host не могут подключиться. На данных, перенесённых с 2.x, журнал контейнера называет эту строку при каждом запуске.
+
+    Когда Host версии Aspia 2.x не останется, это напоминание можно отключить: удалите `router.pub`. Напоминание выводится, только пока этот файл есть. После перехода в нём тот же ключ, что и в `host.pub`, и контейнеру он не нужен, если есть `host.pub` и `relay.pub`. Команда удаляет его, только если он совпадает с `host.pub`. Затем перезапустите контейнер:
+
+    ```shell
+    docker compose exec aspia-server sh -c 'cmp /etc/aspia/router.pub /etc/aspia/host.pub && rm /etc/aspia/router.pub'
+    docker compose restart
+    ```
+
+    В резервной копии из шага 2 раздела [Переход с 2.x](#переход-с-2x) этот файл остаётся, на случай возврата к 2.7.0.
 
 ## Переход с 2.x
 
