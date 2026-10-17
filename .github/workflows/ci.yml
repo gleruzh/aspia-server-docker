@@ -36,12 +36,18 @@ jobs:
       - name: tests/lint.sh
         run: tests/lint.sh
 
+  # tests/run.sh in three shards side by side; each builds the image itself (faster than passing it
+  # on as an artifact). The first shard also scans it. tests/run.sh --shard I/N --list shows a shard.
   test:
-    name: Build, test and scan (linux/amd64)
+    name: Build and test (linux/amd64, shard ${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,17 +63,18 @@ jobs:
             --build-arg "IMAGE_SOURCE=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             -t aspia-server:ci .
 
-      - name: tests/run.sh
+      - name: tests/run.sh --shard ${{ matrix.shard }}/${{ strategy.job-total }}
         env:
           ASPIA_TEST_IMAGE: aspia-server:ci
-        run: tests/run.sh
+          SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+        run: tests/run.sh --shard "${SHARD}"
 
       # Findings never fail the build (--exit-code 0): they are in Debian packages that this
       # repository does not control. Every build installs their fixes (apt-get upgrade), and
       # rebuild.yml republishes when the published image has one that a build would fix.
       - name: Scan the image with Trivy
         id: scan
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.build.outcome == 'success' }}
         run: |
           docker save -o "${RUNNER_TEMP}/image.tar" aspia-server:ci
           # Pinned by tag and digest like every other tool image, in .github/tool-images/Dockerfile.
@@ -97,6 +104,23 @@ jobs:
           name: trivy-sarif
           path: ${{ runner.temp }}/trivy.sarif
           retention-days: 14
+
+  # The check that the ruleset of main requires, by this name: it passes only when every shard passed
+  # (a skipped job would count as passed, so this one always runs).
+  test-result:
+    name: Build, test and scan (linux/amd64)
+    needs: test
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Every shard of tests/run.sh passed
+        env:
+          RESULT: ${{ needs.test.result }}
+        run: |
+          echo "The test shards: ${RESULT}"
+          [[ "${RESULT}" == success ]]
 
   # The Podman Quadlet unit in podman/, system-wide and rootless, on the runner's own Podman and
   # systemd (the version is in the job summary). tests/podman.sh installs a service and removes it

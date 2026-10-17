@@ -203,7 +203,9 @@ Correctness points not fixed in PR 1, each small and open for discussion:
 - **Test speed.** The three image builds in `tests/run.sh` run one after another, and several helper
   containers read one file each. Parallel builds or batched reads would save time in CI. PR 2: CI and
   publish build the product image first and pass it as `ASPIA_TEST_IMAGE`, so `tests/run.sh` builds only
-  the tampered context and the helper. The rest is still open; measure on the first real CI runs.
+  the tampered context and the helper. CI runs `tests/run.sh` in three shards (`--shard`); `publish.yml`
+  and `upstream-watch.yml` still run it whole (about 3.7 minutes), and the Relay retries of scenarios 19
+  and 20 (15 s each) are the slowest part of the longest group.
 
 ## From PR 2 (CI and publishing)
 

@@ -6,7 +6,7 @@ to Docker Hub or Quay.io only when the owner has set their secrets.
 
 | Workflow | Runs on | What it does |
 |---|---|---|
-| [`ci.yml`](../.github/workflows/ci.yml) | every pull request, weekly (Mondays), manual | `tests/lint.sh` (hadolint, shellcheck, actionlint, `scripts/versions.sh check`, the main-only checks of `publish.yml` and `dockerhub-description.yml`), builds the image, runs `tests/run.sh` against it, and scans it with Trivy. The findings are reported in the log, the run summary and the Security tab; they never fail the run, but a scan that does not work does ([Tool images](#tool-images)). |
+| [`ci.yml`](../.github/workflows/ci.yml) | every pull request, weekly (Mondays), manual | `tests/lint.sh` (hadolint, shellcheck, actionlint, `scripts/versions.sh check`, the main-only checks of `publish.yml` and `dockerhub-description.yml`), builds the image and runs `tests/run.sh` against it in three shards side by side (`--shard 1/3` to `3/3`, each job builds the image itself), and scans it with Trivy in the first shard. The findings are reported in the log, the run summary and the Security tab; they never fail the run, but a scan that does not work does ([Tool images](#tool-images)). |
 | [`publish.yml`](../.github/workflows/publish.yml) | push to `main` that changes `versions.env` or the image files; manual | Builds the image once, pushes it to GHCR by digest only, runs `tests/run.sh` against that digest, then tags it and copies it to the other registries. Signs it and attests its provenance. |
 | [`upstream-watch.yml`](../.github/workflows/upstream-watch.yml) | every 6 hours; manual | Opens a pull request "chore: bump Aspia to X.Y.Z" when Aspia publishes a newer stable release with both x86_64 server packages. |
 | [`rebuild.yml`](../.github/workflows/rebuild.yml) | daily; manual | Scans the published image with Trivy for vulnerabilities that have a fix, and starts `publish.yml` on `main` only if a rebuild would install such a fix. |
@@ -106,7 +106,8 @@ an error: the run logs "Docker Hub skipped" or "Quay.io skipped" and continues.
   package created by `publish.yml` itself has that access already.
 - **Branch protection on `main`.** Merges only through a pull request; the three CI checks (Lint, Build, test
   and scan, Podman Quadlet) must pass and the branch must be up to date with `main`; no force pushes, no
-  deletion. No approval is required (a single maintainer cannot approve their own pull requests), and admins can
+  deletion. "Build, test and scan (linux/amd64)" is a job that only collects the test shards: it passes when
+  every shard passed, so adding or removing a shard needs no change here. No approval is required (a single maintainer cannot approve their own pull requests), and admins can
   bypass the rules. A bump pull request opened with `GITHUB_TOKEN` gets no CI run, so its checks stay missing:
   approve the run in the merge box (if shown), close and reopen the pull request, push a commit to the branch,
   or set `UPSTREAM_WATCH_TOKEN`. Do not merge it as admin on the upstream-watch result alone: that run has no
@@ -315,4 +316,14 @@ gh workflow run rebuild.yml --ref main
 tests/lint.sh    # hadolint, shellcheck, actionlint (pinned containers), the tool image pins and scripts/versions.sh check
 tests/run.sh     # builds the image and runs the behaviour tests (needs Docker)
 ASPIA_TEST_IMAGE=ghcr.io/<owner>/aspia-server:3.0.37 tests/run.sh   # tests a published image
+tests/run.sh --list              # the scenario groups with their weights (seconds in CI)
+tests/run.sh --shard 2/3         # only the groups of shard 2 of 3, as the CI job for that shard
+tests/run.sh upgrade split       # only these groups
 ```
+
+The scenarios are in groups; the scenarios of a group share containers or volumes, so a group is
+the unit of selection. `--shard` spreads the groups over the shards by the weights in `GROUP_TABLE`
+at the end of `tests/run.sh`, the same way on every machine; update a weight when a group's time
+in CI changes much. Every run has its own container, volume and network names, image tags and
+subnet, so several runs (other worktrees, shards) can share one Docker host. `publish.yml` and
+`upstream-watch.yml` run the whole suite, unsharded.
