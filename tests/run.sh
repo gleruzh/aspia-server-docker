@@ -12,12 +12,16 @@
 # Scenarios:
 #   0. build: a tampered checksum makes the build fail; 0b. a docker run command replaces the server,
 #      and the image runs the Aspia version in versions.env
-#   0c. docker-compose.yml: local build by default, ASPIA_IMAGE override, EXTERNAL_IP required
-#   1. clean start; only the owner can read the volumes (directories 700, files 600, host.pub 644)
+#   0c. docker-compose.yml: local build by default, ASPIA_IMAGE override, EXTERNAL_IP required;
+#      8060 not published, the client port on every address unless ASPIA_ROUTER_CLIENT_BIND_IP is set
+#   1. clean start; only the owner can read the volumes (directories 700, files 600, host.pub 644);
+#      the first-start warning about the empty client allow-list (not repeated in 2), and no note
+#      about 8060 for Aspia 2.x Hosts
 #   2. restart keeps keys and configuration, and restricts files an older image left readable (a
 #      symbolic link is skipped); 2b. a changed EXTERNAL_IP is applied, with a copy
 #   3. upgrade from 2.7.0 (an archived copy of paprikkafox/aspia-server:2.7.0); the 2.x files and
-#      the backups are readable by their owner only
+#      the backups are readable by their owner only; the note which 8060 line to uncomment; in role
+#      router the migrated data warns that the key for relays is the key for hosts
 #   4. docker stop is fast and clean
 #   5. a crashed process stops the container with a non-zero exit code
 #   6. EXTERNAL_IP unset, empty or blank
@@ -29,12 +33,13 @@
 #  11. an invalid value: one clear error naming the variable, non-zero exit, nothing written
 #  12. ASPIA_RELAY_PUBLIC_ADDRESS=auto with no network: clear error, non-zero exit
 #  13. a 2.x migration start also applies a new Relay variable (one the upstream migration itself copies);
-#      started as root on 2.x data of uid 1000: host.pub is created 0644, owned by 1000
+#      started as root on 2.x data of uid 1000: host.pub is created 0644, owned by 1000; the note about
+#      8060 names ASPIA_ROUTER_LEGACY_PORT for the Quadlet unit, and deleting router.pub turns it off
 #  14. PUID/PGID: both processes run as that uid/gid, and the files they write are owned by it
 #  15. an allow-list variable set to an empty value does not clear an existing list
 #  16. PUID/PGID with an invalid variable: refused, and no file's ownership was changed
 # ASPIA_ROLE (PR 5). Scenarios 0-16 above run without it, i.e. as role all, unchanged.
-#   0d. compose.router.yml / compose.relay.yml: role, pinned image, only the ports of the role
+#   0d. compose.router.yml / compose.relay.yml: role, pinned image, only the ports of the role (no 8060)
 #  17. a Router (role router) and a Relay (role relay) in two containers: both healthy, and the
 #      Router log shows the Relay registered; each container runs and stores only its part
 #  18. a second Relay (key from a root-only mounted file, PUID/PGID set): both Relays registered
@@ -72,6 +77,13 @@ readonly COMPOSE_V2_IMAGE=docker:27.3-cli@sha256:328eb399a065780c2cebe9224de003a
 readonly RUN_ID="aspia-test-$$"
 readonly IP_OLD=203.0.113.10   # EXTERNAL_IP given to 2.7.0
 readonly IP_NEW=203.0.113.11   # EXTERNAL_IP given to the new image
+# Log lines of aspia_start: a new install without ASPIA_ROUTER_CLIENT_ALLOWED_IPS (a warning, logged
+# once); role router with an empty Relay allow-list when relay.pub is host.pub (a migrated 2.x install);
+# on migrated 2.x data, which line to uncomment for 8060 (every start).
+readonly FIRST_LOGIN_WARNING='WARNING: Router: first start without a client allow-list'
+readonly RELAY_KEY_WARNING='WARNING: The key for relays is the same as the key for hosts'
+# shellcheck disable=SC2016  # the ${...} are the literal text of the compose line, not expansions
+readonly LEGACY_PORT_NOTE='no longer publish 8060/tcp: Hosts of Aspia 2.x cannot connect until you uncomment the line #- "${ASPIA_ROUTER_LEGACY_PORT:-8060}:${ASPIA_ROUTER_LEGACY_PORT:-8060}"'
 readonly HEALTH_TIMEOUT=180    # seconds; generous because CI or emulation may be slow
 IMAGE="${ASPIA_TEST_IMAGE:-aspia-server:test}"
 # The hardening the compose files and Quadlet units ship (scenario 0e checks them against it).
@@ -225,6 +237,19 @@ send_signal() {
 compose_config() { docker compose --env-file /dev/null -f docker-compose.yml config "$@"; }
 # compose_file_config <file> <docker compose config options...>: the same for another compose file.
 compose_file_config() { docker compose --env-file /dev/null -f "$1" config "${@:2}"; }
+# compose_v2_config <file> [NAME=value...]: the file read by Compose v2 (docker-compose-plugin v2, which most
+# servers still have) with the given variables set; JSON on stdout, the error text if it fails.
+compose_v2_config() {
+    local file="$1" env=() var
+    for var in "${@:2}"; do env+=(-e "${var}"); done
+    docker run --rm --label "aspia-test=${RUN_ID}" -v "${PWD}/${file}:/w/${file}:ro" -w /w ${env[@]+"${env[@]}"} \
+        "${COMPOSE_V2_IMAGE}" docker compose --env-file /dev/null -f "${file}" config --format json 2>&1
+}
+# published_ports <compose file>: its published ports on one line, sorted: "<host_ip or *> <port>/<protocol> ...".
+published_ports() {
+    compose_file_config "$1" --format json \
+        | jq_img -r '.services[].ports[] | "\(.host_ip // "*") \(.published)/\(.protocol)"' | sort | tr '\n' ' '
+}
 
 # ip_of <container>: its address on the (one) network it is attached to.
 ip_of() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$1"; }
@@ -331,15 +356,28 @@ scenario_compose() {
     fi
     ok "ASPIA_RELAY_PEER_PORT changes both the published and the container port"
 
+    # 8060 (Hosts of Aspia 2.x) is commented out. The client port is on every address, as before
+    # ASPIA_ROUTER_CLIENT_BIND_IP existed (no host_ip: IPv4 and IPv6), unless that variable is set.
+    out="$(EXTERNAL_IP="${IP_NEW}" published_ports docker-compose.yml)"
+    [[ "${out}" == "* 8061/tcp * 8062/tcp * 8065/udp * 8070/tcp " ]] || fail "docker-compose.yml publishes: ${out}"
+    out="$(EXTERNAL_IP="${IP_NEW}" ASPIA_ROUTER_CLIENT_BIND_IP=127.0.0.1 published_ports docker-compose.yml)"
+    [[ "${out}" == "* 8061/tcp * 8065/udp * 8070/tcp 127.0.0.1 8062/tcp " ]] \
+        || fail "ASPIA_ROUTER_CLIENT_BIND_IP=127.0.0.1 did not limit only the client port: ${out}"
+    ok "publishes 8061, 8062, 8065/udp and 8070 on every address, not 8060; ASPIA_ROUTER_CLIENT_BIND_IP=127.0.0.1 limits 8062"
+
     docker compose --env-file .env.example -f docker-compose.yml config >/dev/null \
         || fail "docker compose config failed with .env.example"
     ok "docker compose config succeeds with .env.example"
 
     # The same file with Compose v2, which most servers still have (docker-compose-plugin v2).
-    out="$(docker run --rm --label "aspia-test=${RUN_ID}" -v "${PWD}/docker-compose.yml:/w/docker-compose.yml:ro" -w /w \
-        -e "EXTERNAL_IP=${IP_NEW}" "${COMPOSE_V2_IMAGE}" docker compose --env-file /dev/null config --format json 2>&1)" \
+    out="$(compose_v2_config docker-compose.yml "EXTERNAL_IP=${IP_NEW}")" \
         || fail "Compose v2 cannot read docker-compose.yml with EXTERNAL_IP set: ${out}"
     grep -q "\"EXTERNAL_IP\": \"${IP_NEW}\"" <<<"${out}" || fail "Compose v2 did not pass EXTERNAL_IP: ${out}"
+    if grep -q '"host_ip"' <<<"${out}"; then fail "Compose v2 binds a port to one address by default: ${out}"; fi
+    out="$(compose_v2_config docker-compose.yml "EXTERNAL_IP=${IP_NEW}" ASPIA_ROUTER_CLIENT_BIND_IP=127.0.0.1)" \
+        || fail "Compose v2 cannot read docker-compose.yml with ASPIA_ROUTER_CLIENT_BIND_IP set: ${out}"
+    grep -A1 '"host_ip": "127.0.0.1"' <<<"${out}" | grep -q '"target": 8062' \
+        || fail "Compose v2 did not bind the client port to ASPIA_ROUTER_CLIENT_BIND_IP: ${out}"
     ok "Compose v2 ($(docker run --rm "${COMPOSE_V2_IMAGE}" docker compose version --short)) reads docker-compose.yml"
 }
 
@@ -399,6 +437,11 @@ scenario_clean_start() {
     ok "the Relay logged 'Connection to the router is established'"
     if grep -qiE 'password: *[^ ]' <<<"${logs}"; then fail "the log contains a password line"; fi
     ok "the log contains no password"
+    grep -qF "${FIRST_LOGIN_WARNING}" <<<"${logs}" \
+        || fail "no warning that anyone may log in first while ASPIA_ROUTER_CLIENT_ALLOWED_IPS is empty"
+    ok "the first start warns that anyone may log in first (ASPIA_ROUTER_CLIENT_ALLOWED_IPS not set)"
+    if grep -qF "${LEGACY_PORT_NOTE}" <<<"${logs}"; then fail "a new install logs the note about 8060 for Aspia 2.x Hosts"; fi
+    ok "a new install does not log the note about 8060 for Aspia 2.x Hosts"
 
     ports="$(listening_ports "${name}" tcp | tr '\n' ' ')"
     for port in 8060 8061 8062 8063 8070; do
@@ -443,6 +486,9 @@ scenario_restart() {
     [[ "$(grep 'Public key for hosts' <<<"${logs}" | awk '{print $NF}' | sort -u | wc -l | tr -d ' ')" == 1 ]] \
         || fail "the logged key changed across the restart"
     ok "the same public key was logged on both starts"
+    [[ "$(grep -cF "${FIRST_LOGIN_WARNING}" <<<"${logs}")" == 1 ]] \
+        || fail "the warning about the first login is not logged exactly once (on the first start only)"
+    ok "the warning about the first login was logged on the first start only"
 }
 
 scenario_new_external_ip() {
@@ -585,6 +631,12 @@ scenario_upgrade() {
     ok "host.pub and relay.pub hold the 2.7.0 key, as on a new install"
     grep -q 'Connection to the router is established' <<<"${logs}" || fail "the migrated Relay did not connect to the Router"
     ok "the migrated Relay connected to the migrated Router"
+    if grep -qF "${FIRST_LOGIN_WARNING}" <<<"${logs}"; then fail "a migration warns about the first login of a new install"; fi
+    ok "no warning about the first login of a new install: 'admin' has the 2.x password"
+    grep -qF "${LEGACY_PORT_NOTE}" <<<"${logs}" || fail "migrated data does not log which 8060 line to uncomment"
+    grep -qF 'or uncomment #PublishPort=8060:8060/tcp in aspia-server.container.' <<<"${logs}" \
+        || fail "migrated data does not log which PublishPort= line of the Quadlet unit to uncomment"
+    ok "migrated data logs that 8060 is not published by default and which line to uncomment"
 
     relay_conf="$(helper "${cfg}" "${db}" cat /etc/aspia/relay.conf)"
     [[ "$(ini_value "${relay_conf}" peer public_address)" == "${IP_NEW}" ]] || fail "relay.conf public_address is not ${IP_NEW}"
@@ -615,6 +667,17 @@ scenario_upgrade() {
     docker stop "${name}" >/dev/null
     code="$(state .State.ExitCode "${name}")"
     [[ "${code}" == 0 || "${code}" == 143 ]] || fail "exit code ${code} after docker stop"
+
+    # The migrated data as a Router for Relays on other machines: relay.pub is the 2.x key that
+    # every Host has, so the warning about the empty Relay allow-list says so too.
+    run_new s3-router "${cfg}" "${db}" -e ASPIA_ROLE=router
+    wait_healthy "${CURRENT_CONTAINER}"
+    logs="$(docker logs "${CURRENT_CONTAINER}" 2>&1)"
+    grep -qF "${RELAY_KEY_WARNING}" <<<"${logs}" || fail "role router on migrated data does not warn that relay.pub is host.pub"
+    grep -qF "${LEGACY_PORT_NOTE}" <<<"${logs}" || fail "role router on migrated data does not log which 8060 line to uncomment"
+    docker stop "${CURRENT_CONTAINER}" >/dev/null
+    ok "role router on the migrated data warns that the key for relays is the key for hosts, and logs the 8060 note"
+
     [[ "$(helper_rw "${cfg}" "${db}" sqlite3 /var/lib/aspia/router.db3 'pragma integrity_check')" == ok ]] \
         || fail "database integrity check failed"
     [[ "$(helper_rw "${cfg}" "${db}" sqlite3 /var/lib/aspia/router.db3 "select name from users where id = 1")" == admin ]] \
@@ -763,6 +826,10 @@ scenario_env_apply() {
     [[ "$(ini_value "${relay_conf}" peer idle_timeout)" == 10 ]] || fail "peer/idle_timeout not applied"
     [[ "$(ini_value "${relay_conf}" peer max_count)" == 50 ]] || fail "peer/max_count not applied"
     ok "every set variable landed in router.conf/relay.conf, and the container is healthy on non-default ports"
+    if log_has "${name}" "${FIRST_LOGIN_WARNING}"; then
+        fail "a new install with ASPIA_ROUTER_CLIENT_ALLOWED_IPS set warns that anyone may log in first"
+    fi
+    ok "with ASPIA_ROUTER_CLIENT_ALLOWED_IPS set, no warning about the first login"
 }
 
 scenario_env_persistence() {
@@ -855,8 +922,8 @@ scenario_env_auto_no_network() {
 }
 
 scenario_env_migration() {
-    local cfg db name relay_conf value
-    log "13. A 2.x migration start also applies ASPIA_RELAY_MAX_PEERS (a field the upstream migration itself copies)"
+    local cfg db name relay_conf value logs
+    log "13. A 2.x migration start also applies ASPIA_RELAY_MAX_PEERS and ASPIA_ROUTER_LEGACY_PORT; deleting router.pub drops the 8060 note"
     cfg="$(new_volume s13-config)"
     db="$(new_volume s13-db)"
     CURRENT_CONTAINER="${RUN_ID}-s13-old"
@@ -867,7 +934,8 @@ scenario_env_migration() {
     # so host.pub, created from router.pub, must get its 0644 when it is copied (root, without FOWNER).
     helper_rw "${cfg}" "${db}" chown -R 1000:1000 /etc/aspia /var/lib/aspia
 
-    run_new s13-new "${cfg}" "${db}" -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e ASPIA_RELAY_MAX_PEERS=42
+    run_new s13-new "${cfg}" "${db}" -e "ASPIA_RELAY_PUBLIC_ADDRESS=${IP_NEW}" -e ASPIA_RELAY_MAX_PEERS=42 \
+        -e ASPIA_ROUTER_LEGACY_PORT=19060
     name="${CURRENT_CONTAINER}"
     wait_healthy "${name}"
     [[ "$(helper "${cfg}" "${db}" stat -c '%u:%g %a' /etc/aspia/host.pub /etc/aspia/relay.pub)" == $'1000:1000 644
@@ -879,6 +947,24 @@ scenario_env_migration() {
     [[ "${value}" == 42 ]] \
         || fail "ASPIA_RELAY_MAX_PEERS was not carried through the 2.x migration (peer/max_count = '${value}')"
     ok "ASPIA_RELAY_MAX_PEERS=42 took effect on the migration start itself (written to relay.json first)"
+
+    # The note about the 2.x port names the configured port for the Quadlet unit, whose commented
+    # line has the default one.
+    grep -qF 'or add PublishPort=19060:19060/tcp to aspia-server.container.' <<<"$(docker logs "${name}" 2>&1)" \
+        || fail "the note about the 2.x port does not name ASPIA_ROUTER_LEGACY_PORT=19060 for the Quadlet unit"
+    ok "the note about the 2.x port names PublishPort=19060:19060/tcp for the Quadlet unit"
+
+    # README.md, "Upgrade notes": without 2.x Hosts, router.pub can go (it equals host.pub). The same
+    # command as there, on files of uid 1000 (the container runs as root, with DAC_OVERRIDE).
+    docker exec "${name}" sh -c 'cmp /etc/aspia/router.pub /etc/aspia/host.pub && rm /etc/aspia/router.pub' \
+        || fail "the README command did not delete router.pub"
+    docker restart "${name}" >/dev/null
+    wait_healthy "${name}"
+    logs="$(docker logs "${name}" 2>&1)"
+    [[ "$(grep -c 'no longer publish 19060/tcp' <<<"${logs}")" == 1 ]] || fail "the 8060 note is still logged without router.pub"
+    [[ "$(grep 'Public key for hosts' <<<"${logs}" | awk '{print $NF}' | sort -u | wc -l | tr -d ' ')" == 1 ]] \
+        || fail "the key for hosts changed after router.pub was deleted"
+    ok "without router.pub: healthy, the same key for hosts, and no note about the 2.x port"
 }
 
 scenario_puid_pgid() {
@@ -991,7 +1077,7 @@ readonly WRONG_KEY=0000000000000000000000000000000000000000000000000000000000000
 SPLIT_NET="" ROUTER_NAME="" ROUTER_KEY="" RELAY1_NAME=""
 
 scenario_compose_roles() {
-    local file role out images port
+    local file role out images
     log "0d. compose.router.yml and compose.relay.yml: role, pinned image, only the ports of the role"
     for file in compose.router.yml compose.relay.yml; do
         role="${file#compose.}"
@@ -1003,20 +1089,18 @@ scenario_compose_roles() {
         out="$(compose_file_config "${file}" --format json)"
         grep -q "\"ASPIA_ROLE\": \"${role}\"" <<<"${out}" || fail "${file} does not set ASPIA_ROLE=${role}: ${out}"
         docker compose --env-file .env.example -f "${file}" config >/dev/null || fail "${file}: docker compose config failed with .env.example"
-        out="$(docker run --rm --label "aspia-test=${RUN_ID}" -v "${PWD}/${file}:/w/${file}:ro" -w /w \
-            "${COMPOSE_V2_IMAGE}" docker compose --env-file /dev/null -f "${file}" config --format json 2>&1)" \
+        out="$(compose_v2_config "${file}")" \
             || fail "Compose v2 cannot read ${file}: ${out}"
         grep -q "\"ASPIA_ROLE\": \"${role}\"" <<<"${out}" || fail "Compose v2: ${file} does not set ASPIA_ROLE=${role}: ${out}"
         ok "${file}: ASPIA_ROLE=${role}, image aspia-server:${ASPIA_VERSION} unless ASPIA_IMAGE is set; reads .env.example; Compose v2 reads it"
     done
 
-    out="$(compose_file_config compose.router.yml --format json)"
-    for port in 8060 8061 8062 8063 8065; do
-        grep -q "\"published\": \"${port}\"" <<<"${out}" || fail "compose.router.yml does not publish ${port}: ${out}"
-    done
-    if grep -q '"published": "8070"' <<<"${out}"; then fail "compose.router.yml publishes the Relay port 8070"; fi
-    grep -A1 '"published": "8065"' <<<"${out}" | grep -q '"protocol": "udp"' || fail "compose.router.yml does not publish 8065 as udp: ${out}"
-    ok "compose.router.yml publishes 8060-8063 and 8065/udp, and not the Relay port 8070"
+    out="$(published_ports compose.router.yml)"
+    [[ "${out}" == "* 8061/tcp * 8062/tcp * 8063/tcp * 8065/udp " ]] || fail "compose.router.yml publishes: ${out}"
+    out="$(ASPIA_ROUTER_CLIENT_BIND_IP=127.0.0.1 published_ports compose.router.yml)"
+    [[ "${out}" == "* 8061/tcp * 8063/tcp * 8065/udp 127.0.0.1 8062/tcp " ]] \
+        || fail "compose.router.yml: ASPIA_ROUTER_CLIENT_BIND_IP=127.0.0.1 did not limit only the client port: ${out}"
+    ok "compose.router.yml publishes 8061-8063 and 8065/udp, not 8060 or the Relay port 8070; ASPIA_ROUTER_CLIENT_BIND_IP limits 8062"
 
     out="$(ASPIA_RELAY_PEER_PORT=19070 ASPIA_RELAY_ROUTER_ADDRESS=router.example.test compose_file_config compose.relay.yml --format json)"
     if [[ "$(grep -c '"published"' <<<"${out}")" != 1 ]] || ! grep -q '"published": "19070"' <<<"${out}" \
@@ -1073,6 +1157,8 @@ scenario_split() {
     grep -qF "Public key for relays:     ${ROUTER_KEY}" <<<"${logs}" || fail "the Router does not print the key for Relays"
     grep -qF '8063/tcp  Router: relays (must be reachable from every Relay host)' <<<"${logs}" || fail "the Router does not print the port for Relays"
     grep -qF 'WARNING: Relays are accepted from ANY address' <<<"${logs}" || fail "no warning about the empty Relay allow-list"
+    if grep -qF "${RELAY_KEY_WARNING}" <<<"${logs}"; then fail "a new Router warns that its key for relays is the key for hosts"; fi
+    if grep -qF "${LEGACY_PORT_NOTE}" <<<"${logs}"; then fail "a new Router logs the note about 8060 for Aspia 2.x Hosts"; fi
     ok "the Router prints the key for Relays (${ROUTER_KEY}) and the port 8063/tcp, and warns that any address may register"
     ports="$(listening_ports "${ROUTER_NAME}" tcp | tr '\n' ' ')"
     for port in 8060 8061 8062 8063; do

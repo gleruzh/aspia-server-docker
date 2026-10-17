@@ -31,14 +31,14 @@ ASPIA_IMAGE=<namespace>/aspia-server:3.0.37
 
 | Port | Service | Purpose |
 |---|---|---|
-| 8060/tcp | Router | Hosts of Aspia 2.x |
+| 8060/tcp | Router | Hosts of Aspia 2.x (not published by default) |
 | 8061/tcp | Router | Hosts of Aspia 3.x |
 | 8062/tcp | Router | Clients |
 | 8065/udp | Router | Built-in STUN server |
 | 8070/tcp | Relay | Relayed sessions |
 | 8063/tcp | Router | Relays on other servers (not published by default) |
 
-The first start creates the user `admin` with the password `admin`. Change it at once; see "First login" in [README.md](README.md).
+The first start creates the user `admin` with the password `admin`. Whoever logs in first takes over the Router: before the first start, set `ASPIA_ROUTER_CLIENT_ALLOWED_IPS` or `ASPIA_ROUTER_CLIENT_BIND_IP`, and change the password at once; see "Quick start" and "First login" in [README.md](README.md).
 
 ## Licence and credits
 

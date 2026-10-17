@@ -2,9 +2,10 @@
 #
 # tests/lint.sh: hadolint for every Dockerfile, shellcheck for every shell script, actionlint for
 # the workflows (it also runs shellcheck on their run: blocks), that the podman/*.env.example files
-# list the variables of .env.example that apply to their unit, scripts/versions.sh check, the
-# input checks of scripts/versions.sh files and scripts/aspia-release.sh (with a stub gh), and that
-# publish.yml publishes from main only.
+# list the variables of .env.example that apply to their unit, that the Quadlet unit does not publish
+# the Aspia 2.x port 8060 by default, scripts/versions.sh check, the input checks of
+# scripts/versions.sh files and scripts/aspia-release.sh (with a stub gh), and that publish.yml
+# publishes from main only.
 # The linters run as pinned containers, so the result does not depend on what the host has installed.
 
 set -euo pipefail
@@ -31,10 +32,11 @@ echo "actionlint .github/workflows"
 docker run --rm -v "${PWD}:/repo:ro" -w /repo "${ACTIONLINT}" -no-color || status=1
 
 # The Podman env files list the variables of .env.example that apply to their unit. Never in
-# either: ASPIA_IMAGE (the image is the Image= line of the unit). aspia-server.env.example (all
-# roles, but a Relay on its own has its own unit): everything else except ASPIA_RELAY_ROUTER_*.
-# aspia-relay.env.example (ASPIA_ROLE=relay is set in the unit): everything else except
-# ASPIA_ROLE and the Router's ASPIA_ROUTER_*. Names are the lines "NAME=" or "#NAME=".
+# either: ASPIA_IMAGE and ASPIA_ROUTER_CLIENT_BIND_IP (in Quadlet units the image is Image= and the
+# bind address is in PublishPort=). aspia-server.env.example (all roles, but a Relay on its own has
+# its own unit): everything else except ASPIA_RELAY_ROUTER_*. aspia-relay.env.example
+# (ASPIA_ROLE=relay is set in the unit): everything else except ASPIA_ROLE and the Router's
+# ASPIA_ROUTER_*. Names are the lines "NAME=" or "#NAME=".
 env_names() { sed -nE 's/^#?([A-Z][A-Z0-9_]*)=.*/\1/p' "$1" | sort -u; }
 
 # check_env_example FILE EXCLUDED_REGEX: FILE lists the variables of .env.example except those matching the regex.
@@ -45,8 +47,16 @@ check_env_example() {
         <(env_names "$1") || status=1
 }
 
-check_env_example podman/aspia-server.env.example '^(ASPIA_IMAGE|ASPIA_RELAY_ROUTER_.*)$'
+check_env_example podman/aspia-server.env.example '^(ASPIA_IMAGE|ASPIA_ROUTER_CLIENT_BIND_IP|ASPIA_RELAY_ROUTER_.*)$'
 check_env_example podman/aspia-relay.env.example '^(ASPIA_IMAGE|ASPIA_ROLE|ASPIA_ROUTER_.*)$'
+
+# Only migrated 2.x Hosts need 8060: the unit has its PublishPort= line commented out, like the
+# compose files (tests/run.sh, scenarios 0c and 0d, checks those).
+echo "podman/aspia-server.container does not publish 8060"
+if grep -q '^PublishPort=.*8060' podman/aspia-server.container; then
+    echo "podman/aspia-server.container publishes the Aspia 2.x port 8060 by default" >&2
+    status=1
+fi
 
 echo "scripts/versions.sh check"
 scripts/versions.sh check || status=1
