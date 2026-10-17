@@ -70,11 +70,15 @@ ENV ASPIA_VERSION=${ASPIA_VERSION} \
 # brought more than a third of the image's known vulnerabilities, for this one request. The package
 # postinst runs "--install", a no-op while no configuration exists; no user data is mounted during
 # the build.
-# Package versions are not pinned: the base image is pinned by digest, and Debian stable
-# only receives security fixes.
+# Package versions are not pinned, and "apt-get upgrade" brings the packages of the pinned base image
+# up to date too: every build gets the current Debian security fixes, so that a rebuild alone fixes
+# them (.github/workflows/rebuild.yml starts one when the published image has a fixable
+# vulnerability). The base digest still pins the Debian release; Debian stable only receives
+# security and bug fixes.
 # hadolint ignore=DL3008
 RUN --mount=type=bind,from=fetch,source=/pkg,target=/tmp/pkg \
     apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
         jq \
