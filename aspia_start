@@ -905,7 +905,7 @@ restrict_permissions() {
     local path mode want list
     local -a changed=()
     for path in "${CONFIG_DIR}" "${DATA_DIR}" "${CONFIG_DIR}"/* "${DATA_DIR}"/*; do
-        [[ -e "${path}" && ! -L "${path}" && -O "${path}" ]] || continue
+        [[ ! -L "${path}" && -O "${path}" ]] || continue   # -O: also exists
         if [[ -d "${path}" ]]; then
             want=700
         elif [[ "${path}" == "${HOST_PUB}" ]]; then
@@ -941,13 +941,13 @@ child_privileges() {
     CHILD_SETPRIV=(--inh-caps=-all --no-new-privs)
     ((EUID == 0)) || return 0
     if has_cap "${CAP_SETPCAP}"; then
+        local bset=-all
         if [[ -n "$(find "${CONFIG_DIR}" "${DATA_DIR}" ! -user 0 -print -quit)" ]] && has_cap "${CAP_DAC_OVERRIDE}"; then
-            CHILD_SETPRIV+=("--bounding-set=-all,+dac_override")
+            bset+=,+dac_override
             log "${CONFIG_DIR} or ${DATA_DIR} holds files of another user: the Aspia processes keep" \
                 "CAP_DAC_OVERRIDE to read them. Set PUID/PGID to that user, or chown the files to root."
-        else
-            CHILD_SETPRIV+=(--bounding-set=-all)
         fi
+        CHILD_SETPRIV+=("--bounding-set=${bset}")
     elif ((16#$(cap_eff))); then
         warn "No CAP_SETPCAP: the Aspia processes run as root with the capabilities of the container." \
             "Add SETPCAP to cap_add (README.md, \"Security settings\"), or set PUID/PGID."

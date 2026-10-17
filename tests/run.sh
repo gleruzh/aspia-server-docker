@@ -427,10 +427,9 @@ scenario_restart() {
     docker restart "${S1_NAME}" >/dev/null
     wait_healthy "${S1_NAME}"
     check_modes "${S1_CFG}" "${S1_DB}"
-    logs="$(docker logs "${S1_NAME}" 2>&1)"
-    grep -q 'Permissions: set the mode of /etc/aspia (755 -> 700), /var/lib/aspia (755 -> 700),.* /etc/aspia/relay.pub (644 -> 600)' <<<"${logs}" \
+    log_has "${S1_NAME}" 'Permissions: set the mode of /etc/aspia \(755 -> 700\), /var/lib/aspia \(755 -> 700\),.* /etc/aspia/relay.pub \(644 -> 600\)' \
         || fail "the log does not show the restricted modes"
-    if grep -q 'Cannot change the mode' <<<"${logs}"; then fail "the symbolic link was followed: $(grep 'Cannot change the mode' <<<"${logs}")"; fi
+    if log_has "${S1_NAME}" 'Cannot change the mode'; then fail "the symbolic link was followed"; fi
     helper_rw "${S1_CFG}" "${S1_DB}" rm /etc/aspia/link
     ok "0755 directories and 0644 files are 0700 and 0600 again (host.pub 0644) after a restart; the link was skipped"
     after="$(config_sums "${S1_CFG}" "${S1_DB}")"
@@ -887,10 +886,8 @@ scenario_puid_pgid() {
 
     [[ "$(helper "${cfg}" "${db}" stat -c '%u:%g' /etc/aspia/router.conf)" == "1000:1000" ]] \
         || fail "router.conf is not owned by 1000:1000"
-    [[ "$(helper "${cfg}" "${db}" stat -c '%u:%g' /var/lib/aspia/router.db3)" == "1000:1000" ]] \
-        || fail "router.db3 is not owned by 1000:1000"
-    [[ "$(helper "${cfg}" "${db}" stat -c '%u:%g' /etc/aspia/link)" == "1000:1000" ]] \
-        || fail "the link in /etc/aspia was not re-owned itself"
+    [[ "$(helper "${cfg}" "${db}" stat -c '%u:%g' /var/lib/aspia/router.db3 /etc/aspia/link)" == $'1000:1000\n1000:1000' ]] \
+        || fail "router.db3 or the link itself (not the file it points to) in /etc/aspia is not owned by 1000:1000"
     check_modes "${cfg}" "${db}"
     ok "router.conf, router.db3 and the link itself are owned by uid=1000 gid=1000; only that owner can read the files"
 
