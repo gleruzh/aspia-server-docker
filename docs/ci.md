@@ -30,7 +30,9 @@ scripts/versions.sh bump 3.0.37 <router sha256> <relay sha256>
 ```
 
 `scripts/aspia-release.sh fetch <version> <dir>` downloads both packages and prints their sha256
-after checking them against the digest the GitHub API reports.
+after checking them against the digest the GitHub API reports; it fails when the API reports no
+digest. The digest shows that the download is the file GitHub stores for the release, not who built
+it.
 
 ## Secrets and variables
 
@@ -44,7 +46,7 @@ on the "Variables" tab). None is needed for GHCR.
 | secret `DOCKERHUB_TOKEN` | Docker Hub personal access token of that account, scope **Read, Write, Delete** (the description update needs Delete). | Optional, together with `DOCKERHUB_USERNAME` |
 | secret `QUAY_USERNAME` | Quay.io user or robot account (for a robot: `namespace+robotname`). | Optional; Quay.io is used only when both Quay secrets are set |
 | secret `QUAY_TOKEN` | Password or robot token of that account, with write access to the repository. | Optional, together with `QUAY_USERNAME` |
-| secret `UPSTREAM_WATCH_TOKEN` | Fine-grained personal access token for this repository with **Contents: write** and **Pull requests: write**. When set, the bump pull request is opened with it, so `ci.yml` runs on it. | Optional |
+| secret `UPSTREAM_WATCH_TOKEN` | Fine-grained personal access token for this repository with **Contents: write** and **Pull requests: write**. When set, the bump pull request is opened with it, so `ci.yml` runs on it. Only the job that pushes the branch and opens the pull request gets it. | Optional |
 | variable `GHCR_IMAGE` | Image name on GHCR, without `ghcr.io/`, e.g. `my-org/aspia-server`. | Optional, default `<repository owner>/aspia-server` |
 | variable `DOCKERHUB_IMAGE` | Image name on Docker Hub, without `docker.io/`. Set it when the Docker Hub account differs from the GitHub owner. | Optional, default `<repository owner>/aspia-server` |
 | variable `QUAY_IMAGE` | Image name on Quay.io, without `quay.io/`. | Optional, default `<repository owner>/aspia-server` |
@@ -75,8 +77,9 @@ an error: the run logs "Docker Hub skipped" or "Quay.io skipped" and continues.
   and scan, Podman Quadlet) must pass and the branch must be up to date with `main`; no force pushes, no
   deletion. No approval is required (a single maintainer cannot approve their own pull requests), and admins can
   bypass the rules. A bump pull request opened with `GITHUB_TOKEN` gets no CI run, so its checks stay missing:
-  set `UPSTREAM_WATCH_TOKEN`, push a commit to the branch, or merge as admin after reading the upstream-watch
-  test result in the pull request.
+  approve the run in the merge box (if shown), close and reopen the pull request, push a commit to the branch,
+  or set `UPSTREAM_WATCH_TOKEN`. Do not merge it as admin on the upstream-watch result alone: that run has no
+  Podman test and no Trivy scan, and its result is reported by the job that ran the new packages.
 - **Code scanning.** The Trivy report in the Security tab needs code scanning, which is free for
   public repositories. On a private repository without GitHub Advanced Security the upload step
   fails without failing the run.
@@ -164,10 +167,24 @@ platform are not valid; pin the index digest from the publish run summary instea
 Every 6 hours the workflow lists the releases of `dchapyshev/aspia`, ignores drafts, pre-releases and
 tags that are not `vX.Y.Z`, and compares the newest with `versions.env` of the branch it runs on. If
 the release is newer and has both `aspia-router-X.Y.Z-x86_64.deb` and `aspia-relay-X.Y.Z-x86_64.deb`,
-it downloads them, checks their sha256 against the GitHub API digest, runs `scripts/versions.sh bump`,
-builds the image, runs `tests/run.sh`, pushes the branch `aspia-bump/X.Y.Z` and opens the pull
-request with the test result. If the tests fail, the pull request is a draft with the failure log,
-and the run fails so that the owner is notified.
+it opens a pull request from the branch `aspia-bump/X.Y.Z` with the test result. If the tests fail, the
+pull request is a draft with the failure log, and the run fails so that the owner is notified.
+
+The new packages are code from another repository: the image build installs them as root and
+`tests/run.sh` runs them. So the work is split into three jobs, and only one of them runs that code:
+
+| Job | Permissions | What it does |
+|---|---|---|
+| `check` | `contents: read`, `pull-requests: read` | Finds the release, downloads both packages without running them, and checks their sha256 against the GitHub API digest. |
+| `test` | `contents: read`, no secrets | Runs `scripts/versions.sh bump`, `tests/lint.sh`, builds the image and runs `tests/run.sh`. Keeps the log as an artifact and reports the exit codes. |
+| `open-pr` | `contents: write`, `pull-requests: write`, `UPSTREAM_WATCH_TOKEN` | Starts from a clean checkout, runs `scripts/versions.sh bump` again with the checksums from `check` (and stops if `test` reports others), commits, pushes the branch and opens the pull request. It never builds the image or runs the packages. |
+
+What `test` reports is treated as untrusted: an exit code that is not a number counts as a failure,
+and the log goes into the description inside a code block that it cannot close. A compromised
+release could still make `test` report success, which is one more reason to let `ci.yml` run on the
+pull request before merging. The branch is pushed with `--force-with-lease` against the state the
+job has just read, so a rerun with "force" replaces the branch of a closed pull request but not a
+push that lands in between.
 
 It does nothing when a pull request for that version is already open. It also does nothing when one
 was closed without merging, so that a rejected version is not proposed again every 6 hours; a manual
@@ -180,7 +197,7 @@ Two GitHub limitations, and how they are handled:
   does not simply run on the bump pull request. GitHub's current documentation says such a run is
   created but waits until someone with write access selects **Approve workflows to run** in the
   merge box; before that change it was not created at all. Either way, the workflow builds and tests
-  in its own job and puts the result into the pull request description (the full log is an artifact
+  in its own `test` job and puts the result into the pull request description (the full log is an artifact
   of the run). To get `ci.yml` as well: approve the run if the banner is shown, close and reopen the
   pull request (a person's action starts CI), or set `UPSTREAM_WATCH_TOKEN`. Merging it is a
   person's push to `main`, so `publish.yml` runs normally.

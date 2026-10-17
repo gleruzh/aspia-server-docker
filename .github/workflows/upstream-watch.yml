@@ -1,17 +1,23 @@
 # Upstream watch: when dchapyshev/aspia publishes a newer stable release with both x86_64 server
-# packages, update versions.env and every pinned image tag, build the image, run tests/run.sh, and
-# open a pull request "chore: bump Aspia to X.Y.Z" against the branch this workflow runs on.
-# Nothing is merged automatically: a new Aspia version has changed the configuration format before,
-# so a person reviews and merges. When the tests fail the pull request is opened as a draft with
-# the failure log.
+# packages, update versions.env and every pinned image tag, build the image, run tests/lint.sh and
+# tests/run.sh, and open a pull request "chore: bump Aspia to X.Y.Z" against the branch this
+# workflow runs on. Nothing is merged automatically: a new Aspia version has changed the
+# configuration format before, so a person reviews and merges. When the tests fail the pull request
+# is opened as a draft with the failure log.
+#
+# Trust boundary: the new packages are upstream code, installed as root in the image build and run
+# by the tests. Only the job "test" runs them, with a read-only token and no secrets. The job
+# "open-pr" holds the write token and UPSTREAM_WATCH_TOKEN; it starts from a clean checkout, applies
+# the same bump again from the checksums of "check", and never builds or runs the new packages. What
+# "test" reports (exit codes, checksums, the log) is treated as untrusted data.
 #
 # GitHub limitations and how they are handled (details in docs/ci.md):
 # - A pull request opened with GITHUB_TOKEN does not start other workflows on its own: GitHub holds
 #   its ci.yml run until someone with write access selects "Approve workflows to run" (older GitHub
-#   behaviour: no run at all). The tests therefore run in this job and their result goes into the
-#   pull request description. With the optional secret UPSTREAM_WATCH_TOKEN (a fine-grained token
-#   with contents and pull-requests write access) the branch and pull request are created with that
-#   token instead, and ci.yml runs on the pull request as usual.
+#   behaviour: no run at all). The tests therefore run in this workflow and their result goes into
+#   the pull request description. With the optional secret UPSTREAM_WATCH_TOKEN (a fine-grained
+#   token with contents and pull-requests write access) the branch and pull request are created with
+#   that token instead, and ci.yml runs on the pull request as usual.
 # - GitHub disables scheduled workflows after 60 days without repository activity, and they do not
 #   run in a fork until Actions is enabled there. A manual run (workflow_dispatch) always works once
 #   this file is on the default branch.
@@ -38,16 +44,24 @@ defaults:
   run:
     shell: bash
 
+env:
+  BASE: ${{ github.ref_name }}
+
 jobs:
-  watch:
+  check:
     name: Check for a new Aspia release
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 15
     permissions:
-      contents: write        # push the aspia-bump/X.Y.Z branch
-      pull-requests: write   # open the pull request
-    env:
-      BASE: ${{ github.ref_name }}
+      contents: read
+      pull-requests: read   # look for an open or closed pull request for the version
+    outputs:
+      update: ${{ steps.check.outputs.update }}
+      current: ${{ steps.check.outputs.current }}
+      version: ${{ steps.check.outputs.version }}
+      branch: ${{ steps.check.outputs.branch }}
+      router: ${{ steps.fetch.outputs.router }}
+      relay: ${{ steps.fetch.outputs.relay }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -62,7 +76,7 @@ jobs:
           current="$(scripts/versions.sh get ASPIA_VERSION)"
           latest="$(scripts/aspia-release.sh latest)"
           echo "versions.env on ${BASE}: ${current}; latest stable release of dchapyshev/aspia: ${latest}"
-          # update=true is written only at the end; without it the later steps are skipped.
+          # update=true is written only at the end; without it the later steps and jobs are skipped.
           echo "current=${current}" >> "${GITHUB_OUTPUT}"
           if [[ "${latest}" == "${current}" || "$(printf '%s\n' "${latest}" "${current}" | sort -V | tail -n 1)" != "${latest}" ]]; then
             echo "Up to date."
@@ -89,9 +103,10 @@ jobs:
             echo "branch=${branch}"
           } >> "${GITHUB_OUTPUT}"
 
-      - name: Download the packages, update versions.env and pinned tags
+      # Downloads and hashes the packages; nothing in them is run here.
+      - name: Download the packages and check their digests
         if: steps.check.outputs.update == 'true'
-        id: bump
+        id: fetch
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.check.outputs.version }}
@@ -100,47 +115,140 @@ jobs:
           echo "sha256 aspia-router-${VERSION}-x86_64.deb ${router}"
           echo "sha256 aspia-relay-${VERSION}-x86_64.deb ${relay}"
           rm -rf "${RUNNER_TEMP}/debs"
-          scripts/versions.sh bump "${VERSION}" "${router}" "${relay}"
-          git diff --stat
           {
             echo "router=${router}"
             echo "relay=${relay}"
           } >> "${GITHUB_OUTPUT}"
 
-      # The tests run here because ci.yml does not start on its own for a pull request opened with
-      # GITHUB_TOKEN.
-      - name: Build the image and run tests/run.sh
-        if: steps.check.outputs.update == 'true'
+  # Runs the new upstream packages: read-only token, no secrets, nothing pushed from here. The tests
+  # run here because ci.yml does not start on its own for a pull request opened with GITHUB_TOKEN.
+  test:
+    name: Build and test the new release
+    needs: check
+    if: needs.check.outputs.update == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      lint: ${{ steps.test.outputs.lint }}
+      status: ${{ steps.test.outputs.status }}
+      router: ${{ steps.bump.outputs.router }}
+      relay: ${{ steps.bump.outputs.relay }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Update versions.env and pinned tags
+        id: bump
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          ROUTER: ${{ needs.check.outputs.router }}
+          RELAY: ${{ needs.check.outputs.relay }}
+        run: |
+          scripts/versions.sh bump "${VERSION}" "${ROUTER}" "${RELAY}"
+          git diff --stat
+          {
+            echo "router=$(scripts/versions.sh get ASPIA_ROUTER_SHA256)"
+            echo "relay=$(scripts/versions.sh get ASPIA_RELAY_SHA256)"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Run tests/lint.sh, build the image and run tests/run.sh
         id: test
         run: |
+          log="${RUNNER_TEMP}/tests.log"
           set +e
-          tests/run.sh 2>&1 | tee "${RUNNER_TEMP}/tests.log"
+          tests/lint.sh 2>&1 | tee "${log}"
+          lint="${PIPESTATUS[0]}"
+          tests/run.sh 2>&1 | tee -a "${log}"
           status="${PIPESTATUS[0]}"
           set -e
-          echo "status=${status}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "lint=${lint}"
+            echo "status=${status}"
+          } >> "${GITHUB_OUTPUT}"
+          if [[ "${lint}" == 0 ]]; then echo "tests/lint.sh passed"; else echo "::warning::tests/lint.sh failed (exit ${lint}); the pull request will be a draft."; fi
           if [[ "${status}" == 0 ]]; then echo "tests/run.sh passed"; else echo "::warning::tests/run.sh failed (exit ${status}); the pull request will be a draft."; fi
 
       - name: Keep the test log
-        if: steps.check.outputs.update == 'true' && !cancelled()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: tests-aspia-${{ steps.check.outputs.version }}
+          name: tests-aspia-${{ needs.check.outputs.version }}
           path: ${{ runner.temp }}/tests.log
           retention-days: 30
 
+  # Holds the write token. Never builds or runs the new packages: it applies the bump again on a
+  # clean checkout from the checksums of "check" and only reads what "test" reported.
+  open-pr:
+    name: Open the pull request
+    needs: [check, test]
+    if: needs.check.outputs.update == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write        # push the aspia-bump/X.Y.Z branch
+      pull-requests: write   # open the pull request
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Get the test log
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tests-aspia-${{ needs.check.outputs.version }}
+          path: ${{ runner.temp }}/tests
+
+      - name: Update versions.env and pinned tags
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          ROUTER: ${{ needs.check.outputs.router }}
+          RELAY: ${{ needs.check.outputs.relay }}
+          TESTED_ROUTER: ${{ needs.test.outputs.router }}
+          TESTED_RELAY: ${{ needs.test.outputs.relay }}
+        run: |
+          scripts/versions.sh bump "${VERSION}" "${ROUTER}" "${RELAY}"
+          # The values of the test job are compared, never printed: they come from the job that ran the new packages.
+          if [[ "$(scripts/versions.sh get ASPIA_ROUTER_SHA256)" != "${TESTED_ROUTER}" || "$(scripts/versions.sh get ASPIA_RELAY_SHA256)" != "${TESTED_RELAY}" ]]; then
+            echo "::error::The test job reports other checksums than this bump (router ${ROUTER}, relay ${RELAY}); not opening a pull request."
+            exit 1
+          fi
+          git diff --stat
+
       - name: Push the branch and open the pull request
-        if: steps.check.outputs.update == 'true'
         env:
           GH_TOKEN: ${{ secrets.UPSTREAM_WATCH_TOKEN || github.token }}
-          VERSION: ${{ steps.check.outputs.version }}
-          CURRENT: ${{ steps.check.outputs.current }}
-          BRANCH: ${{ steps.check.outputs.branch }}
-          ROUTER: ${{ steps.bump.outputs.router }}
-          RELAY: ${{ steps.bump.outputs.relay }}
-          STATUS: ${{ steps.test.outputs.status }}
+          VERSION: ${{ needs.check.outputs.version }}
+          CURRENT: ${{ needs.check.outputs.current }}
+          BRANCH: ${{ needs.check.outputs.branch }}
+          ROUTER: ${{ needs.check.outputs.router }}
+          RELAY: ${{ needs.check.outputs.relay }}
+          LINT: ${{ needs.test.outputs.lint }}
+          STATUS: ${{ needs.test.outputs.status }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           OWN_TOKEN: ${{ secrets.UPSTREAM_WATCH_TOKEN != '' }}
         run: |
+          # The exit codes come from the job that ran the new packages: anything but a number is a failure.
+          [[ "${LINT}" =~ ^[0-9]+$ ]] || LINT=255
+          [[ "${STATUS}" =~ ^[0-9]+$ ]] || STATUS=255
+          failed=false
+          [[ "${LINT}" == 0 && "${STATUS}" == 0 ]] || failed=true
+          log="${RUNNER_TEMP}/tests/tests.log"
+
+          result() { if [[ "$1" == 0 ]]; then echo passed; else echo "FAILED (exit $1)"; fi; }
+
+          # fenced FILE: FILE in a code block whose fence is longer than any run of backticks in it,
+          # so the log cannot close the block and add Markdown to the description.
+          fenced() {
+            local fence='```'
+            while grep -qF -- "${fence}" "$1"; do fence+='`'; done
+            echo "${fence}"
+            cat "$1"
+            echo "${fence}"
+          }
+
           title="chore: bump Aspia to ${VERSION}"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -149,15 +257,19 @@ jobs:
           git add versions.env "${files[@]}"
           git commit -q -m "${title}" -m "Release: https://github.com/dchapyshev/aspia/releases/tag/v${VERSION}"
           gh auth setup-git
-          git push --force origin "HEAD:refs/heads/${BRANCH}"
+          # Replaces the branch of a closed pull request (force), but only in the state seen here.
+          lease="$(git ls-remote origin "refs/heads/${BRANCH}" | cut -f1)"
+          git push --force-with-lease="refs/heads/${BRANCH}:${lease}" origin "HEAD:refs/heads/${BRANCH}"
 
+          grep -E '^(===|  ok|  FAIL)' "${log}" | tail -c 20000 > "${RUNNER_TEMP}/summary.txt" || true
+          tail -n 150 "${log}" | tail -c 30000 > "${RUNNER_TEMP}/tail.txt"
           body="${RUNNER_TEMP}/body.md"
           {
             echo "Aspia ${CURRENT} -> ${VERSION}: https://github.com/dchapyshev/aspia/releases/tag/v${VERSION}"
             echo
             echo "Opened by the upstream-watch workflow: ${RUN_URL}"
             echo
-            echo "| Package | sha256 (computed, equals the GitHub API digest) |"
+            echo "| Package | sha256 (computed, checked against the GitHub API digest) |"
             echo "|---|---|"
             echo "| aspia-router-${VERSION}-x86_64.deb | \`${ROUTER}\` |"
             echo "| aspia-relay-${VERSION}-x86_64.deb | \`${RELAY}\` |"
@@ -168,15 +280,13 @@ jobs:
             git diff --stat HEAD~1 HEAD
             echo '```'
             echo
-            if [[ "${STATUS}" == 0 ]]; then
-              echo "## tests/run.sh: passed"
-            else
-              echo "## tests/run.sh: FAILED (exit ${STATUS})"
+            echo "## tests/lint.sh: $(result "${LINT}"); tests/run.sh: $(result "${STATUS}")"
+            if [[ "${failed}" == true ]]; then
               echo
               echo "This pull request is a draft because the tests failed on the new version. Read the log below and the upstream changelog before doing anything else."
             fi
             echo
-            echo "The tests ran in the workflow run above, on this branch."
+            echo "The tests ran in the workflow run above, on the same changes, in a job without write access."
             if [[ "${OWN_TOKEN}" != true ]]; then
               echo "This pull request was opened with GITHUB_TOKEN, so GitHub does not start ci.yml for it on its own."
               echo "To run CI here as well, select \"Approve workflows to run\" in the merge box (if shown), close and reopen the pull request, or set the UPSTREAM_WATCH_TOKEN secret (docs/ci.md)."
@@ -187,33 +297,25 @@ jobs:
             echo
             echo "<details><summary>tests/run.sh summary</summary>"
             echo
-            echo '```'
-            grep -E '^(===|  ok|  FAIL)' "${RUNNER_TEMP}/tests.log" | tail -c 20000 || true
-            echo '```'
+            fenced "${RUNNER_TEMP}/summary.txt"
             echo "</details>"
-            if [[ "${STATUS}" != 0 ]]; then
+            if [[ "${failed}" == true ]]; then
               echo
               echo "<details open><summary>Failure log (last lines)</summary>"
               echo
-              echo '```'
-              tail -n 150 "${RUNNER_TEMP}/tests.log" | tail -c 30000
-              echo '```'
+              fenced "${RUNNER_TEMP}/tail.txt"
               echo "</details>"
             fi
           } > "${body}"
 
           draft=()
-          [[ "${STATUS}" == 0 ]] || draft=(--draft)
+          [[ "${failed}" == false ]] || draft=(--draft)
           if ! gh pr create --repo "${GITHUB_REPOSITORY}" --base "${BASE}" --head "${BRANCH}" \
               --title "${title}" --body-file "${body}" "${draft[@]}"; then
             echo "::error::The branch ${BRANCH} was pushed, but the pull request could not be opened. If GitHub says Actions may not create pull requests, enable Settings > Actions > General > Allow GitHub Actions to create and approve pull requests, or set the UPSTREAM_WATCH_TOKEN secret (docs/ci.md)."
             exit 1
           fi
-
-      - name: Fail the run when the tests failed
-        if: steps.check.outputs.update == 'true' && steps.test.outputs.status != '0'
-        env:
-          STATUS: ${{ steps.test.outputs.status }}
-        run: |
-          echo "::error::tests/run.sh failed on the new Aspia version (exit ${STATUS}); a draft pull request with the log was opened."
-          exit 1
+          if [[ "${failed}" == true ]]; then
+            echo "::error::The tests failed on the new Aspia version (tests/lint.sh exit ${LINT}, tests/run.sh exit ${STATUS}); a draft pull request with the log was opened."
+            exit 1
+          fi

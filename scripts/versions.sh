@@ -34,13 +34,16 @@ usage() {
     exit 2
 }
 
-get() { sed -n "s/^$1=//p" "${VERSIONS_FILE}"; }
+get() {
+    [[ "$1" =~ ^[A-Z0-9_]+$ ]] || die "invalid key '$1'"
+    sed -n "s/^$1=//p" "${VERSIONS_FILE}"
+}
 
 valid_version() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
 valid_sha256() { [[ "$1" =~ ^[0-9a-f]{64}$ ]]; }
 
 pinned_files() {
-    git ls-files --cached --others --exclude-standard -- Dockerfile .env.example '*.yml' '*.yaml' '*.container' '*.md' | grep -vE '^(\.github|docs/dev|tests)/' || true
+    git ls-files --cached -- Dockerfile .env.example '*.yml' '*.yaml' '*.container' '*.md' | grep -vE '^(\.github|docs/dev|tests)/' || true
 }
 
 check() {

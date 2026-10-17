@@ -2,7 +2,8 @@
 #
 # tests/lint.sh: hadolint for every Dockerfile, shellcheck for every shell script, actionlint for
 # the workflows (it also runs shellcheck on their run: blocks), that the podman/*.env.example files
-# list the variables of .env.example that apply to their unit, and scripts/versions.sh check.
+# list the variables of .env.example that apply to their unit, scripts/versions.sh check, and the
+# input checks of scripts/versions.sh files and scripts/aspia-release.sh (with a stub gh).
 # The linters run as pinned containers, so the result does not depend on what the host has installed.
 
 set -euo pipefail
@@ -48,6 +49,50 @@ check_env_example podman/aspia-relay.env.example '^(ASPIA_IMAGE|ASPIA_ROLE|ASPIA
 
 echo "scripts/versions.sh check"
 scripts/versions.sh check || status=1
+
+# The bump commit adds every file of scripts/versions.sh files, so an untracked file must never be listed.
+tmp="$(mktemp -d)"
+untracked="lint-untracked-$$.md"
+trap 'rm -rf "${tmp}" "${untracked}"' EXIT
+echo "scripts/versions.sh files lists tracked files only"
+: > "${untracked}"
+if scripts/versions.sh files | grep -qxF "${untracked}"; then echo "scripts/versions.sh files lists the untracked ${untracked}"; status=1; fi
+rm -f "${untracked}"
+
+# scripts/aspia-release.sh against a stub gh (no network): the version must be X.Y.Z, asset names
+# match exactly, and fetch refuses a package that the GitHub API reports no digest for.
+cat > "${tmp}/gh" <<'EOF'
+#!/usr/bin/env bash
+# gh api: prints STUB_ASSETS ("<name> <digest>" lines). gh release download: writes "stub" to <-D>/<-p>.
+if [[ "$1" == api ]]; then printf '%s\n' "${STUB_ASSETS}"; exit 0; fi
+while (($#)); do case "$1" in -p) name="$2"; shift ;; -D) dir="$2"; shift ;; esac; shift; done
+printf stub > "${dir}/${name}"
+EOF
+chmod +x "${tmp}/gh"
+readonly STUB_SHA=725c546b990dd1b41f3d5791b37c3c0edcb1f08cf150bdae32a73dfd166e02d7   # sha256 of "stub"
+
+# check_release WANT ASSETS ARGS...: scripts/aspia-release.sh ARGS succeeds (WANT=ok) or fails (WANT=fail).
+check_release() {
+    local want="$1" assets="$2" got=ok
+    shift 2
+    echo "scripts/aspia-release.sh $* (expected: ${want})"
+    PATH="${tmp}:${PATH}" STUB_ASSETS="${assets}" scripts/aspia-release.sh "$@" > "${tmp}/out" 2>&1 || got=fail
+    [[ "${got}" == "${want}" ]] || { echo "got: ${got}"; cat "${tmp}/out"; status=1; }
+}
+
+# expect_out TEXT: the output of the last check_release contains TEXT.
+expect_out() { grep -qF -- "$1" "${tmp}/out" || { cat "${tmp}/out"; status=1; }; }
+
+debs=$'aspia-router-3.0.0-x86_64.deb sha256:'"${STUB_SHA}"$'\naspia-relay-3.0.0-x86_64.deb sha256:'"${STUB_SHA}"
+check_release fail "${debs}" has-debs '3.0.0 x'
+expect_out "is not X.Y.Z"
+check_release fail "${debs}" fetch '3.0.0/../x' "${tmp}/debs"
+expect_out "is not X.Y.Z"
+check_release ok "${debs}" has-debs 3.0.0
+check_release fail "${debs//./a}" has-debs 3.0.0
+check_release fail $'aspia-router-3.0.0-x86_64.deb \naspia-relay-3.0.0-x86_64.deb ' fetch 3.0.0 "${tmp}/debs"
+check_release ok "${debs}" fetch 3.0.0 "${tmp}/debs"
+grep -qxF "${STUB_SHA} ${STUB_SHA}" "${tmp}/out" || { echo "fetch printed: $(cat "${tmp}/out")"; status=1; }
 
 ((status == 0)) && echo "lint: ok"
 exit "${status}"
