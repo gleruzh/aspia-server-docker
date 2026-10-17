@@ -152,9 +152,9 @@ Candidates from the PR 3 task that were deliberately left out, with the reason:
 - **A connected Relay can still be useless** (an address the Router rejects, a sixth Relay): see "Healthcheck
   blind spots" above. The Relay's own log shows a sixth Relay only as `REMOTE_HOST_CLOSED`, like an allow-list
   refusal.
-- **Test network.** Scenarios 17-24 of `tests/run.sh` create a Docker network with the fixed subnet
-  `10.213.47.0/24` (scenario 21 pins two Relay addresses). A machine that already uses that subnet fails at
-  `docker network create`; change `SPLIT_SUBNET` there.
+- **Test network.** Scenarios 17-21, 23 and 24 of `tests/run.sh` need a Docker network with a subnet given
+  explicitly (scenario 21 pins two Relay addresses). `split_network` takes the first free /24 of
+  `10.213.0.0/16`, from `10.213.48.0/24` on; a host whose Docker networks use all of that range fails there.
 
 ## From PR 5b (hardening)
 

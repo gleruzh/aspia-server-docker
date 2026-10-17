@@ -6,8 +6,10 @@
 #   tests/run.sh                  build the image from this checkout, then test it
 #   ASPIA_TEST_IMAGE=img tests/run.sh   test an existing image instead of building one
 #
-# Every container, volume and network the tests create carries the label aspia-test=<run id>
-# and is removed on exit, also when a scenario fails.
+# Every container, volume and network the tests create carries the label aspia-test=<run id>, has
+# the run id in its name, and is removed on exit, also when a scenario fails; the images it builds
+# are tagged with the run id and untagged on exit. Runs on one Docker host do not collide: each has
+# its own names, tags and subnet.
 #
 # Scenarios:
 #   0. build: a tampered checksum makes the build fail; 0b. a docker run command replaces the server,
@@ -75,11 +77,11 @@ readonly PLATFORM=linux/amd64
 # paprikkafox/aspia-server:2.7.0 was removed from Docker Hub in October 2026; this is the same image (same digest).
 # Not in .github/tool-images/Dockerfile: a fixed fixture, which Dependabot must never move to another digest.
 readonly OLD_IMAGE=gleruzh/aspia-server:2.7.0-paprikkafox@sha256:8db62b95681b09ab8dc2346d803a2981d7a44826b3a06310ab27b3d054215b82
-readonly HELPER_IMAGE=aspia-server-test-helper:local
 # Docker CLI with Compose v2.31, to check docker-compose.yml against the Compose v2 still common on servers.
 COMPOSE_V2_IMAGE="$(scripts/tool-image.sh compose-v2)"
 readonly COMPOSE_V2_IMAGE
-readonly RUN_ID="aspia-test-$$"
+readonly RUN_ID="aspia-test-$$-${RANDOM}"   # unique on the Docker host, also between machines sharing one
+readonly HELPER_IMAGE="aspia-server-test-helper:${RUN_ID}"
 readonly IP_OLD=203.0.113.10   # EXTERNAL_IP given to 2.7.0
 readonly IP_NEW=203.0.113.11   # EXTERNAL_IP given to the new image
 # Log lines of aspia_start: a new install without ASPIA_ROUTER_CLIENT_ALLOWED_IPS (a warning, logged
@@ -90,7 +92,8 @@ readonly RELAY_KEY_WARNING='WARNING: The key for relays is the same as the key f
 # shellcheck disable=SC2016  # the ${...} are the literal text of the compose line, not expansions
 readonly LEGACY_PORT_NOTE='no longer publish 8060/tcp: Hosts of Aspia 2.x cannot connect until you uncomment the line #- "${ASPIA_ROUTER_LEGACY_PORT:-8060}:${ASPIA_ROUTER_LEGACY_PORT:-8060}"'
 readonly HEALTH_TIMEOUT=180    # seconds; generous because CI or emulation may be slow
-IMAGE="${ASPIA_TEST_IMAGE:-aspia-server:test}"
+IMAGE="${ASPIA_TEST_IMAGE:-aspia-server:${RUN_ID}}"
+BUILT_IMAGES=()                # the tags this run created, untagged on exit
 # The hardening the compose files and Quadlet units ship (scenario 0e checks them against it).
 readonly CAPS=(CHOWN DAC_OVERRIDE SETUID SETGID KILL SETPCAP)
 readonly PIDS_LIMIT=128
@@ -126,6 +129,7 @@ cleanup() {
     docker network ls -q --filter "label=aspia-test=${RUN_ID}" | while read -r id; do
         docker network rm "${id}" >/dev/null 2>&1 || true
     done
+    ((${#BUILT_IMAGES[@]} == 0)) || docker image rm "${BUILT_IMAGES[@]}" >/dev/null 2>&1 || true
     [[ -z "${TAMPER_DIR:-}" ]] || rm -rf "${TAMPER_DIR}"
     [[ -z "${STUB_DIR:-}" ]] || rm -rf "${STUB_DIR}"
 }
@@ -321,10 +325,12 @@ scenario_build() {
     if [[ -n "${ASPIA_TEST_IMAGE:-}" ]]; then
         ok "testing the given image ${IMAGE}"
     else
+        BUILT_IMAGES+=("${IMAGE}")
         docker build -q --platform "${PLATFORM}" -t "${IMAGE}" . >/dev/null
         ok "built ${IMAGE}"
     fi
     # The helper uses the product's base image, taken from the Dockerfile so that one edit updates both.
+    BUILT_IMAGES+=("${HELPER_IMAGE}")
     docker build -q --platform "${PLATFORM}" -t "${HELPER_IMAGE}" \
         --build-arg "BASE_IMAGE=$(awk '/^FROM / { print $2; exit }' Dockerfile)" tests/helper >/dev/null
     ok "built ${HELPER_IMAGE}"
@@ -1133,10 +1139,27 @@ scenario_puid_pgid_refused() {
 # with a Router in another container and is health-checked correctly. They cannot show traffic
 # flowing through a Relay across real NAT; that needs two hosts and a real Client and Host.
 
-readonly SPLIT_SUBNET=10.213.47.0/24                         # fixed, so that scenario 21 can pin Relay addresses
-readonly RELAY_A_IP=10.213.47.200 RELAY_B_IP=10.213.47.201   # above the range Docker hands out first
 readonly WRONG_KEY=0000000000000000000000000000000000000000000000000000000000000001
 SPLIT_NET="" ROUTER_NAME="" ROUTER_KEY="" RELAY1_NAME=""
+RELAY_A_IP="" RELAY_B_IP=""   # set by split_network: above the range Docker hands out first
+
+# split_network: creates SPLIT_NET once per run, with a /24 of 10.213.0.0/16 given explicitly, so that
+# scenario 21 can pin Relay addresses. Docker refuses a subnet that overlaps another network (also one
+# of a concurrent run); then the next /24 is tried, from 10.213.48.0/24 on (earlier versions of this
+# script take 10.213.47.0/24 unconditionally, and may run at the same time from another checkout).
+split_network() {
+    local i n out
+    [[ -z "${SPLIT_NET}" ]] || return 0
+    for ((i = 0; i < 256; i++)); do
+        n=$(((48 + i) % 256))
+        if out="$(docker network create --label "aspia-test=${RUN_ID}" --subnet "10.213.${n}.0/24" "${RUN_ID}-split" 2>&1)"; then
+            SPLIT_NET="${RUN_ID}-split" RELAY_A_IP="10.213.${n}.200" RELAY_B_IP="10.213.${n}.201"
+            return 0
+        fi
+        grep -qi overlap <<<"${out}" || fail "docker network create failed: ${out}"
+    done
+    fail "no /24 of 10.213.0.0/16 is free for ${RUN_ID}-split"
+}
 
 scenario_compose_roles() {
     local file role out images
@@ -1207,8 +1230,7 @@ expect_relay_refused() {
 scenario_split() {
     local cfg db logs ports port relay_conf files ip out name
     log "17. ASPIA_ROLE=router and ASPIA_ROLE=relay in two containers on one Docker network"
-    SPLIT_NET="${RUN_ID}-split"
-    docker network create --label "aspia-test=${RUN_ID}" --subnet "${SPLIT_SUBNET}" "${SPLIT_NET}" >/dev/null
+    split_network
     cfg="$(new_volume s17-router-config)"
     db="$(new_volume s17-router-db)"
     run_new s17-router "${cfg}" "${db}" -e ASPIA_ROLE=router --network "${SPLIT_NET}" --network-alias aspia-router
