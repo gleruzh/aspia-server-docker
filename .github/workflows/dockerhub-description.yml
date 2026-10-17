@@ -85,6 +85,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # This job can wait in the group for a whole publish. If a newer push has changed
+      # docs/dockerhub.md by then, that push's own run or its publish writes the description, and this
+      # run's older file must not replace it. Read through the API: the checkout keeps no credentials.
+      - name: Newest docs/dockerhub.md
+        id: newest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ours="$(git rev-parse "${GITHUB_SHA}:docs/dockerhub.md")"
+          main="$(gh api "repos/${GITHUB_REPOSITORY}/contents/docs/dockerhub.md?ref=main" --jq .sha)"
+          if [[ "${ours}" == "${main}" ]]; then
+            echo "newest=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "newest=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice title=Left to a newer push::docs/dockerhub.md on main is no longer the one of ${GITHUB_SHA}; the run of the push that changed it updates the description."
+          fi
       - name: Repository name on Docker Hub
         id: repo
         env:
@@ -94,6 +110,7 @@ jobs:
           image="$(scripts/image-names.sh | sed -n 's/^DOCKERHUB_IMAGE=//p')"
           echo "repository=${image#docker.io/}" >> "${GITHUB_OUTPUT}"
       - uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
+        if: steps.newest.outputs.newest == 'true'
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}

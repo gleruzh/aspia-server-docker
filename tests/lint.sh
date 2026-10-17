@@ -131,14 +131,18 @@ for f in "${wf}" "${dwf}"; do
 done
 
 # dockerhub-description.yml joins the concurrency group 'publish' (on its job), leaves pushes that
-# start publish.yml to it (same paths), and its steps are those of publish.yml's description job.
+# start publish.yml to it (same paths), and its steps are those of publish.yml's description job,
+# except that it skips the update when main has a newer docs/dockerhub.md.
 grep -qxE ' +group: publish' "${dwf}" || { echo "${dwf}: no concurrency group 'publish'"; status=1; }
 diff --label "${wf} paths" --label "${dwf} PUBLISH_PATHS" \
     <(sed -n '/^    paths:$/,/^  [a-z_]*:$/s/^      - //p' "${wf}") \
     <(sed -n 's/^ *PUBLISH_PATHS: //p' "${dwf}" | tr ' ' '\n') || status=1
 description_steps() { sed -n '/- name: Repository name on Docker Hub/,/enable-url-completion: true/p' "$1"; }
 [[ -n "$(description_steps "${dwf}")" ]] || { echo "${dwf}: no Docker Hub description steps"; status=1; }
-diff --label "${wf}" --label "${dwf}" <(description_steps "${wf}") <(description_steps "${dwf}") || status=1
+newest_gate="        if: steps.newest.outputs.newest == 'true'"
+grep -qxF "${newest_gate}" "${dwf}" || { echo "${dwf}: the update does not check for a newer docs/dockerhub.md"; status=1; }
+diff --label "${wf}" --label "${dwf}" <(description_steps "${wf}") \
+    <(description_steps "${dwf}" | grep -vxF "${newest_gate}") || status=1
 
 # publish.yml: one workflow-level concurrency group serialises every publish, and every documented
 # cosign identity is pinned to publish.yml@refs/heads/main.

@@ -105,6 +105,8 @@ the description then, with the same job. When the push also changes a file that 
 `publish.yml` (a bump pull request changes both), it does nothing and leaves the update to
 `publish.yml`, which makes it only after the image is published, so the page never names a version
 that does not exist yet. It runs from `main` only and does nothing without the Docker Hub secrets.
+If it has waited for a publish and `docs/dockerhub.md` on `main` has changed since its push, it
+leaves the update to the run of that newer push, so an older file never replaces a newer one.
 To update the description by hand:
 
 ```shell
