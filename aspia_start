@@ -36,6 +36,11 @@
 
 set -euo pipefail
 
+# The volumes hold private keys and the user database: every file this script and the Aspia
+# processes create (configuration, keys, the database and its journal files, backups) is readable
+# by its owner only. restrict_permissions fixes the files of older starts.
+umask 0077
+
 # shellcheck source=aspia_common.sh
 source /usr/lib/aspia-server/aspia_common.sh
 
@@ -80,6 +85,7 @@ ROUTER_KEY=""            # The Router's relay key that relay.conf gets. Remote R
                           # (a new install has no relay.pub before prepare_router has run).
 
 declare -A CHILDREN=()   # pid -> process name
+CHILD_SETPRIV=()         # setpriv options for the Aspia processes, set by child_privileges
 declare -A BACKED_UP=()  # file -> 1 once copied (or created) in this start; backup() skips it
 STOPPING=0
 EXIT_CODE=0
@@ -97,17 +103,22 @@ die() {
 # ---------------------------------------------------------------------------------------------
 # Helpers
 
-# replace_file <file> <new content file>: atomically replaces <file>, keeping its mode and owner.
+# replace_file <file> <new content file>: atomically replaces <file>, keeping its owner. Only the
+# configuration files are rewritten (router.conf and router.json hold the private keys): mode 0600.
 replace_file() {
-    chmod --reference="$1" "$2"
-    chown --reference="$1" "$2"
-    mv -f "$2" "$1"
+    chmod 0600 -- "$2"
+    chown -h --reference="$1" -- "$2"
+    mv -f -- "$2" "$1"
 }
 
-# copy_file <src> <dest>: cp -a without CAP_FOWNER (mode first, then owner).
+# copy_file <src> <dest> [mode]: cp -a without CAP_FOWNER (mode first, then owner), but with
+# <mode>, by default 0600: the copies are backups of the configuration and the database, and keys.
+# The mode is set while root still owns the copy: after the chown, root could not change it any
+# more on files of another uid. Never writes through a symbolic link at <dest>.
 copy_file() {
-    cp --preserve=mode,timestamps -- "$1" "$2"
-    chown --reference="$1" -- "$2"
+    cp --preserve=timestamps --remove-destination -- "$1" "$2"
+    chmod "${3:-0600}" -- "$2"
+    chown -h --reference="$1" -- "$2"
 }
 
 # ini_set <file> <section> <key> <value>: sets one key; the rest of the file is kept as it is.
@@ -172,16 +183,25 @@ read_key() {
     return 0
 }
 
+# cap_eff: this process's effective capabilities, the hex mask of /proc/<pid>/status.
+# has_cap <number>: the capability with that number (linux/capability.h) is in that set.
+readonly CAP_DAC_OVERRIDE=1 CAP_SETPCAP=8
+cap_eff() { awk '/^CapEff:/ { print $2 }' "/proc/$$/status"; }
+has_cap() { (( (16#$(cap_eff) >> $1) & 1 )); }
+
 # adopt_legacy_key: a 2.x migration keeps the 2.x key pair for hosts and relays (it writes the 2.x
 # private key into both host/private_key and relay/private_key) but does not create host.pub or
 # relay.pub. Copy router.pub to the missing ones, so a migrated install has the same key files as
 # a new one. router.pub itself is left as it is.
 adopt_legacy_key() {
-    local file
+    local file mode
     [[ -n "$(read_key "${ROUTER_PUB}")" ]] || return 0
     for file in "${HOST_PUB}" "${RELAY_PUB}"; do
         [[ -e "${file}" ]] && continue
-        copy_file "${ROUTER_PUB}" "${file}"
+        # host.pub is the public key for Hosts: 0644, as restrict_permissions keeps it. relay.pub: 0600.
+        mode=0600
+        [[ "${file}" == "${HOST_PUB}" ]] && mode=0644
+        copy_file "${ROUTER_PUB}" "${file}" "${mode}"
         log "Router: created ${file} from the Aspia 2.x key ${ROUTER_PUB}."
     done
 }
@@ -497,7 +517,8 @@ drop_privileges() {
     local puid="${PUID:-}" pgid="${PGID:-}"
     [[ -z "${puid}" && -z "${pgid}" ]] && return 0
 
-    chown -R "${puid}:${pgid}" "${CONFIG_DIR}" "${DATA_DIR}"
+    # -h: a symbolic link in the volumes is re-owned itself, never the file it points to.
+    chown -Rh "${puid}:${pgid}" -- "${CONFIG_DIR}" "${DATA_DIR}"
     if [[ "${ROLE}" == all ]]; then
         log "PUID/PGID set: running the Router and the Relay as uid=${puid} gid=${pgid}."
     else
@@ -515,7 +536,12 @@ drop_privileges() {
         export ASPIA_RELAY_ROUTER_PUBLIC_KEY="${ROUTER_KEY}"
         unset ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE
     fi
-    exec setpriv --reuid="${puid}" --regid="${pgid}" --clear-groups --no-new-privs -- "$0" "$@"
+    # No capability survives the switch to a non-root uid; the bounding set and the inheritable set
+    # are cleared too (the bounding set only with CAP_SETPCAP, see child_privileges).
+    local -a bounding=()
+    has_cap "${CAP_SETPCAP}" && bounding=(--bounding-set=-all)
+    exec setpriv --reuid="${puid}" --regid="${pgid}" --clear-groups --inh-caps=-all "${bounding[@]}" \
+        --no-new-privs -- "$0" "$@"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -872,14 +898,72 @@ prepare_relay() {
     apply_relay_settings
 }
 
+# restrict_permissions: the volumes hold the private keys (router.conf, relay.conf, the 2.x
+# router.json, relay.json and router.pub, the backups of all of them), the user database and
+# relay.pub, the key a Relay registers with. Older starts left most of them 0644 in 0755 directories:
+# readable by every user of the server when the volumes are bind mounts. Now the directories are
+# 0700 and the files 0600. host.pub stays 0644: it is the public key every Host is given, and the
+# log prints it on every start. Only what this uid owns is changed (without CAP_FOWNER root cannot
+# chmod the files of another uid; a start with PUID/PGID restricts them); symbolic links are skipped.
+restrict_permissions() {
+    local path mode want list
+    local -a changed=()
+    for path in "${CONFIG_DIR}" "${DATA_DIR}" "${CONFIG_DIR}"/* "${DATA_DIR}"/*; do
+        [[ ! -L "${path}" && -O "${path}" ]] || continue   # -O: also exists
+        if [[ -d "${path}" ]]; then
+            want=700
+        elif [[ "${path}" == "${HOST_PUB}" ]]; then
+            want=644
+        elif [[ "${path}" == "${RELAY_PUB}" ]] && remote_router; then
+            continue   # ASPIA_ROLE=relay: the user's copy of the Router's key, maybe a read-only mount
+        else
+            want=600
+        fi
+        mode="$(stat -c %a -- "${path}")"
+        [[ "${mode: -3}" == "${want}" ]] && continue   # only the permission bits: a setgid directory stays so
+        if chmod "${want}" -- "${path}" 2>/dev/null; then
+            changed+=("${path} (${mode} -> ${want})")
+        else
+            warn "Cannot change the mode of ${path} (${mode}) to ${want}; left as it is."
+        fi
+    done
+    ((${#changed[@]})) || return 0
+    list="$(printf ', %s' "${changed[@]}")"
+    log "Permissions: set the mode of ${list#, }."
+}
+
 # ---------------------------------------------------------------------------------------------
 # Phase 3: start and supervise.
 
-# start_process <name> <command...>: starts the command in the background; its pid is in STARTED_PID.
+# child_privileges: sets CHILD_SETPRIV. The Aspia processes need no capability: every port is above
+# 1024, and their files are their own. So they start without any, and with no_new_privs (which the
+# Podman units do not set for the container). With PUID/PGID they are not root and have none anyway.
+# As root, setpriv clears the bounding set, which takes CAP_SETPCAP (in cap_add of the shipped compose
+# files and units); without it they keep the container's capabilities, as before. Root on files of
+# another uid (an earlier start with PUID/PGID, a user's directory) keeps DAC_OVERRIDE to read them.
+child_privileges() {
+    CHILD_SETPRIV=(--inh-caps=-all --no-new-privs)
+    ((EUID == 0)) || return 0
+    if has_cap "${CAP_SETPCAP}"; then
+        local bset=-all
+        if [[ -n "$(find "${CONFIG_DIR}" "${DATA_DIR}" ! -user 0 -print -quit)" ]] && has_cap "${CAP_DAC_OVERRIDE}"; then
+            bset+=,+dac_override
+            log "${CONFIG_DIR} or ${DATA_DIR} holds files of another user: the Aspia processes keep" \
+                "CAP_DAC_OVERRIDE to read them. Set PUID/PGID to that user, or chown the files to root."
+        fi
+        CHILD_SETPRIV+=("--bounding-set=${bset}")
+    elif ((16#$(cap_eff))); then
+        warn "No CAP_SETPCAP: the Aspia processes run as root with the capabilities of the container." \
+            "Add SETPCAP to cap_add (README.md, \"Security settings\"), or set PUID/PGID."
+    fi
+}
+
+# start_process <name> <command...>: starts the command in the background, with the privileges of
+# child_privileges; its pid is in STARTED_PID (setpriv execs the command in the same process).
 start_process() {
     local name="$1"
     shift
-    "$@" &
+    setpriv "${CHILD_SETPRIV[@]}" -- "$@" &
     STARTED_PID=$!
     CHILDREN[${STARTED_PID}]="${name}"
     log "Started ${name} (pid ${STARTED_PID})."
@@ -1072,6 +1156,8 @@ main() {
     for service in "${SERVICES[@]}"; do
         ((STOPPING)) || "prepare_${service}"
     done
+    ((STOPPING)) || restrict_permissions
+    ((STOPPING)) || child_privileges
     for service in "${SERVICES[@]}"; do
         ((STOPPING)) || "start_${service}"
     done

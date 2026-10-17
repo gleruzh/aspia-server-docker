@@ -49,7 +49,7 @@ services:
       - "8063:8063"                                                                 # Relays (router.conf [relay] port)
     # Least privilege; why each capability: README.md, "Security settings".
     cap_drop: [ALL]
-    cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID, KILL]
+    cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID, KILL, SETPCAP]
     security_opt: ["no-new-privileges:true"]
     read_only: true
     pids_limit: 128
