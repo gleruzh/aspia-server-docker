@@ -1,0 +1,143 @@
+# Rebuild for fixed vulnerabilities: once a day, scan the published image (the GHCR digest of the tag
+# ASPIA_VERSION of versions.env on main) with Trivy and start publish.yml on main only when a rebuild
+# would install a fix: a package with a finding that has a fix, which "apt-get upgrade" in the
+# Dockerfile gets in a new version. Nothing else starts a publish, and none is started while another
+# is queued or running. Why it is built like this: docs/ci.md.
+name: Rebuild for fixed vulnerabilities
+
+on:
+  schedule:
+    - cron: '41 4 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: rebuild
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # The same pinned Trivy as ci.yml (tests/lint.sh checks that the two agree).
+  TRIVY_IMAGE: aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
+
+jobs:
+  scan:
+    name: Scan the published image for fixable vulnerabilities
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read   # pull the image while the GHCR package is still private
+    outputs:
+      rebuild: ${{ steps.decide.outputs.rebuild }}
+      version: ${{ steps.decide.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Image name
+        env:
+          OWNER: ${{ github.repository_owner }}
+          VAR_GHCR_IMAGE: ${{ vars.GHCR_IMAGE }}
+        run: |
+          # Only main publishes, so only main's versions.env names the published image.
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::This workflow runs only from main, not from ${GITHUB_REF}."
+            exit 1
+          fi
+          scripts/image-names.sh | grep '^GHCR_IMAGE=' | tee -a "${GITHUB_ENV}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan, and check what a rebuild would upgrade
+        id: decide
+        run: |
+          version="$(scripts/versions.sh get ASPIA_VERSION)"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          # Right after a version bump, publish.yml may not have pushed the tag X.Y.Z yet: nothing to
+          # scan, not an error. Only that case ends here with success: the tag is "not found" while the
+          # image has a tag latest. Any other error fails the run, and so does a missing tag in an image
+          # without latest (a wrong image name, or nothing published yet).
+          if ! manifest="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${GHCR_IMAGE}:${version}" 2> "${RUNNER_TEMP}/inspect.err")"; then
+            cat "${RUNNER_TEMP}/inspect.err" >&2
+            if grep -qF ': not found' "${RUNNER_TEMP}/inspect.err" \
+              && docker buildx imagetools inspect "${GHCR_IMAGE}:latest" > /dev/null; then
+              echo "::notice::${GHCR_IMAGE}:${version} is not in GHCR yet (publish.yml has not published this version yet); nothing to scan."
+              echo "rebuild=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            exit 1
+          fi
+          digest="$(jq -r .digest <<<"${manifest}")"
+          image="${GHCR_IMAGE}@${digest}"
+          echo "Published image: ${image}"
+          docker pull -q --platform linux/amd64 "${image}"
+          # Packages that Debian has a newer version of. If there are none, a rebuild changes nothing:
+          # skip the image export and the Trivy run (and its database download).
+          docker run --rm --platform linux/amd64 --user 0 "${image}" \
+            sh -c 'apt-get update -qq >/dev/null && apt-get -s upgrade' \
+            | sed -n 's/^Inst \([^ :]*\).*/\1/p' | sort -u > "${RUNNER_TEMP}/upgradable"
+          if [[ ! -s "${RUNNER_TEMP}/upgradable" ]]; then
+            {
+              echo "### Fixable vulnerabilities in ${GHCR_IMAGE}:${version}"
+              echo
+              echo "Digest \`${digest}\`. Debian has no newer version of any installed package: nothing to rebuild, scan skipped."
+            } | tee -a "${GITHUB_STEP_SUMMARY}"
+            echo "rebuild=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          docker save -o "${RUNNER_TEMP}/image.tar" "${image}"
+          docker run --rm -v "${RUNNER_TEMP}:/work" -v trivy-cache:/root/.cache/trivy "${TRIVY_IMAGE}" \
+            image --quiet --scanners vuln --ignore-unfixed --format json --output /work/trivy.json --input /work/image.tar
+          # Packages with a finding that has a fix.
+          jq -r '[.Results[]?.Vulnerabilities[]?.PkgName] | unique | .[]' "${RUNNER_TEMP}/trivy.json" > "${RUNNER_TEMP}/fixable"
+          fixed="$(sort -u "${RUNNER_TEMP}/fixable" | comm -12 - "${RUNNER_TEMP}/upgradable" | tr '\n' ' ')"
+          {
+            echo "### Fixable vulnerabilities in ${GHCR_IMAGE}:${version}"
+            echo
+            echo "Digest \`${digest}\`."
+            echo
+            jq -r '[.Results[]?.Vulnerabilities[]?] | "Findings with a fix: \(length)."
+              + (if length > 0 then " " + (map("\(.PkgName) \(.InstalledVersion) -> \(.FixedVersion) (\(.VulnerabilityID), \(.Severity))") | join("; ")) else "" end)' \
+              "${RUNNER_TEMP}/trivy.json"
+            echo
+            echo "Of their packages, a rebuild upgrades: ${fixed:-none}."
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
+          if [[ -n "${fixed}" ]]; then
+            echo "rebuild=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "rebuild=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+  rebuild:
+    name: Start publish.yml on main
+    needs: scan
+    if: needs.scan.outputs.rebuild == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write   # list the publish runs and start one (workflow_dispatch)
+    steps:
+      - name: Start a publish unless one is queued or running
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.scan.outputs.version }}
+        run: |
+          busy="$(gh run list --workflow publish.yml --limit 20 --json status --jq '[.[] | select(.status != "completed")] | length')"
+          if ((busy > 0)); then
+            echo "::notice::A publish is already queued or running; it builds main with the current Debian packages. Not starting another."
+            exit 0
+          fi
+          gh workflow run publish.yml --ref main -f version="${VERSION}" -f dated_tag=true
+          echo "Started publish.yml on main for Aspia ${VERSION} (with a dated tag)." | tee -a "${GITHUB_STEP_SUMMARY}"

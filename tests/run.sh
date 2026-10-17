@@ -31,7 +31,10 @@
 #   9. ASPIA_ROUTER_*/ASPIA_RELAY_* variables land in the configuration; healthy on custom ports
 #  10. a variable removed: the hand edit in the file survives; setting it again overwrites it
 #  11. an invalid value: one clear error naming the variable, non-zero exit, nothing written
-#  12. ASPIA_RELAY_PUBLIC_ADDRESS=auto with no network: clear error, non-zero exit
+#  12. ASPIA_RELAY_PUBLIC_ADDRESS=auto with no network: clear error, non-zero exit; 12b. tests/auto_address.sh
+#      in the image (range filter, response parser, sources and openssl options with a stub openssl,
+#      certificate checks with the real one); 12c. auto with a stub openssl: a private answer is skipped,
+#      the next source's address lands in relay.conf; docker stop during the detection is fast and clean
 #  13. a 2.x migration start also applies a new Relay variable (one the upstream migration itself copies);
 #      started as root on 2.x data of uid 1000: host.pub is created 0644, owned by 1000; the note about
 #      8060 names ASPIA_ROUTER_LEGACY_PORT for the Quadlet unit, and deleting router.pub turns it off
@@ -122,6 +125,7 @@ cleanup() {
         docker network rm "${id}" >/dev/null 2>&1 || true
     done
     [[ -z "${TAMPER_DIR:-}" ]] || rm -rf "${TAMPER_DIR}"
+    [[ -z "${STUB_DIR:-}" ]] || rm -rf "${STUB_DIR}"
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
@@ -917,8 +921,64 @@ scenario_env_auto_no_network() {
     [[ "${code}" != 0 ]] || fail "exit code 0 with ASPIA_RELAY_PUBLIC_ADDRESS=auto and no network"
     log_has "${name}" 'ASPIA_RELAY_PUBLIC_ADDRESS=auto: could not detect' \
         || fail "no clear message about the failed detection"
+    log_has "${name}" 'Set EXTERNAL_IP \(or ASPIA_RELAY_PUBLIC_ADDRESS\) to the public address explicitly' \
+        || fail "the error does not say to set EXTERNAL_IP"
+    log_has "${name}" 'WARNING: Relay: https://api.ipify.org: no TLS connection' || fail "no reason given for the first source"
     [[ -z "$(helper "${cfg}" "${db}" find /etc/aspia /var/lib/aspia -mindepth 1)" ]] || fail "files were created"
     ok "auto with no network: exit code ${code}, nothing written"
+}
+
+scenario_env_auto_stub() {
+    local out cfg db name relay_conf start elapsed code
+    log "12b. tests/auto_address.sh in the image, without network: range filter, parser, sources, certificate checks"
+    out="$(docker run --rm -i --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" --network none "${IMAGE}" \
+        bash -s < tests/auto_address.sh 2>&1)" || { printf '%s\n' "${out}" >&2; fail "tests/auto_address.sh failed"; }
+    ok "tests/auto_address.sh: $(grep -c '^  ok' <<<"${out}") checks passed"
+
+    log "12c. ASPIA_RELAY_PUBLIC_ADDRESS=auto with a stub openssl: a private answer skipped, the next one used"
+    # The stub answers a private address for the first source and 192.0.3.7 for the others, after
+    # STUB_SLEEP seconds.
+    STUB_DIR="$(mktemp -d)"
+    cat > "${STUB_DIR}/openssl" <<'STUB'
+#!/bin/bash
+cat > /dev/null
+sleep "${STUB_SLEEP:-0}"
+[[ " $* " == *" api.ipify.org:443 "* ]] && body=10.1.2.3 || body=192.0.3.7
+printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n%s\n' "${body}"
+STUB
+    chmod 0755 "${STUB_DIR}" "${STUB_DIR}/openssl"
+    cfg="$(new_volume s12c-config)"
+    db="$(new_volume s12c-db)"
+    run_new s12c "${cfg}" "${db}" -e EXTERNAL_IP=auto -v "${STUB_DIR}/openssl:/usr/local/bin/openssl:ro"
+    name="${CURRENT_CONTAINER}"
+    wait_log "${name}" 'External address \(Relay\): +192\.0\.3\.7$' 1 60
+    log_has "${name}" 'https://api.ipify.org answered 10\.1\.2\.3, a private address \(RFC 1918\), not a public address' \
+        || fail "the private answer of the first source was not reported"
+    log_has "${name}" 'detected the public address 192\.0\.3\.7 \(source: https://ifconfig\.me/ip\)' \
+        || fail "the detected address and its source are not logged"
+    relay_conf="$(helper "${cfg}" "${db}" cat /etc/aspia/relay.conf)"
+    [[ "$(ini_value "${relay_conf}" peer public_address)" == 192.0.3.7 ]] || fail "relay.conf public_address is not 192.0.3.7"
+    ok "10.1.2.3 from the first source refused; 192.0.3.7 from the second in relay.conf"
+    docker rm -fv "${name}" >/dev/null
+
+    # docker stop while the first source has not answered yet (it answers after 30 s).
+    cfg="$(new_volume s12c2-config)"
+    db="$(new_volume s12c2-db)"
+    run_new s12c2 "${cfg}" "${db}" -e EXTERNAL_IP=auto -e STUB_SLEEP=30 -v "${STUB_DIR}/openssl:/usr/local/bin/openssl:ro"
+    name="${CURRENT_CONTAINER}"
+    wait_log "${name}" 'auto: detecting the public address' 1 30
+    sleep 1
+    start=${SECONDS}
+    docker stop "${name}" >/dev/null
+    elapsed=$((SECONDS - start))
+    code="$(state .State.ExitCode "${name}")"
+    ((elapsed < 3)) || fail "docker stop during the detection took ${elapsed} s"
+    [[ "${code}" == 0 ]] || fail "exit code ${code} after docker stop during the detection"
+    if log_has "${name}" 'WARNING: Relay: https://|detected the public address'; then
+        fail "the detection went on after the stop request"
+    fi
+    [[ -z "$(helper "${cfg}" "${db}" find /etc/aspia /var/lib/aspia -mindepth 1)" ]] || fail "files were created"
+    ok "docker stop during the detection: ${elapsed} s, exit code 0, no answer waited for, nothing written"
 }
 
 scenario_env_migration() {
@@ -1327,10 +1387,10 @@ run_invalid_relay() {
 }
 
 # router_address_verdicts <value>...: "valid <value>" or "invalid <value>" per value, from
-# is_valid_router_address of the image under test (aspia_start without its final call of main).
+# is_valid_router_address of the image under test (sourcing aspia_start does not run main).
 router_address_verdicts() {
     docker run --rm --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" --entrypoint bash "${IMAGE}" -c '
-        source <(sed "\$d" /usr/bin/aspia_start)
+        source /usr/bin/aspia_start
         for v in "$@"; do
             if is_valid_router_address "$v"; then echo "valid $v"; else echo "invalid $v"; fi
         done' _ "$@"
@@ -1549,6 +1609,7 @@ scenario_env_apply
 scenario_env_persistence
 scenario_env_invalid
 scenario_env_auto_no_network
+scenario_env_auto_stub
 scenario_env_migration
 scenario_puid_pgid
 scenario_env_empty_allowlist
