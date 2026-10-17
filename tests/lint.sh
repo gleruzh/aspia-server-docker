@@ -173,9 +173,9 @@ unpinned="$(grep -rn --include='*.md' --include='*.yml' -e '--certificate-identi
     | grep -vE 'publish\\{1,2}\.yml@refs/heads/main\$' || true)"
 [[ -z "${unpinned}" ]] || { printf '%s\n' "${unpinned}" "cosign identity not pinned to refs/heads/main"; status=1; }
 
-# rebuild.yml starts publish.yml on main only, and scans with the Trivy that ci.yml pins.
+# rebuild.yml starts publish.yml on main only.
 wf=.github/workflows/rebuild.yml
-echo "${wf} starts publish.yml on main only, skips only an unpublished version, uses the Trivy of ci.yml"
+echo "${wf} starts publish.yml on main only, skips only an unpublished version"
 dispatches="$(grep -n 'gh workflow run' "${wf}" || true)"
 if [[ -z "${dispatches}" ]] || grep -v 'gh workflow run publish\.yml --ref main ' <<<"${dispatches}"; then
     echo "${wf}: every 'gh workflow run' must be 'gh workflow run publish.yml --ref main ...'"; status=1
@@ -187,8 +187,6 @@ if ! grep -qF "grep -qF ': not found' \"\${RUNNER_TEMP}/inspect.err\"" "${wf}" \
     || ! grep -qF 'docker buildx imagetools inspect "${GHCR_IMAGE}:latest"' "${wf}"; then
     echo "${wf}: a missing tag X.Y.Z must end the run only for 'not found' with a tag latest present"; status=1
 fi
-trivy_pins="$(grep -h '^  TRIVY_IMAGE: ' .github/workflows/ci.yml "${wf}" | sort -u)"
-(($(wc -l <<<"${trivy_pins}") == 1)) || { printf '%s\n' "${trivy_pins}" "ci.yml and ${wf} pin different Trivy images"; status=1; }
 
 ((status == 0)) && echo "lint: ok"
 exit "${status}"

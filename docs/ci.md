@@ -13,8 +13,8 @@ to Docker Hub or Quay.io only when the owner has set their secrets.
 | [`dockerhub-description.yml`](../.github/workflows/dockerhub-description.yml) | push to `main` that changes `docs/dockerhub.md`; manual | Replaces the Docker Hub description with `docs/dockerhub.md` when the push starts no publish (see [Enabling Docker Hub](#enabling-docker-hub)). |
 
 Dependabot ([`.github/dependabot.yml`](../.github/dependabot.yml)) opens pull requests, weekly, for
-the pinned action SHAs and for the pinned digest of the Debian base image. Nothing is updated
-silently. Security updates of Debian reach the image in two ways. A Dependabot pull request for the
+the pinned action SHAs, the pinned digest of the Debian base image and the pinned
+[tool images](#tool-images). Nothing is updated silently. Security updates of Debian reach the image in two ways. A Dependabot pull request for the
 base digest changes the Dockerfile; once merged, `publish.yml` publishes the new image. Between
 those, the Dockerfile runs `apt-get upgrade`, so every build installs the current Debian packages,
 and `rebuild.yml` starts a publish when the published image has a vulnerability that such a build
@@ -47,9 +47,10 @@ Compose v2.31 for the Compose v2 check of `tests/run.sh`) are pinned by tag and 
 `FROM <image>:<tag>@sha256:<digest> AS <name>` line each. The file is never built; it is in the
 format Dependabot's docker ecosystem reads, so Dependabot opens a weekly pull request (prefix `ci`)
 when one of them has a new version or digest, and the CI run of that pull request shows whether the
-new linter or scanner still passes. `tests/lint.sh`, `tests/run.sh` and `ci.yml` read an image with
-`scripts/tool-image.sh <name>`. `tests/lint.sh` fails when a line of the file is not pinned by tag
-and digest, or when a script or workflow pins an image of its own instead of reading it from there.
+new linter or scanner still passes. `tests/lint.sh`, `tests/run.sh`, `ci.yml` and `rebuild.yml`
+read an image with `scripts/tool-image.sh <name>`. `tests/lint.sh` fails when a line of the file is
+not pinned by tag and digest, or when a script or workflow pins an image of its own instead of
+reading it from there.
 
 Two images are kept from moving on purpose:
 
@@ -294,8 +295,8 @@ Why it is built like this:
   builds `main` with the current packages anyway, and a new waiting run would cancel a waiting one.
 - **Least privilege.** The job `scan` has `contents: read` and `packages: read`; the job that starts
   the publish has only `actions: write` and runs no code from the repository. `tests/lint.sh` checks
-  that the workflow starts `publish.yml` with `--ref main` only, and that it pins the same Trivy image
-  as `ci.yml`.
+  that the workflow starts `publish.yml` with `--ref main` only. It scans with the same pinned Trivy
+  image as `ci.yml`, read from [`.github/tool-images/Dockerfile`](#tool-images).
 
 A manual run checks at once:
 
