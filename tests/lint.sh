@@ -3,9 +3,9 @@
 # tests/lint.sh: hadolint for every Dockerfile, shellcheck for every shell script, actionlint for
 # the workflows (it also runs shellcheck on their run: blocks), that the podman/*.env.example files
 # list the variables of .env.example that apply to their unit, that the Quadlet unit does not publish
-# the Aspia 2.x port 8060 by default, scripts/versions.sh check, the input checks of
-# scripts/versions.sh files and scripts/aspia-release.sh (with a stub gh), and that publish.yml
-# publishes from main only.
+# the Aspia 2.x port 8060 by default, that the Dockerfile installs no curl, scripts/versions.sh check,
+# the input checks of scripts/versions.sh files and scripts/aspia-release.sh (with a stub gh), and
+# that publish.yml publishes from main only.
 # The linters run as pinned containers, so the result does not depend on what the host has installed.
 
 set -euo pipefail
@@ -17,7 +17,7 @@ readonly SHELLCHECK=koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6fe
 readonly ACTIONLINT=rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 
 readonly DOCKERFILES=(Dockerfile tests/helper/Dockerfile)
-readonly SCRIPTS=(aspia_start aspia_health aspia_common.sh tests/run.sh tests/podman.sh tests/lint.sh tests/helper/x25519_pub scripts/versions.sh scripts/aspia-release.sh scripts/image-names.sh)
+readonly SCRIPTS=(aspia_start aspia_health aspia_common.sh tests/run.sh tests/podman.sh tests/lint.sh tests/auto_address.sh tests/helper/x25519_pub scripts/versions.sh scripts/aspia-release.sh scripts/image-names.sh)
 
 status=0
 for file in "${DOCKERFILES[@]}"; do
@@ -55,6 +55,15 @@ check_env_example podman/aspia-relay.env.example '^(ASPIA_IMAGE|ASPIA_ROLE|ASPIA
 echo "podman/aspia-server.container does not publish 8060"
 if grep -q '^PublishPort=.*8060' podman/aspia-server.container; then
     echo "podman/aspia-server.container publishes the Aspia 2.x port 8060 by default" >&2
+    status=1
+fi
+
+# curl and its libraries brought more than a third of the image's known vulnerabilities; aspia_start
+# uses openssl s_client for ASPIA_RELAY_PUBLIC_ADDRESS=auto. No line of the Dockerfile outside its
+# comments may name curl (a package list or a download alike).
+echo "Dockerfile installs no curl"
+if grep -nE '^[^#]*(^|[^[:alnum:]_-])curl([^[:alnum:]_-]|$)' Dockerfile; then
+    echo "Dockerfile: curl is back in the image; aspia_start does not need it (openssl s_client)" >&2
     status=1
 fi
 

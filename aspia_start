@@ -27,8 +27,9 @@
 # before migration, no renaming of existing data, no sleep before starting the Relay, and the
 # configuration files are rewritten atomically. PR 3 added: an ASPIA_ROUTER_*/ASPIA_RELAY_*
 # variable scheme for every documented router.conf/relay.conf key (ports, allow-lists, STUN,
-# Relay timeout/limit), stricter address/port/list validation, EXTERNAL_IP=auto (detected with
-# curl, added back to the image for this only), and PUID/PGID to run both processes as non-root.
+# Relay timeout/limit), stricter address/port/list validation, EXTERNAL_IP=auto (detected over
+# HTTPS, now with openssl s_client: the image has no curl), and PUID/PGID to run both processes as
+# non-root.
 # PR 5 added ASPIA_ROLE and the ASPIA_RELAY_ROUTER_* variables for a Relay on its own.
 
 # SC2329: validate_*, prepare_*, start_* and print_summary_* are called by name through SERVICES, on_signal by trap.
@@ -71,6 +72,23 @@ readonly RE_IPV6='^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1
 # endpoints (the same ones SinitsaDA/aspia-server-docker used), each given a short timeout.
 readonly AUTO_ADDRESS_SOURCES=("https://api.ipify.org" "https://ifconfig.me/ip" "https://icanhazip.com")
 readonly AUTO_ADDRESS_TIMEOUT=5
+# The CA bundle of the ca-certificates package; the answer is used only from a verified source.
+readonly AUTO_ADDRESS_CA_FILE=/etc/ssl/certs/ca-certificates.crt
+# IPv4 ranges that an auto-detected address is never in: such an answer is not the address clients
+# and hosts can reach (a proxy, a broken source). "<subnet> <what it is>"; IPv6 is in auto_address_rejected.
+readonly AUTO_ADDRESS_REJECTED_IPV4=(
+    "0.0.0.0/8 an unspecified address"
+    "10.0.0.0/8 a private address (RFC 1918)"
+    "100.64.0.0/10 a carrier-grade NAT address (RFC 6598)"
+    "127.0.0.0/8 a loopback address"
+    "169.254.0.0/16 a link-local address"
+    "172.16.0.0/12 a private address (RFC 1918)"
+    "192.0.2.0/24 a documentation address (RFC 5737)"
+    "192.168.0.0/16 a private address (RFC 1918)"
+    "198.51.100.0/24 a documentation address (RFC 5737)"
+    "203.0.113.0/24 a documentation address (RFC 5737)"
+    "224.0.0.0/4 a multicast address"
+)
 
 BACKUP_SUFFIX=".pre-${ASPIA_VERSION:-3.x}-$(date -u +%Y%m%dT%H%M%SZ)"
 readonly BACKUP_SUFFIX
@@ -79,6 +97,7 @@ ROUTER_STATE=""   # new | migrate | existing
 RELAY_STATE=""    # new | migrate | existing
 PEER_PUBLIC_ADDRESS=""   # resolved in validate_relay: ASPIA_RELAY_PUBLIC_ADDRESS, its alias
                           # EXTERNAL_IP, or the result of "auto" detection.
+DETECTED_ADDRESS=""      # set by detect_public_address
 ROUTER_KEY=""            # The Router's relay key that relay.conf gets. Remote Router (ASPIA_ROLE=relay): resolved
                           # in validate_remote_relay from ASPIA_RELAY_ROUTER_PUBLIC_KEY or the file
                           # ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE. Otherwise read from relay.pub in prepare_relay
@@ -377,20 +396,155 @@ refuse_path_override() {
         "check the wrong path. Unset ${name}. Nothing was changed."
 }
 
-# detect_public_address: tries every source in AUTO_ADDRESS_SOURCES in turn; prints the first
-# address that answers within the timeout and is a valid IP literal, and logs which source it was.
-detect_public_address() {
-    local src ip
-    for src in "${AUTO_ADDRESS_SOURCES[@]}"; do
-        if ip="$(curl -fsS --connect-timeout "${AUTO_ADDRESS_TIMEOUT}" --max-time "${AUTO_ADDRESS_TIMEOUT}" "${src}" 2>/dev/null)"; then
-            ip="$(trim "${ip}")"
-            if is_valid_ip "${ip}"; then
-                log "Relay: detected the public address ${ip} via ${src}."
-                printf '%s\n' "${ip}"
+# ipv6_expand <ipv6>: prints the address with all eight groups, four lower-case hex digits each
+# (2001:db8::1 -> 2001:0db8:0000:0000:0000:0000:0000:0001). The address must be valid (is_valid_ipv6).
+ipv6_expand() {
+    local ip="${1,,}" group out=""
+    local -a head=() tail=()
+    if [[ "${ip}" == *::* ]]; then
+        IFS=: read -ra head <<<"${ip%%::*}"
+        IFS=: read -ra tail <<<"${ip#*::}"
+        while ((${#head[@]} + ${#tail[@]} < 8)); do head+=(0); done
+    else
+        IFS=: read -ra head <<<"${ip}"
+    fi
+    for group in "${head[@]}" "${tail[@]}"; do
+        out+="$(printf '%04x' "$((16#${group}))"):"
+    done
+    printf '%s\n' "${out%:}"
+}
+
+# auto_address_rejected <ip>: if a valid IP literal is in a range that an auto-detected address is
+# never in, prints what it is ("a private address (RFC 1918)") and succeeds; fails for a public one.
+auto_address_rejected() {
+    local ip="$1" entry subnet prefix mask target
+    if is_valid_ipv4 "${ip}"; then
+        target="$(ipv4_to_int "${ip}")"
+        for entry in "${AUTO_ADDRESS_REJECTED_IPV4[@]}"; do
+            subnet="${entry%% *}"
+            prefix="${subnet#*/}"
+            mask=$(( (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF ))
+            if (( ($(ipv4_to_int "${subnet%/*}") & mask) == (target & mask) )); then
+                printf '%s\n' "${entry#* }"
                 return 0
             fi
-            warn "Relay: ${src} answered '${ip}', which is not a valid IP address; trying the next source."
+        done
+        return 1
+    fi
+    case "$(ipv6_expand "${ip}")" in
+        0000:0000:0000:0000:0000:0000:0000:0000) echo "an unspecified address" ;;
+        0000:0000:0000:0000:0000:0000:0000:0001) echo "a loopback address" ;;
+        f[cd]??:*) echo "a unique local address (fc00::/7)" ;;
+        fe[89ab]?:*) echo "a link-local address" ;;
+        ff??:*) echo "a multicast address" ;;
+        2001:0db8:*) echo "a documentation address (RFC 3849)" ;;
+        *) return 1 ;;
+    esac
+}
+
+# printable <text>: the first 60 characters of an answer, for the log, with control characters as '?'.
+printable() {
+    local text="${1:0:60}"
+    printf '%s\n' "${text//[^[:print:]]/?}"
+}
+
+# parse_address_response <HTTP response>: prints the body of an "HTTP/1.x 200" response, without
+# surrounding whitespace; fails, printing why, for any other status, a response without a body, or a
+# body shorter or longer than its Content-Length (a cut connection: fetch_https accepts a server
+# closing it without a TLS close_notify, as some of the sources do).
+parse_address_response() {
+    local response="${1//$'\r'/}" status headers body length_re=$'\n''content-length:[[:space:]]*([0-9]+)'
+    status="${response%%$'\n'*}"
+    if [[ ! "${status}" =~ ^HTTP/1\.[01]\ 200([[:space:]]|$) ]]; then
+        printf '%s\n' "an HTTP status other than 200 ('$(printable "${status}")')"
+        return 1
+    fi
+    if [[ "${response}" != *$'\n\n'* ]]; then
+        echo "a response without a body"
+        return 1
+    fi
+    headers="${response%%$'\n\n'*}"
+    # The length is counted on the body as sent, with its line ends.
+    if [[ "$1" == *$'\r\n\r\n'* ]]; then body="${1#*$'\r\n\r\n'}"; else body="${1#*$'\n\n'}"; fi
+    if [[ "${headers,,}" =~ ${length_re} ]] && ((10#${BASH_REMATCH[1]} != ${#body})); then
+        printf '%s\n' "a body of ${#body} bytes instead of its Content-Length ${BASH_REMATCH[1]}"
+        return 1
+    fi
+    trim "${response#*$'\n\n'}"
+    echo
+}
+
+# fetch_https <url>: prints the response to "GET <url>" (HTTP/1.0) over TLS, at most 4 KiB. openssl
+# s_client aborts the handshake unless the certificate chains to a CA of ca-certificates and is valid
+# for the host name; -quiet also keeps reading after the request until the server closes, and
+# -ignore_unexpected_eof accepts a close without close_notify (parse_address_response checks the
+# length). The request
+# never takes longer than AUTO_ADDRESS_TIMEOUT seconds. Returns the exit code of openssl, or 124
+# (from timeout) when the time ran out.
+fetch_https() {
+    local rest="${1#https://}" host path
+    host="${rest%%/*}"
+    path="${rest#"${host}"}"
+    path="/${path#/}"
+    printf 'GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: aspia-server\r\nAccept: text/plain\r\nConnection: close\r\n\r\n' \
+            "${path}" "${host}" \
+        | timeout -k 1 "${AUTO_ADDRESS_TIMEOUT}" openssl s_client -quiet -ignore_unexpected_eof \
+            -connect "${host}:443" -servername "${host}" -verify_hostname "${host}" -verify_return_error \
+            -CAfile "${AUTO_ADDRESS_CA_FILE}" 2>/dev/null \
+        | head -c 4096
+    return "${PIPESTATUS[1]}"
+}
+
+# detect_public_address: tries every source in AUTO_ADDRESS_SOURCES in turn and sets DETECTED_ADDRESS
+# to the first answer that is a public IP address, logging which source it was. Logs why each other
+# source was skipped. Runs in this shell, not in $(...), and waits for each request with "wait", which a
+# trapped signal interrupts at once: a stop request (STOPPING, set by on_signal) ends the detection
+# without waiting for the request or asking another source; it fails then.
+detect_public_address() {
+    local src response rc ip why fd
+    DETECTED_ADDRESS=""
+    log "Relay: ASPIA_RELAY_PUBLIC_ADDRESS=auto: detecting the public address (sources, in this order:" \
+        "${AUTO_ADDRESS_SOURCES[*]})."
+    for src in "${AUTO_ADDRESS_SOURCES[@]}"; do
+        ((!STOPPING)) || return 1
+        rc=0
+        exec {fd}< <(fetch_https "${src}")
+        wait "$!" || rc=$?
+        if ((STOPPING)); then
+            exec {fd}<&-
+            return 1
         fi
+        # The response is at most 4 KiB, so it fits into the pipe and fetch_https has already ended.
+        # read keeps the line ends at its end, which parse_address_response counts.
+        response=""
+        IFS= read -r -d '' -u "${fd}" response || true
+        exec {fd}<&-
+        if ((rc == 124)); then
+            warn "Relay: ${src} did not answer within ${AUTO_ADDRESS_TIMEOUT} s; trying the next source."
+            continue
+        elif ((rc != 0)); then
+            warn "Relay: ${src}: no TLS connection, or its certificate could not be verified (openssl" \
+                "exit code ${rc}); trying the next source."
+            continue
+        elif [[ -z "${response}" ]]; then
+            warn "Relay: ${src} sent an empty answer; trying the next source."
+            continue
+        fi
+        if ! ip="$(parse_address_response "${response}")"; then
+            warn "Relay: ${src} answered with ${ip}; trying the next source."
+            continue
+        fi
+        if ! is_valid_ip "${ip}"; then
+            warn "Relay: ${src} answered '$(printable "${ip}")', which is not an IP address; trying the next source."
+            continue
+        fi
+        if why="$(auto_address_rejected "${ip}")"; then
+            warn "Relay: ${src} answered ${ip}, ${why}, not a public address; trying the next source."
+            continue
+        fi
+        log "Relay: ASPIA_RELAY_PUBLIC_ADDRESS=auto: detected the public address ${ip} (source: ${src})."
+        DETECTED_ADDRESS="${ip}"
+        return 0
     done
     return 1
 }
@@ -663,10 +817,16 @@ validate_relay() {
     fi
 
     if [[ "${addr}" == "auto" ]]; then
-        addr="$(detect_public_address)" || die "ASPIA_RELAY_PUBLIC_ADDRESS=auto: could not detect the public" \
-            "IP address of this server from any source (tried: ${AUTO_ADDRESS_SOURCES[*]}, ${AUTO_ADDRESS_TIMEOUT}s" \
-            "each). Set ASPIA_RELAY_PUBLIC_ADDRESS to the address directly, or check that the container has" \
-            "network access. Nothing was changed."
+        if ! detect_public_address; then
+            # docker stop during the detection: nothing has been changed yet, so just end.
+            ((!STOPPING)) || exit 0
+            die "ASPIA_RELAY_PUBLIC_ADDRESS=auto: could not detect the public IP address of this server" \
+                "(tried: ${AUTO_ADDRESS_SOURCES[*]}, ${AUTO_ADDRESS_TIMEOUT} s each; the reasons are above)." \
+                "Set EXTERNAL_IP (or ASPIA_RELAY_PUBLIC_ADDRESS) to the public address explicitly, e.g." \
+                "EXTERNAL_IP=203.0.113.10, or check that the container can reach these sites over HTTPS." \
+                "Nothing was changed."
+        fi
+        addr="${DETECTED_ADDRESS}"
     elif ! is_valid_address "${addr}"; then
         die "ASPIA_RELAY_PUBLIC_ADDRESS='${addr}' is not an IP address or a host name (at most 64" \
             "characters: letters, digits, '.', '_' or '-'). Nothing was changed."
@@ -1196,4 +1356,5 @@ main() {
     supervise
 }
 
-main "$@"
+# tests/auto_address.sh sources this file to test the functions above; main runs only when executed.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi
