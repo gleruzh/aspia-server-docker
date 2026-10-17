@@ -771,12 +771,12 @@ prepare_router() {
             # Until that first login, whoever reaches the client port first owns the Router.
             if [[ -z "${ASPIA_ROUTER_CLIENT_ALLOWED_IPS:-}" ]]; then
                 warn "Router: the client port accepts Clients from ANY address (ASPIA_ROUTER_CLIENT_ALLOWED_IPS" \
-                    "is not set), and 'admin' has the default password and no two-factor authentication yet." \
-                    "Whoever logs in first sets up two-factor authentication for 'admin' and takes over the" \
-                    "Router. Log in now and change the password. To close this window on a new install, set" \
-                    "ASPIA_ROUTER_CLIENT_ALLOWED_IPS to your own address, or publish the client port on" \
-                    "127.0.0.1 only (ASPIA_ROUTER_CLIENT_BIND_IP) and log in over an SSH tunnel, before the" \
-                    "first start (README.md, \"Quick start\")."
+                    "is not set), and 'admin' has the default password and no two-factor authentication yet:" \
+                    "whoever logs in first takes over the Router. Log in now and change the password. On a new" \
+                    "install, before the first start, set ASPIA_ROUTER_CLIENT_ALLOWED_IPS to your own address, or" \
+                    "publish the client port on 127.0.0.1 only (ASPIA_ROUTER_CLIENT_BIND_IP) and use an SSH tunnel" \
+                    "(README.md, \"Quick start\"). This container cannot see ASPIA_ROUTER_CLIENT_BIND_IP: if you" \
+                    "have set it, only that address reaches the port."
             fi
             ;;
         migrate)
