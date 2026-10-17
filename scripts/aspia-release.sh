@@ -6,8 +6,8 @@
 #                                              no pre-releases, only tags of the form vX.Y.Z
 #   scripts/aspia-release.sh has-debs VERSION  exit 0 if the release has both x86_64 server packages
 #   scripts/aspia-release.sh fetch VERSION DIR download both packages into DIR, check them against the
-#                                              digest the GitHub API reports, print
-#                                              "<router sha256> <relay sha256>"
+#                                              digest the GitHub API reports (fail if it has none),
+#                                              print "<router sha256> <relay sha256>"
 #
 # Needs gh (authenticated, or GH_TOKEN set), sha256sum or shasum, and jq-compatible --jq support in gh.
 
@@ -42,17 +42,22 @@ latest() {
     echo "${version}"
 }
 
+require_version() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version '$1' is not X.Y.Z"; }
+
 assets() { gh api "repos/${UPSTREAM}/releases/tags/v$1" --jq '.assets[] | "\(.name) \(.digest // "")"'; }
 
 has_debs() {
+    require_version "$1"
     local list name
     list="$(assets "$1")"
     while IFS= read -r name; do
-        grep -q "^${name} " <<<"${list}" || { echo "v$1 has no ${name}" >&2; return 1; }
+        awk -v n="${name}" '$1 == n { found = 1 } END { exit !found }' <<<"${list}" \
+            || { echo "v$1 has no ${name}" >&2; return 1; }
     done < <(deb_names "$1")
 }
 
 fetch() {
+    require_version "$1"
     local version="$1" dir="$2" list name api sum sums=()
     list="$(assets "${version}")"
     mkdir -p "${dir}"
@@ -60,9 +65,8 @@ fetch() {
         gh release download "v${version}" -R "${UPSTREAM}" -p "${name}" -D "${dir}" --clobber >&2
         sum="$(sha256 "${dir}/${name}")"
         api="$(awk -v n="${name}" '$1 == n { print $2 }' <<<"${list}")"
-        if [[ -z "${api}" ]]; then
-            echo "warning: the GitHub API reports no digest for ${name}; using the computed sha256 only" >&2
-        elif [[ "${api}" != "sha256:${sum}" ]]; then
+        [[ -n "${api}" ]] || die "${name}: the GitHub API reports no digest"
+        if [[ "${api}" != "sha256:${sum}" ]]; then
             die "${name}: downloaded sha256 ${sum} differs from the API digest ${api}"
         fi
         sums+=("${sum}")
