@@ -6,7 +6,8 @@
 #   docker run --rm -i --network none <image> bash -s < tests/auto_address.sh
 #
 #   1. the range filter (auto_address_rejected): loopback, private, link-local, CGNAT, multicast,
-#      unspecified and documentation addresses are refused, public ones accepted
+#      unspecified, documentation, reserved and broadcast, IPv4-mapped and NAT64 addresses are
+#      refused, public ones accepted
 #   2. the response parser (parse_address_response)
 #   3. detect_public_address with a stub openssl: the source order, the first valid answer wins, a
 #      refused or invalid answer moves on to the next source, the openssl options and the request
@@ -32,12 +33,15 @@ trap 'kill $(jobs -p) 2>/dev/null; rm -rf "${work}"' EXIT
 
 for ip in 0.0.0.0 0.1.2.3 10.0.0.1 10.255.255.255 100.64.0.1 100.127.255.255 127.0.0.1 169.254.10.1 \
     172.16.0.1 172.31.255.255 192.0.2.1 192.168.1.1 198.51.100.7 203.0.113.10 224.0.0.1 239.255.255.255 \
-    :: ::1 fc00::1 fd12:3456::1 fe80::1 febf:ffff::1 ff02::1 FF05::2 2001:db8::1 2001:DB8:1:2::5; do
+    240.0.0.1 255.255.255.255 \
+    :: ::1 fc00::1 fd12:3456::1 fe80::1 febf:ffff::1 ff02::1 FF05::2 2001:db8::1 2001:DB8:1:2::5 \
+    ::ffff:808:808 64:ff9b::808:808; do
     if why="$(auto_address_rejected "${ip}")"; then ok "${ip} refused: ${why}"; else bad "${ip} accepted"; fi
 done
 for ip in 1.1.1.1 8.8.8.8 9.255.255.255 11.0.0.1 100.63.255.255 100.128.0.1 172.15.255.255 172.32.0.1 \
     192.0.3.1 192.169.0.1 198.51.101.1 203.0.114.1 223.255.255.255 \
-    2001:4860:4860::8888 2606:4700:4700::1111 2a00:1450:4001::1 2001:db9::1 fec0::1 fbff::1; do
+    2001:4860:4860::8888 2606:4700:4700::1111 2a00:1450:4001::1 2001:db9::1 fec0::1 fbff::1 \
+    ::fffe:808:808 64:ff9b:1::808:808; do
     if why="$(auto_address_rejected "${ip}")"; then bad "${ip} refused: ${why}"; else ok "${ip} accepted"; fi
 done
 

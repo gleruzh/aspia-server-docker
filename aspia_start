@@ -88,6 +88,8 @@ readonly AUTO_ADDRESS_REJECTED_IPV4=(
     "198.51.100.0/24 a documentation address (RFC 5737)"
     "203.0.113.0/24 a documentation address (RFC 5737)"
     "224.0.0.0/4 a multicast address"
+    "255.255.255.255/32 the broadcast address"
+    "240.0.0.0/4 a reserved address (240.0.0.0/4)"
 )
 
 BACKUP_SUFFIX=".pre-${ASPIA_VERSION:-3.x}-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -442,6 +444,8 @@ auto_address_rejected() {
         fe[89ab]?:*) echo "a link-local address" ;;
         ff??:*) echo "a multicast address" ;;
         2001:0db8:*) echo "a documentation address (RFC 3849)" ;;
+        0000:0000:0000:0000:0000:ffff:*) echo "an IPv4-mapped address (::ffff:0:0/96)" ;;
+        0064:ff9b:0000:0000:0000:0000:*) echo "a NAT64 address (64:ff9b::/96)" ;;
         *) return 1 ;;
     esac
 }
