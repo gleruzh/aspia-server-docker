@@ -96,7 +96,10 @@ jobs:
           # The same pinned Trivy as ci.yml, from .github/tool-images/Dockerfile.
           trivy_image="$(scripts/tool-image.sh trivy)"
           docker run --rm -v "${RUNNER_TEMP}:/work" -v trivy-cache:/root/.cache/trivy "${trivy_image}" \
-            image --quiet --scanners vuln --ignore-unfixed --format json --output /work/trivy.json --input /work/image.tar
+            image --quiet --scanners vuln --ignore-unfixed --exit-code 0 --format json --output /work/trivy.json --input /work/image.tar
+          # A report without OS packages would read as "nothing to fix": fail instead (as in ci.yml).
+          jq -e 'any(.Results[]?; .Class == "os-pkgs")' "${RUNNER_TEMP}/trivy.json" > /dev/null \
+            || { echo "::error title=Trivy::the report is missing, not JSON, or lists no OS packages: the scan did not work"; exit 1; }
           # Packages with a finding that has a fix.
           jq -r '[.Results[]?.Vulnerabilities[]?.PkgName] | unique | .[]' "${RUNNER_TEMP}/trivy.json" > "${RUNNER_TEMP}/fixable"
           fixed="$(sort -u "${RUNNER_TEMP}/fixable" | comm -12 - "${RUNNER_TEMP}/upgradable" | tr '\n' ' ')"

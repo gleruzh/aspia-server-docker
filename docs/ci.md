@@ -6,7 +6,7 @@ to Docker Hub or Quay.io only when the owner has set their secrets.
 
 | Workflow | Runs on | What it does |
 |---|---|---|
-| [`ci.yml`](../.github/workflows/ci.yml) | every pull request, weekly (Mondays), manual | `tests/lint.sh` (hadolint, shellcheck, actionlint, `scripts/versions.sh check`, the main-only checks of `publish.yml` and `dockerhub-description.yml`), builds the image, runs `tests/run.sh` against it, and scans it with Trivy. The scan is reported in the log, the run summary and the Security tab; it never fails the run. |
+| [`ci.yml`](../.github/workflows/ci.yml) | every pull request, weekly (Mondays), manual | `tests/lint.sh` (hadolint, shellcheck, actionlint, `scripts/versions.sh check`, the main-only checks of `publish.yml` and `dockerhub-description.yml`), builds the image, runs `tests/run.sh` against it, and scans it with Trivy. The findings are reported in the log, the run summary and the Security tab; they never fail the run, but a scan that does not work does ([Tool images](#tool-images)). |
 | [`publish.yml`](../.github/workflows/publish.yml) | push to `main` that changes `versions.env` or the image files; manual | Builds the image once, pushes it to GHCR by digest only, runs `tests/run.sh` against that digest, then tags it and copies it to the other registries. Signs it and attests its provenance. |
 | [`upstream-watch.yml`](../.github/workflows/upstream-watch.yml) | every 6 hours; manual | Opens a pull request "chore: bump Aspia to X.Y.Z" when Aspia publishes a newer stable release with both x86_64 server packages. |
 | [`rebuild.yml`](../.github/workflows/rebuild.yml) | daily; manual | Scans the published image with Trivy for vulnerabilities that have a fix, and starts `publish.yml` on `main` only if a rebuild would install such a fix. |
@@ -47,9 +47,13 @@ Compose v2.31 for the Compose v2 check of `tests/run.sh`) are pinned by tag and 
 `FROM <image>:<tag>@sha256:<digest> AS <name>` line each. The file is never built; it is in the
 format Dependabot's docker ecosystem reads, so Dependabot opens a weekly pull request (prefix `ci`)
 when one of them has a new version or digest, and the CI run of that pull request shows whether the
-new linter or scanner still passes. `tests/lint.sh`, `tests/run.sh`, `ci.yml` and `rebuild.yml`
-read an image with `scripts/tool-image.sh <name>`. `tests/lint.sh` fails when a line of the file is
-not pinned by tag and digest, or when a script or workflow pins an image of its own instead of
+new linter or scanner still passes. For Trivy this holds although its findings never fail CI: in
+`ci.yml` and `rebuild.yml` the Trivy step fails when Trivy exits with an error or when its report is
+not JSON or lists no OS packages (it did not scan the Debian packages). A failed download of the
+Trivy database fails it too; run the job again. `tests/lint.sh`, `tests/run.sh`, `ci.yml` and
+`rebuild.yml` read an image with `scripts/tool-image.sh <name>`. `tests/lint.sh` fails when a line
+of the file is not pinned by tag and digest, when a name is used twice or a script or workflow asks
+for a name the file does not have, or when a script or workflow pins an image of its own instead of
 reading it from there.
 
 Two images are kept from moving on purpose:
@@ -275,7 +279,8 @@ published yet), the run ends there with a notice and succeeds. This applies only
 "not found" and the image has a tag `latest`; every other error fails the run. Then it runs
 `apt-get update` and `apt-get -s upgrade` in the image, which shows the packages that a new build
 would upgrade. If there are none, it stops there. Otherwise it scans the image with Trivy
-(`--ignore-unfixed`: only findings that have a fixed version). Only when one of the upgradable
+(`--ignore-unfixed`: only findings that have a fixed version); a Trivy error, or a report without
+OS packages, fails the run instead of reading as "nothing to fix". Only when one of the upgradable
 packages has a finding with a fix does it start `publish.yml` on `main`, with the version of
 `versions.env` and a dated tag. The run summary lists the findings and the packages.
 

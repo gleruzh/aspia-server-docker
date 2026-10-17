@@ -73,9 +73,17 @@ fi
 # (a fixed fixture; Dependabot must not move it), which is pinned by digest too.
 tools=.github/tool-images/Dockerfile
 pin='[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}'   # <image>:<tag>@sha256:<digest>
-echo "${tools} pins every tool image by tag and digest"
+echo "${tools} pins every tool image by tag and digest, one image per name"
 unpinned="$(grep -nvE "^(#.*|FROM ${pin} AS [a-z0-9-]+)?\$" "${tools}" || true)"
 [[ -z "${unpinned}" ]] || { printf '%s\n' "${unpinned}" "${tools}: a line is not 'FROM <image>:<tag>@sha256:<digest> AS <name>'"; status=1; }
+# Each name is one image: no name twice, an unknown name fails, and every "$(scripts/tool-image.sh
+# <name>)" in the tests and workflows names an image of the file (a typo fails here, not in CI).
+dupes="$(sed -nE 's/^FROM .* AS ([a-z0-9-]+)$/\1/p' "${tools}" | sort | uniq -d)"
+[[ -z "${dupes}" ]] || { printf '%s\n' "${dupes}" "${tools}: these names are used twice"; status=1; }
+if scripts/tool-image.sh lint-no-such-tool > /dev/null 2>&1; then echo "scripts/tool-image.sh: an unknown name does not fail"; status=1; fi
+while read -r name; do
+    scripts/tool-image.sh "${name}" > /dev/null || status=1
+done < <(grep -rhoE '\$\(scripts/tool-image\.sh [a-z0-9-]+\)' .github/workflows tests | sed -E 's/.* (.*)\)/\1/' | sort -u)
 grep -qxE "readonly OLD_IMAGE=${pin}" tests/run.sh || { echo "tests/run.sh: OLD_IMAGE is not pinned by tag and digest"; status=1; }
 pinned="$(grep -rnE "${pin}" .github/workflows tests scripts | grep -vE '^tests/run\.sh:[0-9]+:readonly OLD_IMAGE=' || true)"
 [[ -z "${pinned}" ]] || { printf '%s\n' "${pinned}" "a tool image pinned outside ${tools}; add it there and read it with scripts/tool-image.sh"; status=1; }
