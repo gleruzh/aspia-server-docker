@@ -39,6 +39,26 @@ after checking them against the digest the GitHub API reports; it fails when the
 digest. The digest shows that the download is the file GitHub stores for the release, not who built
 it.
 
+## Tool images
+
+The images that the tests and CI run (hadolint, shellcheck, actionlint, Trivy, and a Docker CLI with
+Compose v2.31 for the Compose v2 check of `tests/run.sh`) are pinned by tag and digest in one file,
+[`.github/tool-images/Dockerfile`](../.github/tool-images/Dockerfile), one
+`FROM <image>:<tag>@sha256:<digest> AS <name>` line each. The file is never built; it is in the
+format Dependabot's docker ecosystem reads, so Dependabot opens a weekly pull request (prefix `ci`)
+when one of them has a new version or digest, and the CI run of that pull request shows whether the
+new linter or scanner still passes. `tests/lint.sh`, `tests/run.sh` and `ci.yml` read an image with
+`scripts/tool-image.sh <name>`. `tests/lint.sh` fails when a line of the file is not pinned by tag
+and digest, or when a script or workflow pins an image of its own instead of reading it from there.
+
+Two images are kept from moving on purpose:
+
+- The Docker CLI stays on `docker:27.3-cli`: the check is about the older Compose v2 still common on
+  servers, so `.github/dependabot.yml` lets through digest updates of that tag only.
+- The archived Aspia 2.7.0 image (`OLD_IMAGE` in `tests/run.sh`, the upgrade test) is not in the
+  file at all. It is a fixed test fixture: its digest is what makes it the original 2.7.0, and a new
+  digest under the same tag could only be a different image.
+
 ## Secrets and variables
 
 Set them in **Settings > Secrets and variables > Actions** (secrets on the "Secrets" tab, variables
@@ -286,7 +306,7 @@ gh workflow run rebuild.yml --ref main
 ## Running the checks locally
 
 ```shell
-tests/lint.sh    # hadolint, shellcheck, actionlint (pinned containers) and scripts/versions.sh check
+tests/lint.sh    # hadolint, shellcheck, actionlint (pinned containers), the tool image pins and scripts/versions.sh check
 tests/run.sh     # builds the image and runs the behaviour tests (needs Docker)
 ASPIA_TEST_IMAGE=ghcr.io/<owner>/aspia-server:3.0.37 tests/run.sh   # tests a published image
 ```

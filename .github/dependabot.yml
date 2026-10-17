@@ -1,6 +1,8 @@
 # Dependabot proposes updates as pull requests; nothing is bumped silently. It keeps current:
 # - the GitHub Actions pinned by commit SHA in .github/workflows (the version comment is updated too);
-# - the base image in the Dockerfile, pinned by tag and digest (debian:trixie-slim@sha256:...).
+# - the base image in the Dockerfile, pinned by tag and digest (debian:trixie-slim@sha256:...);
+# - the tool images of the tests and CI (hadolint, shellcheck, actionlint, Trivy, the Compose v2 CLI),
+#   pinned by tag and digest in .github/tool-images/Dockerfile.
 # Aspia itself is updated by .github/workflows/upstream-watch.yml, not by Dependabot.
 version: 2
 updates:
@@ -20,3 +22,15 @@ updates:
       interval: weekly
     commit-message:
       prefix: build
+
+  - package-ecosystem: docker
+    directory: /.github/tool-images
+    schedule:
+      interval: weekly
+    ignore:
+      # The Compose v2 check needs the older Compose v2 that servers still have, not the newest
+      # Docker CLI: only digest updates of docker:27.3-cli.
+      - dependency-name: docker
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    commit-message:
+      prefix: ci

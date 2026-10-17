@@ -222,9 +222,9 @@ Correctness points not fixed in PR 1, each small and open for discussion:
   `https://github.com/gleruzh/aspia-server-docker/actions/workflows/publish.yml/badge.svg` (and the
   paprikkafox equivalents if this is offered upstream). On Docker Hub the description sync turns relative
   links into absolute ones (`enable-url-completion`); check that the badges render there too.
-- **Tool images are not tracked by Dependabot.** hadolint, shellcheck and actionlint (`tests/lint.sh`) and
-  Trivy (`ci.yml`) are pinned by tag and digest, but Dependabot's docker ecosystem reads only Dockerfiles
-  and compose files. Update them by hand, or move them into a small Dockerfile that Dependabot watches.
+- **Tool images are not tracked by Dependabot.** Done: the tool images (also the Compose v2 CLI of
+  `tests/run.sh`) are pinned in `.github/tool-images/Dockerfile`, which Dependabot watches, and read with
+  `scripts/tool-image.sh`; the archived 2.7.0 image stays out on purpose (docs/ci.md, "Tool images").
 - **Base packages between Debian point releases.** Done after PR 30: the Dockerfile runs `apt-get
   upgrade`, so every build installs the fixes to packages that are already in `debian:trixie-slim`, at
   the cost of a less reproducible build. `rebuild.yml` publishes a new build when the published image has

@@ -7,18 +7,20 @@
 # the input checks of scripts/versions.sh files and scripts/aspia-release.sh (with a stub gh), that
 # publish.yml and dockerhub-description.yml publish from main only, and that rebuild.yml starts
 # publish.yml on main only (and skips only a version that is not published yet).
-# The linters run as pinned containers, so the result does not depend on what the host has installed.
+# The linters run as pinned containers, so the result does not depend on what the host has installed;
+# every tool image is pinned by tag and digest in .github/tool-images/Dockerfile, which Dependabot updates.
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-readonly HADOLINT=hadolint/hadolint:v2.14.0@sha256:27086352fd5e1907ea2b934eb1023f217c5ae087992eb59fde121dce9c9ff21e
-readonly SHELLCHECK=koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
-readonly ACTIONLINT=rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+HADOLINT="$(scripts/tool-image.sh hadolint)"
+SHELLCHECK="$(scripts/tool-image.sh shellcheck)"
+ACTIONLINT="$(scripts/tool-image.sh actionlint)"
+readonly HADOLINT SHELLCHECK ACTIONLINT
 
-readonly DOCKERFILES=(Dockerfile tests/helper/Dockerfile)
-readonly SCRIPTS=(aspia_start aspia_health aspia_common.sh tests/run.sh tests/podman.sh tests/lint.sh tests/auto_address.sh tests/helper/x25519_pub scripts/versions.sh scripts/aspia-release.sh scripts/image-names.sh)
+readonly DOCKERFILES=(Dockerfile tests/helper/Dockerfile .github/tool-images/Dockerfile)
+readonly SCRIPTS=(aspia_start aspia_health aspia_common.sh tests/run.sh tests/podman.sh tests/lint.sh tests/auto_address.sh tests/helper/x25519_pub scripts/versions.sh scripts/aspia-release.sh scripts/image-names.sh scripts/tool-image.sh)
 
 status=0
 for file in "${DOCKERFILES[@]}"; do
@@ -67,6 +69,19 @@ if grep -nEw '^[^#]*curl' Dockerfile; then
     echo "Dockerfile: curl is back in the image; aspia_start does not need it (openssl s_client)" >&2
     status=1
 fi
+
+# Every tool image is pinned by tag and digest in .github/tool-images/Dockerfile, where Dependabot
+# sees it. No script or workflow pins one of its own, except the archived 2.7.0 image of tests/run.sh
+# (a fixed fixture; Dependabot must not move it), which is pinned by digest too.
+tools=.github/tool-images/Dockerfile
+echo "${tools} pins every tool image by tag and digest"
+unpinned="$(grep -nvE '^(#.*|FROM [a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64} AS [a-z0-9-]+)?$' "${tools}" || true)"
+[[ -z "${unpinned}" ]] || { printf '%s\n' "${unpinned}" "${tools}: a line is not 'FROM <image>:<tag>@sha256:<digest> AS <name>'"; status=1; }
+grep -qxE '^readonly OLD_IMAGE=[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$' tests/run.sh \
+    || { echo "tests/run.sh: OLD_IMAGE is not pinned by tag and digest"; status=1; }
+pinned="$(grep -rnE '[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}' .github/workflows tests scripts \
+    | grep -vE '^tests/run\.sh:[0-9]+:readonly OLD_IMAGE=' || true)"
+[[ -z "${pinned}" ]] || { printf '%s\n' "${pinned}" "a tool image pinned outside ${tools}; add it there and read it with scripts/tool-image.sh"; status=1; }
 
 echo "scripts/versions.sh check"
 scripts/versions.sh check || status=1

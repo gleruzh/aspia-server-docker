@@ -73,10 +73,12 @@ cd "$(dirname "$0")/.."
 
 readonly PLATFORM=linux/amd64
 # paprikkafox/aspia-server:2.7.0 was removed from Docker Hub in October 2026; this is the same image (same digest).
+# Not in .github/tool-images/Dockerfile: a fixed fixture, which Dependabot must never move to another digest.
 readonly OLD_IMAGE=gleruzh/aspia-server:2.7.0-paprikkafox@sha256:8db62b95681b09ab8dc2346d803a2981d7a44826b3a06310ab27b3d054215b82
 readonly HELPER_IMAGE=aspia-server-test-helper:local
 # Docker CLI with Compose v2.31, to check docker-compose.yml against the Compose v2 still common on servers.
-readonly COMPOSE_V2_IMAGE=docker:27.3-cli@sha256:328eb399a065780c2cebe9224de003aa14084cf69efae882ac27430f921819b7
+COMPOSE_V2_IMAGE="$(scripts/tool-image.sh compose-v2)"
+readonly COMPOSE_V2_IMAGE
 readonly RUN_ID="aspia-test-$$"
 readonly IP_OLD=203.0.113.10   # EXTERNAL_IP given to 2.7.0
 readonly IP_NEW=203.0.113.11   # EXTERNAL_IP given to the new image

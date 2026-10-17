@@ -22,10 +22,6 @@ defaults:
   run:
     shell: bash
 
-env:
-  # Trivy, pinned by version and digest like every other tool image (tests/lint.sh).
-  TRIVY_IMAGE: aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
-
 jobs:
   lint:
     name: Lint (hadolint, shellcheck, actionlint, versions)
@@ -75,8 +71,10 @@ jobs:
         continue-on-error: true
         run: |
           docker save -o "${RUNNER_TEMP}/image.tar" aspia-server:ci
+          # Pinned by tag and digest like every other tool image, in .github/tool-images/Dockerfile.
+          image="$(scripts/tool-image.sh trivy)"
           trivy() {
-            docker run --rm -v "${RUNNER_TEMP}:/work" -v trivy-cache:/root/.cache/trivy "${TRIVY_IMAGE}" "$@"
+            docker run --rm -v "${RUNNER_TEMP}:/work" -v trivy-cache:/root/.cache/trivy "${image}" "$@"
           }
           trivy image --quiet --scanners vuln --format json --output /work/trivy.json --input /work/image.tar
           trivy convert --format table /work/trivy.json
