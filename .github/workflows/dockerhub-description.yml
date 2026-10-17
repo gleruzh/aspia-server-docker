@@ -67,13 +67,15 @@ jobs:
               echo "::notice title=Left to publish.yml::This push also changes ${changed//$'\n'/ }, so publish.yml runs and updates the description after it has published the image."
             fi
           fi
-          # GitHub keeps one waiting run per concurrency group: if a publish already waits behind a
-          # running one, the job below would replace (cancel) it. Fail instead; a publish is not lost.
+          # GitHub keeps one waiting run per concurrency group: if a publish waits in 'publish' (behind
+          # a publish or another description job), the job below would replace (cancel) it. Fail
+          # instead, so no publish is lost. A running publish is fine: the job waits behind it. The
+          # check and the job's start are seconds apart; a publish queued in between can still lose.
           if [[ "${sync}" == true ]]; then
-            unfinished="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/publish.yml/runs?per_page=20" \
-              --jq '[.workflow_runs[] | select(.status != "completed")] | length')"
-            if ((unfinished > 1)); then
-              echo "::error::A publish is running and another one waits for it; waiting in the group 'publish' now would cancel the waiting publish. Re-run this workflow when both have finished."
+            waiting="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/publish.yml/runs?per_page=20" \
+              --jq '[.workflow_runs[] | select(.status != "completed" and .status != "in_progress")] | length')"
+            if ((waiting > 0)); then
+              echo "::error::A publish is waiting to start; waiting in the group 'publish' now would cancel it. Re-run this workflow when it has started or finished."
               exit 1
             fi
           fi

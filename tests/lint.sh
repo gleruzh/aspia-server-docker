@@ -135,8 +135,11 @@ done
 # publish.yml's description job, except that it skips the update when main has a newer
 # docs/dockerhub.md.
 grep -qxE ' +group: publish' "${dwf}" || { echo "${dwf}: no concurrency group 'publish'"; status=1; }
-grep -qF 'actions/workflows/publish.yml/runs' "${dwf}" \
-    || { echo "${dwf}: no check for a waiting publish before joining the group 'publish'"; status=1; }
+# A waiting publish is any unfinished run that is not in progress; one is enough to be cancelled.
+if ! grep -qF 'select(.status != "completed" and .status != "in_progress")' "${dwf}" \
+    || ! grep -qxF '            if ((waiting > 0)); then' "${dwf}"; then
+    echo "${dwf}: no check for a waiting publish before joining the group 'publish'"; status=1
+fi
 diff --label "${wf} paths" --label "${dwf} PUBLISH_PATHS" \
     <(sed -n '/^    paths:$/,/^  [a-z_]*:$/s/^      - //p' "${wf}") \
     <(sed -n 's/^ *PUBLISH_PATHS: //p' "${dwf}" | tr ' ' '\n') || status=1

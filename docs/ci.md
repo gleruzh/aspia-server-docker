@@ -171,8 +171,11 @@ the Docker Hub description job, is in one concurrency group, so a second run wai
 has finished. GitHub keeps only the newest waiting run; an older waiting run is cancelled. The
 description job of `dockerhub-description.yml` is in the same group, so it never edits the
 description during a publish. Because a new waiting run would cancel a waiting publish, it does not
-join the group when a publish already waits behind a running one: the run fails with an error
-instead, and you re-run it once both publishes have finished.
+join the group while any publish waits to start (behind another publish or another description
+update): the run fails with an error instead, and you re-run it once that publish has started. A
+running publish is no reason to stop: the description job just waits for it. The check and the
+moment the job joins the group are a few seconds apart, so a publish queued in exactly that gap can
+still be cancelled; re-run it if that happens.
 
 ## Verifying a published image
 
