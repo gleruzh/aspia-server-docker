@@ -5,10 +5,10 @@
 # list the variables of .env.example that apply to their unit, that the Quadlet unit does not publish
 # the Aspia 2.x port 8060 by default, that the Dockerfile installs no curl, scripts/versions.sh check,
 # the input checks of scripts/versions.sh files and scripts/aspia-release.sh (with a stub gh), that
-# publish.yml and dockerhub-description.yml publish from main only, and that rebuild.yml starts
-# publish.yml on main only (and skips only a version that is not published yet).
-# The linters run as pinned containers, so the result does not depend on what the host has installed;
-# every tool image is pinned by tag and digest in .github/tool-images/Dockerfile, which Dependabot updates.
+# publish.yml and dockerhub-description.yml publish from main only, that rebuild.yml starts
+# publish.yml on main only (and skips only a version that is not published yet), and that every tool
+# image is pinned by tag and digest in .github/tool-images/Dockerfile and nowhere else.
+# The linters run as pinned containers, so the result does not depend on what the host has installed.
 
 set -euo pipefail
 
@@ -23,10 +23,8 @@ readonly DOCKERFILES=(Dockerfile tests/helper/Dockerfile .github/tool-images/Doc
 readonly SCRIPTS=(aspia_start aspia_health aspia_common.sh tests/run.sh tests/podman.sh tests/lint.sh tests/auto_address.sh tests/helper/x25519_pub scripts/versions.sh scripts/aspia-release.sh scripts/image-names.sh scripts/tool-image.sh)
 
 status=0
-for file in "${DOCKERFILES[@]}"; do
-    echo "hadolint ${file}"
-    docker run --rm -i "${HADOLINT}" hadolint - < "${file}" || status=1
-done
+echo "hadolint ${DOCKERFILES[*]}"
+docker run --rm -v "${PWD}:/mnt:ro" -w /mnt "${HADOLINT}" hadolint --no-color "${DOCKERFILES[@]}" || status=1
 
 echo "shellcheck ${SCRIPTS[*]}"
 docker run --rm -v "${PWD}:/mnt:ro" -w /mnt "${SHELLCHECK}" "${SCRIPTS[@]}" || status=1
@@ -74,13 +72,12 @@ fi
 # sees it. No script or workflow pins one of its own, except the archived 2.7.0 image of tests/run.sh
 # (a fixed fixture; Dependabot must not move it), which is pinned by digest too.
 tools=.github/tool-images/Dockerfile
+pin='[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}'   # <image>:<tag>@sha256:<digest>
 echo "${tools} pins every tool image by tag and digest"
-unpinned="$(grep -nvE '^(#.*|FROM [a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64} AS [a-z0-9-]+)?$' "${tools}" || true)"
+unpinned="$(grep -nvE "^(#.*|FROM ${pin} AS [a-z0-9-]+)?\$" "${tools}" || true)"
 [[ -z "${unpinned}" ]] || { printf '%s\n' "${unpinned}" "${tools}: a line is not 'FROM <image>:<tag>@sha256:<digest> AS <name>'"; status=1; }
-grep -qxE '^readonly OLD_IMAGE=[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$' tests/run.sh \
-    || { echo "tests/run.sh: OLD_IMAGE is not pinned by tag and digest"; status=1; }
-pinned="$(grep -rnE '[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}' .github/workflows tests scripts \
-    | grep -vE '^tests/run\.sh:[0-9]+:readonly OLD_IMAGE=' || true)"
+grep -qxE "readonly OLD_IMAGE=${pin}" tests/run.sh || { echo "tests/run.sh: OLD_IMAGE is not pinned by tag and digest"; status=1; }
+pinned="$(grep -rnE "${pin}" .github/workflows tests scripts | grep -vE '^tests/run\.sh:[0-9]+:readonly OLD_IMAGE=' || true)"
 [[ -z "${pinned}" ]] || { printf '%s\n' "${pinned}" "a tool image pinned outside ${tools}; add it there and read it with scripts/tool-image.sh"; status=1; }
 
 echo "scripts/versions.sh check"

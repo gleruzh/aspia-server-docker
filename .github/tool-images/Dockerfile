@@ -1,8 +1,7 @@
 # The tool images that tests/lint.sh, tests/run.sh and ci.yml run, pinned by tag and digest. This file
 # is never built: it is a list in the one format Dependabot's docker ecosystem reads, so these pins
 # get update pull requests like the base image. scripts/tool-image.sh NAME prints the image of
-# "FROM <image> AS NAME"; tests/lint.sh checks that every line is pinned by tag and digest, and that
-# no other script or workflow pins an image of its own.
+# "FROM <image> AS NAME"; tests/lint.sh checks the pins (docs/ci.md, "Tool images").
 # Not here: the archived Aspia 2.7.0 image of tests/run.sh, a fixed test fixture that must not change.
 FROM hadolint/hadolint:v2.14.0@sha256:27086352fd5e1907ea2b934eb1023f217c5ae087992eb59fde121dce9c9ff21e AS hadolint
 FROM koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d AS shellcheck
