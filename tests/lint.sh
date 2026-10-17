@@ -5,8 +5,8 @@
 # list the variables of .env.example that apply to their unit, that the Quadlet unit does not publish
 # the Aspia 2.x port 8060 by default, that the Dockerfile installs no curl, scripts/versions.sh check,
 # the input checks of scripts/versions.sh files and scripts/aspia-release.sh (with a stub gh), that
-# publish.yml publishes from main only, and that rebuild.yml starts it on main only (and skips only a
-# version that is not published yet).
+# publish.yml and dockerhub-description.yml publish from main only, and that rebuild.yml starts
+# publish.yml on main only (and skips only a version that is not published yet).
 # The linters run as pinned containers, so the result does not depend on what the host has installed.
 
 set -euo pipefail
@@ -135,6 +135,27 @@ grep -q 'certificate-identity' "${wf}" || { echo "${wf}: no cosign verify comman
 unpinned="$(grep -rn --include='*.md' --include='*.yml' -e '--certificate-identity' .github docs README.md podman \
     | grep -vE 'publish\\{1,2}\.yml@refs/heads/main\$' || true)"
 [[ -z "${unpinned}" ]] || { printf '%s\n' "${unpinned}" "cosign identity not pinned to refs/heads/main"; status=1; }
+
+# dockerhub-description.yml updates the Docker Hub description from main only, like publish.yml: the
+# Plan step refuses any other ref, the job joins the concurrency group 'publish', no raw registry
+# secret goes into a step's env, it leaves pushes that start publish.yml to it (same paths), and its
+# steps are those of publish.yml's dockerhub-description job.
+dwf=.github/workflows/dockerhub-description.yml
+echo "${dwf} updates the description from main only"
+# shellcheck disable=SC2016 # the literal text of the check in the workflow
+grep -qF '[[ "${GITHUB_REF}" != "refs/heads/main" ]]' "${dwf}" \
+    || { echo "${dwf}: no refs/heads/main check in the Plan step"; status=1; }
+grep -qxE ' +group: publish' "${dwf}" || { echo "${dwf}: no concurrency group 'publish'"; status=1; }
+if grep -n 'cancel-in-progress: true' "${dwf}"; then echo "${dwf}: must not cancel a running publish"; status=1; fi
+if grep -nE '^ +[A-Z_]+: \$\{\{ *secrets\.(DOCKERHUB|QUAY)_[A-Z]+ *\}\}' "${dwf}"; then
+    echo "${dwf}: a registry secret is passed to a step's env; pass a boolean instead"; status=1
+fi
+diff --label "${wf} paths" --label "${dwf} PUBLISH_PATHS" \
+    <(sed -n '/^    paths:$/,/^  [a-z_]*:$/s/^      - //p' "${wf}") \
+    <(sed -n 's/^ *PUBLISH_PATHS: //p' "${dwf}" | tr ' ' '\n') || status=1
+description_steps() { sed -n '/- name: Repository name on Docker Hub/,/enable-url-completion: true/p' "$1"; }
+[[ -n "$(description_steps "${dwf}")" ]] || { echo "${dwf}: no Docker Hub description steps"; status=1; }
+diff --label "${wf}" --label "${dwf}" <(description_steps "${wf}") <(description_steps "${dwf}") || status=1
 
 # rebuild.yml starts publish.yml on main only, and scans with the Trivy that ci.yml pins.
 wf=.github/workflows/rebuild.yml

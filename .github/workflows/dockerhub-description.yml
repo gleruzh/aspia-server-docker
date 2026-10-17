@@ -1,0 +1,105 @@
+# Docker Hub description: replaces it with docs/dockerhub.md when a push to main changes that file
+# but no image file, so publish.yml does not run (a change to docs/dockerhub.md alone must not
+# publish an image). A push that also starts publish.yml is left to it: publish.yml updates the
+# description after the image is published, so the page never names a version before it exists.
+# Does nothing when the Docker Hub secrets are not set. See docs/ci.md.
+#
+# The dockerhub-description job is a copy of the one in publish.yml (tests/lint.sh checks that their
+# steps are identical). A reusable workflow would not remove the copy: a called workflow runs in its
+# caller's concurrency group, so it cannot join 'publish' itself, and a third file would hold this
+# trigger.
+name: Docker Hub description
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/dockerhub.md
+  workflow_dispatch:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    name: Secrets and publish.yml
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      sync: ${{ steps.plan.outputs.sync }}
+    steps:
+      # Full history: the push's previous commit is needed to see which files the push changes.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Plan
+        id: plan
+        env:
+          BEFORE: ${{ github.event.before }}
+          HAS_DOCKERHUB: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+          # The paths: of publish.yml's push trigger (tests/lint.sh checks that they match).
+          PUBLISH_PATHS: versions.env Dockerfile .dockerignore aspia_start aspia_health aspia_common.sh
+        run: |
+          # A push runs on main only; a manual run could pick any branch and publish its description.
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::The Docker Hub description is updated only from main, not from ${GITHUB_REF}."
+            exit 1
+          fi
+          sync=true
+          if [[ "${HAS_DOCKERHUB}" != true ]]; then
+            sync=false
+            echo "::notice title=Docker Hub skipped::Secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are not both set; not updating the Docker Hub description."
+          elif [[ "${GITHUB_EVENT_NAME}" == push ]]; then
+            read -ra paths <<<"${PUBLISH_PATHS}"
+            if ! changed="$(git diff --name-only "${BEFORE}" "${GITHUB_SHA}" -- "${paths[@]}")"; then
+              echo "::warning::Cannot compare ${BEFORE} with ${GITHUB_SHA}; updating the description anyway."
+            elif [[ -n "${changed}" ]]; then
+              sync=false
+              echo "::notice title=Left to publish.yml::This push also changes ${changed//$'\n'/ }, so publish.yml runs and updates the description after it has published the image."
+            fi
+          fi
+          echo "sync=${sync}" >> "${GITHUB_OUTPUT}"
+
+  dockerhub-description:
+    name: Docker Hub description from docs/dockerhub.md
+    needs: plan
+    if: needs.plan.outputs.sync == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    # The group of publish.yml, so this job waits for a running publish and the two never edit the
+    # description at the same time. Set on the job, not the workflow: a run that leaves the update
+    # to publish.yml never joins the group, so it cannot replace a publish that is waiting in it.
+    concurrency:
+      group: publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Repository name on Docker Hub
+        id: repo
+        env:
+          OWNER: ${{ github.repository_owner }}
+          VAR_DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
+        run: |
+          image="$(scripts/image-names.sh | sed -n 's/^DOCKERHUB_IMAGE=//p')"
+          echo "repository=${image#docker.io/}" >> "${GITHUB_OUTPUT}"
+      - uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ steps.repo.outputs.repository }}
+          short-description: Aspia Router and Aspia Relay in one container (linux/amd64)
+          # A short file, not README.md: Docker Hub cuts a description at 25,000 bytes and the action
+          # truncates without an error. Links in it are written relative to the repository root.
+          readme-filepath: ./docs/dockerhub.md
+          enable-url-completion: true
