@@ -5,9 +5,18 @@
 #
 #   tests/run.sh                  build the image from this checkout, then test it
 #   ASPIA_TEST_IMAGE=img tests/run.sh   test an existing image instead of building one
+#   tests/run.sh --list           print the scenario groups, their weights and scenarios, and exit
+#   tests/run.sh --shard 2/3      run only the groups of shard 2 of 3 (how CI splits the run)
+#   tests/run.sh clean-start upgrade   run only these groups (names from --list)
 #
-# Every container, volume and network the tests create carries the label aspia-test=<run id>
-# and is removed on exit, also when a scenario fails.
+# A group is the unit of selection: its scenarios share containers or volumes and run in order. Any
+# selection first builds the image and the helper. --shard spreads the groups over the shards by
+# weight (see GROUP_TABLE at the end), the same way on every machine.
+#
+# Every container, volume and network the tests create carries the label aspia-test=<run id>, has
+# the run id in its name, and is removed on exit, also when a scenario fails; the images it builds
+# are tagged with the run id and untagged on exit. Runs on one Docker host do not collide: each has
+# its own names, tags and subnet.
 #
 # Scenarios:
 #   0. build: a tampered checksum makes the build fail; 0b. a docker run command replaces the server,
@@ -47,11 +56,13 @@
 #      Router log shows the Relay registered; each container runs and stores only its part
 #  18. a second Relay (key from a root-only mounted file, PUID/PGID set): both Relays registered
 #      with the one Router; the Relay's files belong to PUID/PGID
-#  19. a Relay with a wrong Router key: never healthy, and the log says ACCESS_DENIED; recreated on
-#      its volume with the right key and another Router address: relay.conf updated (with a backup)
-#      and healthy. The Relays of 19, 20 and 21 start together, so their 15 s retries overlap.
+#  19. a Relay with a wrong Router key: never healthy, and the log says ACCESS_DENIED, also on its own
+#      retry (19b); recreated on its volume with the right key and another Router address: relay.conf
+#      updated (with a backup) and healthy
 #  20. a Relay whose Router is unreachable: keeps running and retrying, unhealthy, log says why;
-#      after the Router is back, it reconnects and is healthy again
+#      after the Router is back, it reconnects and is healthy again (20b)
+#      The Relays of 19, 20 and 21 start together. Aspia retries a Router connection after a fixed 15 s,
+#      so the checks that need a retry (19b, 20b) run after 21 and 22 instead of waiting for it.
 #  21. ASPIA_ROUTER_RELAY_ALLOWED_IPS in role router: the listed Relay registers, another is refused
 #  22. role relay with a required setting missing or invalid (also a bad Router address, a key file
 #      inside the volumes with PUID/PGID): one clear message, non-zero exit, nothing written; a
@@ -75,11 +86,11 @@ readonly PLATFORM=linux/amd64
 # paprikkafox/aspia-server:2.7.0 was removed from Docker Hub in October 2026; this is the same image (same digest).
 # Not in .github/tool-images/Dockerfile: a fixed fixture, which Dependabot must never move to another digest.
 readonly OLD_IMAGE=gleruzh/aspia-server:2.7.0-paprikkafox@sha256:8db62b95681b09ab8dc2346d803a2981d7a44826b3a06310ab27b3d054215b82
-readonly HELPER_IMAGE=aspia-server-test-helper:local
 # Docker CLI with Compose v2.31, to check docker-compose.yml against the Compose v2 still common on servers.
 COMPOSE_V2_IMAGE="$(scripts/tool-image.sh compose-v2)"
 readonly COMPOSE_V2_IMAGE
-readonly RUN_ID="aspia-test-$$"
+readonly RUN_ID="aspia-test-$$-${RANDOM}"   # unique on the Docker host, also between machines sharing one
+readonly HELPER_IMAGE="aspia-server-test-helper:${RUN_ID}"
 readonly IP_OLD=203.0.113.10   # EXTERNAL_IP given to 2.7.0
 readonly IP_NEW=203.0.113.11   # EXTERNAL_IP given to the new image
 # Log lines of aspia_start: a new install without ASPIA_ROUTER_CLIENT_ALLOWED_IPS (a warning, logged
@@ -90,7 +101,8 @@ readonly RELAY_KEY_WARNING='WARNING: The key for relays is the same as the key f
 # shellcheck disable=SC2016  # the ${...} are the literal text of the compose line, not expansions
 readonly LEGACY_PORT_NOTE='no longer publish 8060/tcp: Hosts of Aspia 2.x cannot connect until you uncomment the line #- "${ASPIA_ROUTER_LEGACY_PORT:-8060}:${ASPIA_ROUTER_LEGACY_PORT:-8060}"'
 readonly HEALTH_TIMEOUT=180    # seconds; generous because CI or emulation may be slow
-IMAGE="${ASPIA_TEST_IMAGE:-aspia-server:test}"
+IMAGE="${ASPIA_TEST_IMAGE:-aspia-server:${RUN_ID}}"
+BUILT_IMAGES=()                # the tags this run created, untagged on exit
 # The hardening the compose files and Quadlet units ship (scenario 0e checks them against it).
 readonly CAPS=(CHOWN DAC_OVERRIDE SETUID SETGID KILL SETPCAP)
 readonly PIDS_LIMIT=128
@@ -126,10 +138,10 @@ cleanup() {
     docker network ls -q --filter "label=aspia-test=${RUN_ID}" | while read -r id; do
         docker network rm "${id}" >/dev/null 2>&1 || true
     done
+    ((${#BUILT_IMAGES[@]} == 0)) || docker image rm "${BUILT_IMAGES[@]}" >/dev/null 2>&1 || true
     [[ -z "${TAMPER_DIR:-}" ]] || rm -rf "${TAMPER_DIR}"
     [[ -z "${STUB_DIR:-}" ]] || rm -rf "${STUB_DIR}"
 }
-trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 # ---------------------------------------------------------------------------------------------
@@ -171,27 +183,29 @@ log_has() { grep -qE -- "$2" <<<"$(docker logs "$1" 2>&1)"; }
 # sigterm_lines <container>: how many times an Aspia process logged a received SIGTERM.
 sigterm_lines() { grep -cE 'Signal received: +"SIGTERM"' <<<"$(docker logs "$1" 2>&1)" || true; }
 
-# wait_healthy <container>: fails if the container stops or is not healthy within HEALTH_TIMEOUT.
+# wait_healthy <container>: fails if the container stops or is not healthy within HEALTH_TIMEOUT. Polled
+# every 0.5 s: the health probe runs every 2 s while the container starts (--start-interval).
 wait_healthy() {
     local i status
-    for ((i = 0; i < HEALTH_TIMEOUT; i++)); do
+    for ((i = 0; i < HEALTH_TIMEOUT * 2; i++)); do
         [[ "$(state .State.Running "$1")" == true ]] || fail "$1 exited (code $(state .State.ExitCode "$1")) instead of becoming healthy"
         status="$(state .State.Health.Status "$1")"
         if [[ "${status}" == healthy ]]; then
-            ok "$1 is healthy after ~${i} s"
+            ok "$1 is healthy after ~$((i / 2)) s"
             return 0
         fi
-        sleep 1
+        sleep 0.5
     done
     fail "$1 is not healthy after ${HEALTH_TIMEOUT} s (status ${status}); last check: $(docker inspect -f '{{range .State.Health.Log}}{{.Output}}{{end}}' "$1" | tail -3)"
 }
 
-# wait_exited <container> <timeout seconds>: waits until the container has stopped.
+# wait_exited <container> <timeout seconds>: waits until the container has stopped. Polled every
+# 0.2 s: a refused start exits within a fraction of a second.
 wait_exited() {
     local i
-    for ((i = 0; i < $2; i++)); do
+    for ((i = 0; i < $2 * 5; i++)); do
         [[ "$(state .State.Running "$1")" == false ]] && return 0
-        sleep 1
+        sleep 0.2
     done
     fail "$1 is still running after $2 s"
 }
@@ -263,9 +277,9 @@ ip_of() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{
 # wait_log <container> <extended regex> <count> <timeout s>: waits until the log has <count> such lines.
 wait_log() {
     local i
-    for ((i = 0; i < $4; i++)); do
+    for ((i = 0; i < $4 * 2; i++)); do
         (($(grep -cE -- "$2" <<<"$(docker logs "$1" 2>&1)" || true) >= $3)) && return 0
-        sleep 1
+        sleep 0.5
     done
     fail "$1: fewer than $3 log line(s) matching '$2' after $4 s"
 }
@@ -278,14 +292,23 @@ health_says() {
     grep -qF -- "$2" <<<"${out}" || fail "$1: unexpected aspia_health output: ${out}"
 }
 
-# never_healthy <container> <seconds>: fails if the container stops or reports healthy within that time.
-never_healthy() {
-    local i
-    for ((i = 0; i < $2; i++)); do
+# not_yet_healthy <container>: running, not healthy, and every health probe Docker kept (the last 5)
+# failed, at least one ran. A container that passed one probe stays healthy for ~90 s (interval 30 s,
+# 3 retries), so this covers its whole life so far without waiting; up to 60 s for the first probe
+# (Docker before 25 has no start interval).
+not_yet_healthy() {
+    local i codes
+    for ((i = 0; i < 60; i++)); do
         [[ "$(state .State.Running "$1")" == true ]] || fail "$1 exited (code $(state .State.ExitCode "$1"))"
         [[ "$(state .State.Health.Status "$1")" != healthy ]] || fail "$1 became healthy"
+        codes="$(docker inspect -f '{{range .State.Health.Log}}{{.ExitCode}} {{end}}' "$1")"
+        if [[ -n "${codes}" ]]; then
+            [[ " ${codes}" != *" 0 "* ]] || fail "$1 passed a health probe (exit codes: ${codes})"
+            return 0
+        fi
         sleep 1
     done
+    fail "$1: no health probe ran in 60 s"
 }
 
 config_sums() {
@@ -305,8 +328,27 @@ check_modes() {
 # ---------------------------------------------------------------------------------------------
 # Scenarios
 
+# build_image <tag> <docker build arguments...>: builds the image and untags it on exit.
+build_image() {
+    BUILT_IMAGES+=("$1")
+    docker build -q --platform "${PLATFORM}" -t "$@" >/dev/null
+    ok "built $1"
+}
+
+# setup: the image under test (unless ASPIA_TEST_IMAGE names one) and the helper; every selection needs both.
+setup() {
+    log "Setup: the image under test and the helper image"
+    if [[ -n "${ASPIA_TEST_IMAGE:-}" ]]; then
+        ok "testing the given image ${IMAGE}"
+    else
+        build_image "${IMAGE}" .
+    fi
+    # The helper uses the product's base image, taken from the Dockerfile so that one edit updates both.
+    build_image "${HELPER_IMAGE}" --build-arg "BASE_IMAGE=$(awk '/^FROM / { print $2; exit }' Dockerfile)" tests/helper
+}
+
 scenario_build() {
-    log "0. Build: the image, and a build with a tampered checksum must fail"
+    log "0. Build: a build with a tampered checksum must fail"
     TAMPER_DIR="$(mktemp -d)"
     cp Dockerfile aspia_start aspia_health aspia_common.sh versions.env .dockerignore "${TAMPER_DIR}/"
     # Flip the first hex digit of the router checksum.
@@ -317,17 +359,6 @@ scenario_build() {
     fi
     grep -q 'FAILED' "${TAMPER_DIR}/build.log" || { cat "${TAMPER_DIR}/build.log" >&2; fail "the build failed, but not on the checksum"; }
     ok "a wrong checksum fails the build: $(grep -m1 -o 'aspia-router[^ ]*: FAILED' "${TAMPER_DIR}/build.log")"
-
-    if [[ -n "${ASPIA_TEST_IMAGE:-}" ]]; then
-        ok "testing the given image ${IMAGE}"
-    else
-        docker build -q --platform "${PLATFORM}" -t "${IMAGE}" . >/dev/null
-        ok "built ${IMAGE}"
-    fi
-    # The helper uses the product's base image, taken from the Dockerfile so that one edit updates both.
-    docker build -q --platform "${PLATFORM}" -t "${HELPER_IMAGE}" \
-        --build-arg "BASE_IMAGE=$(awk '/^FROM / { print $2; exit }' Dockerfile)" tests/helper >/dev/null
-    ok "built ${HELPER_IMAGE}"
 }
 
 scenario_compose() {
@@ -1133,10 +1164,26 @@ scenario_puid_pgid_refused() {
 # with a Router in another container and is health-checked correctly. They cannot show traffic
 # flowing through a Relay across real NAT; that needs two hosts and a real Client and Host.
 
-readonly SPLIT_SUBNET=10.213.47.0/24                         # fixed, so that scenario 21 can pin Relay addresses
-readonly RELAY_A_IP=10.213.47.200 RELAY_B_IP=10.213.47.201   # above the range Docker hands out first
 readonly WRONG_KEY=0000000000000000000000000000000000000000000000000000000000000001
 SPLIT_NET="" ROUTER_NAME="" ROUTER_KEY="" RELAY1_NAME=""
+RELAY_A_IP="" RELAY_B_IP=""   # set by split_network: above the range Docker hands out first
+
+# split_network: creates SPLIT_NET once per run, with a /24 of 10.213.0.0/16 given explicitly, so that
+# scenario 21 can pin Relay addresses. Docker refuses a subnet that overlaps another network (also one
+# of a concurrent run); then the next /24 is tried, from 10.213.48.0/24 on (earlier versions of this
+# script take 10.213.47.0/24 unconditionally, and may run at the same time from another checkout).
+split_network() {
+    local n out
+    [[ -z "${SPLIT_NET}" ]] || return 0
+    for ((n = 48; n < 256; n++)); do
+        if out="$(docker network create --label "aspia-test=${RUN_ID}" --subnet "10.213.${n}.0/24" "${RUN_ID}-split" 2>&1)"; then
+            SPLIT_NET="${RUN_ID}-split" RELAY_A_IP="10.213.${n}.200" RELAY_B_IP="10.213.${n}.201"
+            return 0
+        fi
+        grep -qi overlap <<<"${out}" || fail "docker network create failed: ${out}"
+    done
+    fail "no /24 of 10.213.48.0-10.213.255.0 is free for ${RUN_ID}-split"
+}
 
 scenario_compose_roles() {
     local file role out images
@@ -1196,19 +1243,18 @@ relay_helper() {
 }
 
 # expect_relay_refused <container> <log regex> [count, default 1]: the Relay logged the failure <count>
-# times, is still running and not healthy for a few seconds, and aspia_health says it is not connected.
+# times, is still running and has failed every health probe so far, and aspia_health says it is not connected.
 expect_relay_refused() {
     CURRENT_CONTAINER="$1"
     wait_log "$1" "$2" "${3:-1}" 60
-    never_healthy "$1" 3
+    not_yet_healthy "$1"
     health_says "$1" 'the Relay is not connected to the Router'
 }
 
 scenario_split() {
     local cfg db logs ports port relay_conf files ip out name
     log "17. ASPIA_ROLE=router and ASPIA_ROLE=relay in two containers on one Docker network"
-    SPLIT_NET="${RUN_ID}-split"
-    docker network create --label "aspia-test=${RUN_ID}" --subnet "${SPLIT_SUBNET}" "${SPLIT_NET}" >/dev/null
+    split_network
     cfg="$(new_volume s17-router-config)"
     db="$(new_volume s17-router-db)"
     run_new s17-router "${cfg}" "${db}" -e ASPIA_ROLE=router --network "${SPLIT_NET}" --network-alias aspia-router
@@ -1313,12 +1359,22 @@ start_failing_relays() {
 }
 
 scenario_relay_wrong_key() {
-    local name="${FAIL_WRONGKEY}" router_ip conf
-    log "19. A Relay with a wrong Router key: never healthy, and the log says why"
-    # Two attempts: this is the one place that shows the Relay retries on its own (the reconnect in 20 does too).
-    expect_relay_refused "${name}" 'Connection to the router has been lost: .*ACCESS_DENIED' 2
+    local name="${FAIL_WRONGKEY}"
+    log "19a. A Relay with a wrong Router key: not healthy, and the log says why"
+    expect_relay_refused "${name}" 'Connection to the router has been lost: .*ACCESS_DENIED'
     health_says "${name}" 'the Router is at aspia-router'
-    ok "ACCESS_DENIED logged on every attempt (retried every 15 s); still running, not healthy; aspia_health names the Router"
+    wait_log "${name}" 'Reconnect after [0-9]+ seconds' 1 10
+    ok "ACCESS_DENIED logged and another attempt scheduled; still running, not healthy; aspia_health names the Router"
+}
+
+# scenario_relay_wrong_key_retry: runs after 22, when the Relay of 19a has had its retry (15 s after
+# its first attempt), so that the second ACCESS_DENIED needs (almost) no wait.
+scenario_relay_wrong_key_retry() {
+    local name="${FAIL_WRONGKEY}" router_ip conf
+    log "19b. The Relay with the wrong key retried on its own: ACCESS_DENIED again; recreated with the right key"
+    # Two attempts: this is the one place that shows the Relay retries on its own (the reconnect in 20b does too).
+    expect_relay_refused "${name}" 'Connection to the router has been lost: .*ACCESS_DENIED' 2
+    ok "ACCESS_DENIED logged on the retry too; still running, not healthy"
 
     # The same volume, a different Router address and the right key: relay.conf follows the variables.
     router_ip="$(ip_of "${ROUTER_NAME}")"
@@ -1338,7 +1394,7 @@ scenario_relay_wrong_key() {
 
 scenario_relay_unreachable() {
     local name
-    log "20. A Relay whose Router is unreachable: keeps running and retrying, unhealthy, the log says why"
+    log "20a. A Relay whose Router is unreachable: keeps running and retrying, unhealthy, the log says why"
     expect_relay_refused "${FAIL_NOHOST}" 'Connection to the router has been lost: .*SPECIFIED_HOST_NOT_FOUND'
     health_says "${FAIL_NOHOST}" 'the Router is at no-such-router.invalid'
     expect_relay_refused "${FAIL_NOPORT}" 'Connection to the router has been lost: .*CONNECTION_REFUSED'
@@ -1354,6 +1410,12 @@ scenario_relay_unreachable() {
     ok "Router stopped: the Relay logged the lost connection, keeps running, and aspia_health fails"
     docker start "${ROUTER_NAME}" >/dev/null
     wait_healthy "${ROUTER_NAME}"
+}
+
+# scenario_relay_reconnect: runs after 19b, when the Relay of 20a has had its retry since the Router came back.
+scenario_relay_reconnect() {
+    log "20b. The Router is back: the Relay reconnects on its own"
+    CURRENT_CONTAINER="${RELAY1_NAME}"
     wait_log "${RELAY1_NAME}" 'Connection to the router is established \(session count' 2 60
     docker exec "${RELAY1_NAME}" /usr/bin/aspia_health >/dev/null || fail "the Relay reconnected but aspia_health fails"
     ok "Router back: the Relay reconnected on its own (it retries every 15 s) and is healthy again"
@@ -1591,39 +1653,121 @@ check_hardening() {
 }
 
 # ---------------------------------------------------------------------------------------------
+# Scenario groups and selection
 
-scenario_build
-scenario_command
-scenario_compose
-scenario_compose_roles
-scenario_compose_hardening
-scenario_clean_start
-scenario_restart
-scenario_new_external_ip
-scenario_stop
-scenario_crash
-scenario_relay_not_connected
-scenario_upgrade
-scenario_no_external_ip
-scenario_orphan_database
-scenario_refused_relay_data
-scenario_env_apply
-scenario_env_persistence
-scenario_env_invalid
-scenario_env_auto_no_network
-scenario_env_auto_stub
-scenario_env_migration
-scenario_puid_pgid
-scenario_env_empty_allowlist
-scenario_puid_pgid_refused
-scenario_split
-scenario_two_relays
-start_failing_relays
-scenario_relay_wrong_key
-scenario_relay_unreachable
-scenario_router_allow_list
-scenario_relay_invalid
-scenario_single_process
-scenario_role_all_explicit
+# One line per group: name, weight, and its functions in the order they run. The groups run in this
+# order. The weight is the group's duration in seconds in CI (ubuntu-24.04, image given), rounded;
+# --shard uses it only to spread the slow groups, so update it when a group gets much faster or slower.
+readonly GROUP_TABLE=(
+    "build               4  scenario_build"
+    "command             1  scenario_command"
+    "compose             6  scenario_compose"
+    "compose-roles       2  scenario_compose_roles"
+    "compose-hardening   1  scenario_compose_hardening"
+    "clean-start        26  scenario_clean_start scenario_restart scenario_new_external_ip scenario_stop scenario_crash scenario_relay_not_connected"
+    "upgrade            37  scenario_upgrade"
+    "no-external-ip      1  scenario_no_external_ip"
+    "orphan-database     1  scenario_orphan_database"
+    "refused-data        4  scenario_refused_relay_data"
+    "env-apply           3  scenario_env_apply"
+    "env-persistence    11  scenario_env_persistence"
+    "env-invalid         4  scenario_env_invalid"
+    "auto-no-network     2  scenario_env_auto_no_network"
+    "auto-stub          10  scenario_env_auto_stub"
+    "env-migration       8  scenario_env_migration"
+    "puid               11  scenario_puid_pgid"
+    "empty-allowlist     7  scenario_env_empty_allowlist"
+    "puid-refused        4  scenario_puid_pgid_refused"
+    "split              46  scenario_split scenario_two_relays start_failing_relays scenario_relay_wrong_key scenario_relay_unreachable scenario_router_allow_list scenario_relay_invalid scenario_relay_wrong_key_retry scenario_relay_reconnect scenario_single_process scenario_role_all_explicit"
+)
 
-log "All scenarios passed (image ${IMAGE})"
+# SCAN_WEIGHT: the Trivy scan that ci.yml runs after the tests of shard 1 (image save, scan, SARIF upload;
+# 15 s in CI), in seconds like the weights above. Shard 1 starts with it as its load, so it gets fewer groups.
+readonly SCAN_WEIGHT=15
+
+# shard_groups <i> <n>: the names of the groups of shard i of n, one per line. The heaviest group first,
+# each to the shard with the least weight so far (the lowest shard on a tie): the same on every machine.
+shard_groups() {
+    local -a load=()
+    local k best weight name
+    for ((k = 1; k <= $2; k++)); do load[k]=0; done
+    load[1]=${SCAN_WEIGHT}
+    while read -r weight _ name; do
+        best=1
+        for ((k = 2; k <= $2; k++)); do
+            if ((load[k] < load[best])); then best=${k}; fi
+        done
+        load[best]=$((load[best] + weight))
+        if ((best == $1)); then echo "${name}"; fi
+    done < <(printf '%s\n' "${GROUP_TABLE[@]}" | awk '{ print $2, NR, $1 }' | sort -k1,1nr -k2,2n)
+}
+
+usage_error() {
+    printf 'tests/run.sh: %s\nUsage: tests/run.sh [--list] [--shard I/N | GROUP...]\n' "$1" >&2
+    exit 2
+}
+
+LIST=0 SHARD="" SELECTED=()
+while (($#)); do
+    case "$1" in
+        --list) LIST=1 ;;
+        --shard)
+            if [[ ! "${2:-}" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] || ((BASH_REMATCH[1] > BASH_REMATCH[2])); then
+                usage_error "--shard needs I/N with 1 <= I <= N, not '${2:-}'"
+            fi
+            SHARD="$2"
+            shift
+            ;;
+        -*) usage_error "unknown option $1" ;;
+        *)
+            printf '%s\n' "${GROUP_TABLE[@]}" | awk -v g="$1" '$1 == g { found = 1 } END { exit !found }' \
+                || usage_error "no group '$1' (tests/run.sh --list prints them)"
+            SELECTED+=("$1")
+            ;;
+    esac
+    shift
+done
+[[ -z "${SHARD}" || ${#SELECTED[@]} == 0 ]] || usage_error "--shard and group names do not go together"
+if [[ -n "${SHARD}" ]]; then
+    while read -r name; do SELECTED+=("${name}"); done < <(shard_groups "${SHARD%/*}" "${SHARD#*/}")
+fi
+ALL=0
+[[ -n "${SHARD}" || ${#SELECTED[@]} != 0 ]] || ALL=1
+
+# selected <group name>: the group runs in this selection.
+selected() { ((ALL)) || [[ " ${SELECTED[*]-} " == *" $1 "* ]]; }
+
+RUN=() RUN_NAMES=()   # the selected GROUP_TABLE lines and group names, in the order they run
+for entry in "${GROUP_TABLE[@]}"; do
+    read -r name _ <<<"${entry}"
+    if selected "${name}"; then RUN+=("${entry}") RUN_NAMES+=("${name}"); fi
+done
+
+if ((LIST)); then
+    total=0
+    for entry in ${RUN[@]+"${RUN[@]}"}; do
+        read -r name weight functions <<<"${entry}"
+        printf '%-18s %3d  %s\n' "${name}" "${weight}" "${functions}"
+        total=$((total + weight))
+    done
+    printf '%-18s %3d\n' total "${total}"
+    exit 0
+fi
+
+((ALL)) || log "Groups${SHARD:+ of shard ${SHARD}}: ${RUN_NAMES[*]-(none)}"
+
+trap cleanup EXIT   # only a run that builds and starts things has anything to remove
+setup
+for entry in ${RUN[@]+"${RUN[@]}"}; do
+    read -r -a functions <<<"${entry}"
+    started=${SECONDS}
+    for function in "${functions[@]:2}"; do "${function}"; done
+    # The time to compare with the weight in GROUP_TABLE (from a CI log, when updating the weights).
+    printf '  time %s: %d s (weight in GROUP_TABLE: %d)\n' "${functions[0]}" $((SECONDS - started)) "${functions[1]}"
+done
+
+if ((ALL)); then
+    log "All scenarios passed (image ${IMAGE})"
+else
+    log "All scenarios passed in ${SHARD:+shard ${SHARD}: }${RUN_NAMES[*]-(no group)} (image ${IMAGE})"
+fi

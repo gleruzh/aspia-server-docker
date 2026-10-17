@@ -152,9 +152,9 @@ Candidates from the PR 3 task that were deliberately left out, with the reason:
 - **A connected Relay can still be useless** (an address the Router rejects, a sixth Relay): see "Healthcheck
   blind spots" above. The Relay's own log shows a sixth Relay only as `REMOTE_HOST_CLOSED`, like an allow-list
   refusal.
-- **Test network.** Scenarios 17-24 of `tests/run.sh` create a Docker network with the fixed subnet
-  `10.213.47.0/24` (scenario 21 pins two Relay addresses). A machine that already uses that subnet fails at
-  `docker network create`; change `SPLIT_SUBNET` there.
+- **Test network.** Scenarios 17-21, 23 and 24 of `tests/run.sh` need a Docker network with a subnet given
+  explicitly (scenario 21 pins two Relay addresses). `split_network` takes the first free /24 of
+  `10.213.0.0/16`, from `10.213.48.0/24` on; a host whose Docker networks use all of that range fails there.
 
 ## From PR 5b (hardening)
 
@@ -203,7 +203,10 @@ Correctness points not fixed in PR 1, each small and open for discussion:
 - **Test speed.** The three image builds in `tests/run.sh` run one after another, and several helper
   containers read one file each. Parallel builds or batched reads would save time in CI. PR 2: CI and
   publish build the product image first and pass it as `ASPIA_TEST_IMAGE`, so `tests/run.sh` builds only
-  the tampered context and the helper. The rest is still open; measure on the first real CI runs.
+  the tampered context and the helper. CI runs `tests/run.sh` in three shards (`--shard`); `publish.yml`
+  and `upstream-watch.yml` still run it whole. The Relay's 15 s reconnect delay is fixed in Aspia
+  (`kReconnectTimeout`, `source/relay/workers/router_worker.cc`, no setting), so scenarios 19b and 20b run
+  after 21 and 22 instead of waiting for it; `wait_healthy` still takes ~3 s per start (`--start-interval`).
 
 ## From PR 2 (CI and publishing)
 
