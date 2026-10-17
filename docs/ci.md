@@ -6,7 +6,7 @@ to Docker Hub or Quay.io only when the owner has set their secrets.
 
 | Workflow | Runs on | What it does |
 |---|---|---|
-| [`ci.yml`](../.github/workflows/ci.yml) | every pull request, weekly (Mondays), manual | `tests/lint.sh` (hadolint, shellcheck, actionlint, `scripts/versions.sh check`, the main-only checks of `publish.yml`), builds the image, runs `tests/run.sh` against it, and scans it with Trivy. The scan is reported in the log, the run summary and the Security tab; it never fails the run. |
+| [`ci.yml`](../.github/workflows/ci.yml) | every pull request, weekly (Mondays), manual | `tests/lint.sh` (hadolint, shellcheck, actionlint, `scripts/versions.sh check`, the main-only checks of `publish.yml` and `dockerhub-description.yml`), builds the image, runs `tests/run.sh` against it, and scans it with Trivy. The scan is reported in the log, the run summary and the Security tab; it never fails the run. |
 | [`publish.yml`](../.github/workflows/publish.yml) | push to `main` that changes `versions.env` or the image files; manual | Builds the image once, pushes it to GHCR by digest only, runs `tests/run.sh` against that digest, then tags it and copies it to the other registries. Signs it and attests its provenance. |
 | [`upstream-watch.yml`](../.github/workflows/upstream-watch.yml) | every 6 hours; manual | Opens a pull request "chore: bump Aspia to X.Y.Z" when Aspia publishes a newer stable release with both x86_64 server packages. |
 | [`rebuild.yml`](../.github/workflows/rebuild.yml) | daily; manual | Scans the published image with Trivy for vulnerabilities that have a fix, and starts `publish.yml` on `main` only if a rebuild would install such a fix. |
@@ -170,8 +170,9 @@ Two publishes never run at the same time, whatever their versions: the whole wor
 the Docker Hub description job, is in one concurrency group, so a second run waits until the first
 has finished. GitHub keeps only the newest waiting run; an older waiting run is cancelled. The
 description job of `dockerhub-description.yml` is in the same group, so it never edits the
-description during a publish. If it starts to wait while a publish is already waiting, GitHub cancels
-that publish; run it again (**Re-run all jobs**).
+description during a publish. Because a new waiting run would cancel a waiting publish, it does not
+join the group when a publish already waits behind a running one: the run fails with an error
+instead, and you re-run it once both publishes have finished.
 
 ## Verifying a published image
 

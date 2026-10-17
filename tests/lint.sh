@@ -130,10 +130,13 @@ for f in "${wf}" "${dwf}"; do
     fi
 done
 
-# dockerhub-description.yml joins the concurrency group 'publish' (on its job), leaves pushes that
-# start publish.yml to it (same paths), and its steps are those of publish.yml's description job,
-# except that it skips the update when main has a newer docs/dockerhub.md.
+# dockerhub-description.yml joins the concurrency group 'publish' (on its job) only when no publish
+# waits there, leaves pushes that start publish.yml to it (same paths), and its steps are those of
+# publish.yml's description job, except that it skips the update when main has a newer
+# docs/dockerhub.md.
 grep -qxE ' +group: publish' "${dwf}" || { echo "${dwf}: no concurrency group 'publish'"; status=1; }
+grep -qF 'actions/workflows/publish.yml/runs' "${dwf}" \
+    || { echo "${dwf}: no check for a waiting publish before joining the group 'publish'"; status=1; }
 diff --label "${wf} paths" --label "${dwf} PUBLISH_PATHS" \
     <(sed -n '/^    paths:$/,/^  [a-z_]*:$/s/^      - //p' "${wf}") \
     <(sed -n 's/^ *PUBLISH_PATHS: //p' "${dwf}" | tr ' ' '\n') || status=1

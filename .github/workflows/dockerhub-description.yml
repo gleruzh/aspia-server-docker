@@ -30,6 +30,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read         # list the runs of publish.yml
     outputs:
       sync: ${{ steps.plan.outputs.sync }}
     steps:
@@ -43,6 +44,7 @@ jobs:
         id: plan
         env:
           BEFORE: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
           HAS_DOCKERHUB: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
           # The paths: of publish.yml's push trigger (tests/lint.sh checks that they match).
           PUBLISH_PATHS: versions.env Dockerfile .dockerignore aspia_start aspia_health aspia_common.sh
@@ -65,6 +67,16 @@ jobs:
               echo "::notice title=Left to publish.yml::This push also changes ${changed//$'\n'/ }, so publish.yml runs and updates the description after it has published the image."
             fi
           fi
+          # GitHub keeps one waiting run per concurrency group: if a publish already waits behind a
+          # running one, the job below would replace (cancel) it. Fail instead; a publish is not lost.
+          if [[ "${sync}" == true ]]; then
+            unfinished="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/publish.yml/runs?per_page=20" \
+              --jq '[.workflow_runs[] | select(.status != "completed")] | length')"
+            if ((unfinished > 1)); then
+              echo "::error::A publish is running and another one waits for it; waiting in the group 'publish' now would cancel the waiting publish. Re-run this workflow when both have finished."
+              exit 1
+            fi
+          fi
           echo "sync=${sync}" >> "${GITHUB_OUTPUT}"
 
   dockerhub-description:
@@ -78,6 +90,8 @@ jobs:
     # The group of publish.yml, so this job waits for a running publish and the two never edit the
     # description at the same time. Set on the job, not the workflow: a run that leaves the update
     # to publish.yml never joins the group, so it cannot replace a publish that is waiting in it.
+    # Not a group of its own: publish.yml's description job writes the file of its own push without
+    # looking for a newer one, and this job could name a version that is still being published.
     concurrency:
       group: publish
       cancel-in-progress: false
