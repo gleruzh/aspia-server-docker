@@ -115,12 +115,10 @@ gh workflow run publish.yml --ref main -f version=3.0.37 -f dated_tag=true
 
 A run from any other branch or tag stops in its Plan step, before anything is built, so untested
 code cannot move `latest` or the version tags. This guards against mistakes, not against someone with
-write access: a manual run uses `publish.yml` from the branch it runs on, and that copy can be
-edited. Such an image would be signed with the identity `publish.yml@refs/<that ref>`, which the
-verify command below rejects. For a hard barrier, move the Docker Hub and Quay.io secrets into a
-GitHub Environment whose deployment branches are limited to `main` and add `environment:` to the
-jobs that use them (optional; the workflow does not require it). GHCR is pushed with `GITHUB_TOKEN`,
-which an environment does not restrict.
+write access: a manual run uses the copy of `publish.yml` from its own branch, and that copy can be
+edited (its signature still fails the `cosign verify` below). For a hard barrier (optional), move the
+Docker Hub and Quay.io secrets into a GitHub Environment limited to `main` and add `environment:` to
+the jobs that use them; GHCR uses `GITHUB_TOKEN`, which an environment does not restrict.
 
 ## Tags
 

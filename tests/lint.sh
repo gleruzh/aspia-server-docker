@@ -98,26 +98,23 @@ grep -qxF "${STUB_SHA} ${STUB_SHA}" "${tmp}/out" || { echo "fetch printed: $(cat
 # publish.yml may publish only from main: the Plan step refuses any other ref, one workflow-level
 # concurrency group serialises every publish, raw registry secrets never go into a step's env, and
 # every documented cosign identity is pinned to publish.yml@refs/heads/main.
-check_publish_workflow() {
-    local wf=.github/workflows/publish.yml ok=0 line
-    echo "${wf} publishes from main only"
-    # shellcheck disable=SC2016 # the literal text of the check in the workflow
-    grep -qF '[[ "${GITHUB_REF}" != "refs/heads/main" ]]' "${wf}" \
-        || { echo "${wf}: no refs/heads/main check in the Plan step"; ok=1; }
-    [[ "$(sed -n '/^concurrency:/,/^[^ ]/p' "${wf}")" == $'concurrency:\n  group: publish\n  cancel-in-progress: false\n'* ]] \
-        || { echo "${wf}: no workflow-level concurrency group 'publish'"; ok=1; }
-    if grep -nE '^    concurrency:' "${wf}"; then echo "${wf}: job-level concurrency"; ok=1; fi
-    if grep -nE '^ +[A-Z_]+: \$\{\{ *secrets\.(DOCKERHUB|QUAY)_[A-Z]+ *\}\}' "${wf}"; then
-        echo "${wf}: a registry secret is passed to a step's env; pass a boolean instead"; ok=1
-    fi
-    grep -q 'certificate-identity' "${wf}" || { echo "${wf}: no cosign verify command"; ok=1; }
-    while IFS= read -r line; do
-        [[ "${line}" == *'publish\\.yml@refs/heads/main$'* || "${line}" == *'publish\.yml@refs/heads/main$'* ]] \
-            || { echo "cosign identity not pinned to refs/heads/main: ${line}"; ok=1; }
-    done < <(grep -rn --include='*.md' --include='*.yml' -e '--certificate-identity' .github docs README.md podman)
-    return "${ok}"
-}
-check_publish_workflow || status=1
+wf=.github/workflows/publish.yml
+echo "${wf} publishes from main only"
+# shellcheck disable=SC2016 # the literal text of the check in the workflow
+grep -qF '[[ "${GITHUB_REF}" != "refs/heads/main" ]]' "${wf}" \
+    || { echo "${wf}: no refs/heads/main check in the Plan step"; status=1; }
+# Two-space indent: only the workflow-level concurrency block matches, not a job-level one.
+grep -qxF '  group: publish' "${wf}" || { echo "${wf}: no workflow-level concurrency group 'publish'"; status=1; }
+if grep -n 'cancel-in-progress: true' "${wf}"; then echo "${wf}: a publish must never be cancelled halfway"; status=1; fi
+if grep -nE '^ +[A-Z_]+: \$\{\{ *secrets\.(DOCKERHUB|QUAY)_[A-Z]+ *\}\}' "${wf}"; then
+    echo "${wf}: a registry secret is passed to a step's env; pass a boolean instead"; status=1
+fi
+grep -q 'certificate-identity' "${wf}" || { echo "${wf}: no cosign verify command"; status=1; }
+# The workflow echoes the regexp with a doubled backslash, the docs have a single one.
+# Captured, not piped into if: under pipefail a grep writing to /dev/null quits early and hides a hit.
+unpinned="$(grep -rn --include='*.md' --include='*.yml' -e '--certificate-identity' .github docs README.md podman \
+    | grep -vE 'publish\\{1,2}\.yml@refs/heads/main\$' || true)"
+[[ -z "${unpinned}" ]] || { printf '%s\n' "${unpinned}" "cosign identity not pinned to refs/heads/main"; status=1; }
 
 ((status == 0)) && echo "lint: ok"
 exit "${status}"
