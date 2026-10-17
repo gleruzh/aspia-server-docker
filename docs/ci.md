@@ -6,15 +6,15 @@ to Docker Hub or Quay.io only when the owner has set their secrets.
 
 | Workflow | Runs on | What it does |
 |---|---|---|
-| [`ci.yml`](../.github/workflows/ci.yml) | every pull request, weekly (Mondays), manual | `tests/lint.sh` (hadolint, shellcheck, actionlint, `scripts/versions.sh check`, the main-only checks of `publish.yml` and `dockerhub-description.yml`), builds the image, runs `tests/run.sh` against it, and scans it with Trivy. The scan is reported in the log, the run summary and the Security tab; it never fails the run. |
+| [`ci.yml`](../.github/workflows/ci.yml) | every pull request, weekly (Mondays), manual | `tests/lint.sh` (hadolint, shellcheck, actionlint, `scripts/versions.sh check`, the main-only checks of `publish.yml` and `dockerhub-description.yml`), builds the image, runs `tests/run.sh` against it, and scans it with Trivy. The findings are reported in the log, the run summary and the Security tab; they never fail the run, but a scan that does not work does ([Tool images](#tool-images)). |
 | [`publish.yml`](../.github/workflows/publish.yml) | push to `main` that changes `versions.env` or the image files; manual | Builds the image once, pushes it to GHCR by digest only, runs `tests/run.sh` against that digest, then tags it and copies it to the other registries. Signs it and attests its provenance. |
 | [`upstream-watch.yml`](../.github/workflows/upstream-watch.yml) | every 6 hours; manual | Opens a pull request "chore: bump Aspia to X.Y.Z" when Aspia publishes a newer stable release with both x86_64 server packages. |
 | [`rebuild.yml`](../.github/workflows/rebuild.yml) | daily; manual | Scans the published image with Trivy for vulnerabilities that have a fix, and starts `publish.yml` on `main` only if a rebuild would install such a fix. |
 | [`dockerhub-description.yml`](../.github/workflows/dockerhub-description.yml) | push to `main` that changes `docs/dockerhub.md`; manual | Replaces the Docker Hub description with `docs/dockerhub.md` when the push starts no publish (see [Enabling Docker Hub](#enabling-docker-hub)). |
 
 Dependabot ([`.github/dependabot.yml`](../.github/dependabot.yml)) opens pull requests, weekly, for
-the pinned action SHAs and for the pinned digest of the Debian base image. Nothing is updated
-silently. Security updates of Debian reach the image in two ways. A Dependabot pull request for the
+the pinned action SHAs, the pinned digest of the Debian base image and the pinned
+[tool images](#tool-images). Nothing is updated silently. Security updates of Debian reach the image in two ways. A Dependabot pull request for the
 base digest changes the Dockerfile; once merged, `publish.yml` publishes the new image. Between
 those, the Dockerfile runs `apt-get upgrade`, so every build installs the current Debian packages,
 and `rebuild.yml` starts a publish when the published image has a vulnerability that such a build
@@ -38,6 +38,31 @@ scripts/versions.sh bump 3.0.37 <router sha256> <relay sha256>
 after checking them against the digest the GitHub API reports; it fails when the API reports no
 digest. The digest shows that the download is the file GitHub stores for the release, not who built
 it.
+
+## Tool images
+
+The images that the tests and CI run (hadolint, shellcheck, actionlint, Trivy, and a Docker CLI with
+Compose v2.31 for the Compose v2 check of `tests/run.sh`) are pinned by tag and digest in one file,
+[`.github/tool-images/Dockerfile`](../.github/tool-images/Dockerfile), one
+`FROM <image>:<tag>@sha256:<digest> AS <name>` line each. The file is never built; it is in the
+format Dependabot's docker ecosystem reads, so Dependabot opens a weekly pull request (prefix `ci`)
+when one of them has a new version or digest, and the CI run of that pull request shows whether the
+new linter or scanner still passes. For Trivy this holds although its findings never fail CI: in
+`ci.yml` and `rebuild.yml` the Trivy step fails when Trivy exits with an error or when its report is
+not JSON or lists no OS packages (it did not scan the Debian packages). A failed download of the
+Trivy database fails it too; run the job again. `tests/lint.sh`, `tests/run.sh`, `ci.yml` and
+`rebuild.yml` read an image with `scripts/tool-image.sh <name>`. `tests/lint.sh` fails when a line
+of the file is not pinned by tag and digest, when a name is used twice or a script or workflow asks
+for a name the file does not have, or when a script or workflow pins an image of its own instead of
+reading it from there.
+
+Two images are kept from moving on purpose:
+
+- The Docker CLI stays on `docker:27.3-cli`: the check is about the older Compose v2 still common on
+  servers, so `.github/dependabot.yml` lets through digest updates of that tag only.
+- The archived Aspia 2.7.0 image (`OLD_IMAGE` in `tests/run.sh`, the upgrade test) is not in the
+  file at all. It is a fixed test fixture: its digest is what makes it the original 2.7.0, and a new
+  digest under the same tag could only be a different image.
 
 ## Secrets and variables
 
@@ -254,7 +279,8 @@ published yet), the run ends there with a notice and succeeds. This applies only
 "not found" and the image has a tag `latest`; every other error fails the run. Then it runs
 `apt-get update` and `apt-get -s upgrade` in the image, which shows the packages that a new build
 would upgrade. If there are none, it stops there. Otherwise it scans the image with Trivy
-(`--ignore-unfixed`: only findings that have a fixed version). Only when one of the upgradable
+(`--ignore-unfixed`: only findings that have a fixed version); a Trivy error, or a report without
+OS packages, fails the run instead of reading as "nothing to fix". Only when one of the upgradable
 packages has a finding with a fix does it start `publish.yml` on `main`, with the version of
 `versions.env` and a dated tag. The run summary lists the findings and the packages.
 
@@ -274,8 +300,8 @@ Why it is built like this:
   builds `main` with the current packages anyway, and a new waiting run would cancel a waiting one.
 - **Least privilege.** The job `scan` has `contents: read` and `packages: read`; the job that starts
   the publish has only `actions: write` and runs no code from the repository. `tests/lint.sh` checks
-  that the workflow starts `publish.yml` with `--ref main` only, and that it pins the same Trivy image
-  as `ci.yml`.
+  that the workflow starts `publish.yml` with `--ref main` only. It scans with the same pinned Trivy
+  image as `ci.yml`, read from [`.github/tool-images/Dockerfile`](#tool-images).
 
 A manual run checks at once:
 
@@ -286,7 +312,7 @@ gh workflow run rebuild.yml --ref main
 ## Running the checks locally
 
 ```shell
-tests/lint.sh    # hadolint, shellcheck, actionlint (pinned containers) and scripts/versions.sh check
+tests/lint.sh    # hadolint, shellcheck, actionlint (pinned containers), the tool image pins and scripts/versions.sh check
 tests/run.sh     # builds the image and runs the behaviour tests (needs Docker)
 ASPIA_TEST_IMAGE=ghcr.io/<owner>/aspia-server:3.0.37 tests/run.sh   # tests a published image
 ```

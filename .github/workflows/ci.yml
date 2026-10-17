@@ -22,10 +22,6 @@ defaults:
   run:
     shell: bash
 
-env:
-  # Trivy, pinned by version and digest like every other tool image (tests/lint.sh).
-  TRIVY_IMAGE: aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
-
 jobs:
   lint:
     name: Lint (hadolint, shellcheck, actionlint, versions)
@@ -66,19 +62,24 @@ jobs:
           ASPIA_TEST_IMAGE: aspia-server:ci
         run: tests/run.sh
 
-      # The scan reports; it never fails the build: the findings are in Debian packages that this
+      # Findings never fail the build (--exit-code 0): they are in Debian packages that this
       # repository does not control. Every build installs their fixes (apt-get upgrade), and
       # rebuild.yml republishes when the published image has one that a build would fix.
       - name: Scan the image with Trivy
         id: scan
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        continue-on-error: true
         run: |
           docker save -o "${RUNNER_TEMP}/image.tar" aspia-server:ci
+          # Pinned by tag and digest like every other tool image, in .github/tool-images/Dockerfile.
+          image="$(scripts/tool-image.sh trivy)"
           trivy() {
-            docker run --rm -v "${RUNNER_TEMP}:/work" -v trivy-cache:/root/.cache/trivy "${TRIVY_IMAGE}" "$@"
+            docker run --rm -v "${RUNNER_TEMP}:/work" -v trivy-cache:/root/.cache/trivy "${image}" "$@"
           }
-          trivy image --quiet --scanners vuln --format json --output /work/trivy.json --input /work/image.tar
+          trivy image --quiet --scanners vuln --exit-code 0 --format json --output /work/trivy.json --input /work/image.tar
+          # A scanner that does not work fails the step, so a new Trivy that breaks is not a green run:
+          # an error exit above, or a report that is not JSON or found no OS packages (no Debian scanned).
+          jq -e 'any(.Results[]?; .Class == "os-pkgs")' "${RUNNER_TEMP}/trivy.json" > /dev/null \
+            || { echo "::error title=Trivy::the report is missing, not JSON, or lists no OS packages: the scan did not work"; exit 1; }
           trivy convert --format table /work/trivy.json
           trivy convert --format sarif --output /work/trivy.sarif /work/trivy.json
           {

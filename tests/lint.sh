@@ -5,26 +5,26 @@
 # list the variables of .env.example that apply to their unit, that the Quadlet unit does not publish
 # the Aspia 2.x port 8060 by default, that the Dockerfile installs no curl, scripts/versions.sh check,
 # the input checks of scripts/versions.sh files and scripts/aspia-release.sh (with a stub gh), that
-# publish.yml and dockerhub-description.yml publish from main only, and that rebuild.yml starts
-# publish.yml on main only (and skips only a version that is not published yet).
+# publish.yml and dockerhub-description.yml publish from main only, that rebuild.yml starts
+# publish.yml on main only (and skips only a version that is not published yet), and that every tool
+# image is pinned by tag and digest in .github/tool-images/Dockerfile and nowhere else.
 # The linters run as pinned containers, so the result does not depend on what the host has installed.
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-readonly HADOLINT=hadolint/hadolint:v2.14.0@sha256:27086352fd5e1907ea2b934eb1023f217c5ae087992eb59fde121dce9c9ff21e
-readonly SHELLCHECK=koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
-readonly ACTIONLINT=rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+HADOLINT="$(scripts/tool-image.sh hadolint)"
+SHELLCHECK="$(scripts/tool-image.sh shellcheck)"
+ACTIONLINT="$(scripts/tool-image.sh actionlint)"
+readonly HADOLINT SHELLCHECK ACTIONLINT
 
-readonly DOCKERFILES=(Dockerfile tests/helper/Dockerfile)
-readonly SCRIPTS=(aspia_start aspia_health aspia_common.sh tests/run.sh tests/podman.sh tests/lint.sh tests/auto_address.sh tests/helper/x25519_pub scripts/versions.sh scripts/aspia-release.sh scripts/image-names.sh)
+readonly DOCKERFILES=(Dockerfile tests/helper/Dockerfile .github/tool-images/Dockerfile)
+readonly SCRIPTS=(aspia_start aspia_health aspia_common.sh tests/run.sh tests/podman.sh tests/lint.sh tests/auto_address.sh tests/helper/x25519_pub scripts/versions.sh scripts/aspia-release.sh scripts/image-names.sh scripts/tool-image.sh)
 
 status=0
-for file in "${DOCKERFILES[@]}"; do
-    echo "hadolint ${file}"
-    docker run --rm -i "${HADOLINT}" hadolint - < "${file}" || status=1
-done
+echo "hadolint ${DOCKERFILES[*]}"
+docker run --rm -v "${PWD}:/mnt:ro" -w /mnt "${HADOLINT}" hadolint --no-color "${DOCKERFILES[@]}" || status=1
 
 echo "shellcheck ${SCRIPTS[*]}"
 docker run --rm -v "${PWD}:/mnt:ro" -w /mnt "${SHELLCHECK}" "${SCRIPTS[@]}" || status=1
@@ -67,6 +67,26 @@ if grep -nEw '^[^#]*curl' Dockerfile; then
     echo "Dockerfile: curl is back in the image; aspia_start does not need it (openssl s_client)" >&2
     status=1
 fi
+
+# Every tool image is pinned by tag and digest in .github/tool-images/Dockerfile, where Dependabot
+# sees it. No script or workflow pins one of its own, except the archived 2.7.0 image of tests/run.sh
+# (a fixed fixture; Dependabot must not move it), which is pinned by digest too.
+tools=.github/tool-images/Dockerfile
+pin='[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}'   # <image>:<tag>@sha256:<digest>
+echo "${tools} pins every tool image by tag and digest, one image per name"
+unpinned="$(grep -nvE "^(#.*|FROM ${pin} AS [a-z0-9-]+)?\$" "${tools}" || true)"
+[[ -z "${unpinned}" ]] || { printf '%s\n' "${unpinned}" "${tools}: a line is not 'FROM <image>:<tag>@sha256:<digest> AS <name>'"; status=1; }
+# Each name is one image: no name twice, an unknown name fails, and every "$(scripts/tool-image.sh
+# <name>)" in the tests and workflows names an image of the file (a typo fails here, not in CI).
+dupes="$(sed -nE 's/^FROM .* AS ([a-z0-9-]+)$/\1/p' "${tools}" | sort | uniq -d)"
+[[ -z "${dupes}" ]] || { printf '%s\n' "${dupes}" "${tools}: these names are used twice"; status=1; }
+if scripts/tool-image.sh lint-no-such-tool > /dev/null 2>&1; then echo "scripts/tool-image.sh: an unknown name does not fail"; status=1; fi
+while read -r name; do
+    scripts/tool-image.sh "${name}" > /dev/null || status=1
+done < <(grep -rhoE '\$\(scripts/tool-image\.sh [a-z0-9-]+\)' .github/workflows tests | sed -E 's/.* (.*)\)/\1/' | sort -u)
+grep -qxE "readonly OLD_IMAGE=${pin}" tests/run.sh || { echo "tests/run.sh: OLD_IMAGE is not pinned by tag and digest"; status=1; }
+pinned="$(grep -rnE "${pin}" .github/workflows tests scripts | grep -vE '^tests/run\.sh:[0-9]+:readonly OLD_IMAGE=' || true)"
+[[ -z "${pinned}" ]] || { printf '%s\n' "${pinned}" "a tool image pinned outside ${tools}; add it there and read it with scripts/tool-image.sh"; status=1; }
 
 echo "scripts/versions.sh check"
 scripts/versions.sh check || status=1
@@ -161,9 +181,9 @@ unpinned="$(grep -rn --include='*.md' --include='*.yml' -e '--certificate-identi
     | grep -vE 'publish\\{1,2}\.yml@refs/heads/main\$' || true)"
 [[ -z "${unpinned}" ]] || { printf '%s\n' "${unpinned}" "cosign identity not pinned to refs/heads/main"; status=1; }
 
-# rebuild.yml starts publish.yml on main only, and scans with the Trivy that ci.yml pins.
+# rebuild.yml starts publish.yml on main only.
 wf=.github/workflows/rebuild.yml
-echo "${wf} starts publish.yml on main only, skips only an unpublished version, uses the Trivy of ci.yml"
+echo "${wf} starts publish.yml on main only, skips only an unpublished version"
 dispatches="$(grep -n 'gh workflow run' "${wf}" || true)"
 if [[ -z "${dispatches}" ]] || grep -v 'gh workflow run publish\.yml --ref main ' <<<"${dispatches}"; then
     echo "${wf}: every 'gh workflow run' must be 'gh workflow run publish.yml --ref main ...'"; status=1
@@ -175,8 +195,6 @@ if ! grep -qF "grep -qF ': not found' \"\${RUNNER_TEMP}/inspect.err\"" "${wf}" \
     || ! grep -qF 'docker buildx imagetools inspect "${GHCR_IMAGE}:latest"' "${wf}"; then
     echo "${wf}: a missing tag X.Y.Z must end the run only for 'not found' with a tag latest present"; status=1
 fi
-trivy_pins="$(grep -h '^  TRIVY_IMAGE: ' .github/workflows/ci.yml "${wf}" | sort -u)"
-(($(wc -l <<<"${trivy_pins}") == 1)) || { printf '%s\n' "${trivy_pins}" "ci.yml and ${wf} pin different Trivy images"; status=1; }
 
 ((status == 0)) && echo "lint: ok"
 exit "${status}"

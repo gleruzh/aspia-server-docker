@@ -20,10 +20,6 @@ defaults:
   run:
     shell: bash
 
-env:
-  # The same pinned Trivy as ci.yml (tests/lint.sh checks that the two agree).
-  TRIVY_IMAGE: aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
-
 jobs:
   scan:
     name: Scan the published image for fixable vulnerabilities
@@ -97,8 +93,13 @@ jobs:
             exit 0
           fi
           docker save -o "${RUNNER_TEMP}/image.tar" "${image}"
-          docker run --rm -v "${RUNNER_TEMP}:/work" -v trivy-cache:/root/.cache/trivy "${TRIVY_IMAGE}" \
-            image --quiet --scanners vuln --ignore-unfixed --format json --output /work/trivy.json --input /work/image.tar
+          # The same pinned Trivy as ci.yml, from .github/tool-images/Dockerfile.
+          trivy_image="$(scripts/tool-image.sh trivy)"
+          docker run --rm -v "${RUNNER_TEMP}:/work" -v trivy-cache:/root/.cache/trivy "${trivy_image}" \
+            image --quiet --scanners vuln --ignore-unfixed --exit-code 0 --format json --output /work/trivy.json --input /work/image.tar
+          # A report without OS packages would read as "nothing to fix": fail instead (as in ci.yml).
+          jq -e 'any(.Results[]?; .Class == "os-pkgs")' "${RUNNER_TEMP}/trivy.json" > /dev/null \
+            || { echo "::error title=Trivy::the report is missing, not JSON, or lists no OS packages: the scan did not work"; exit 1; }
           # Packages with a finding that has a fix.
           jq -r '[.Results[]?.Vulnerabilities[]?.PkgName] | unique | .[]' "${RUNNER_TEMP}/trivy.json" > "${RUNNER_TEMP}/fixable"
           fixed="$(sort -u "${RUNNER_TEMP}/fixable" | comm -12 - "${RUNNER_TEMP}/upgradable" | tr '\n' ' ')"
