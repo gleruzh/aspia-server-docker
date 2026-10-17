@@ -325,6 +325,8 @@ tests/run.sh upgrade split       # only these groups
 The scenarios are in groups; the scenarios of a group share containers or volumes, so a group is
 the unit of selection. `--shard` spreads the groups over the shards by the weights in `GROUP_TABLE`
 at the end of `tests/run.sh`, the same way on every machine; update a weight when a group's time
-in CI changes much (after each group the log prints `time <group>: N s (weight in GROUP_TABLE: W)`). Every run has its own container, volume and network names, image tags and
-subnet, so several runs (other worktrees, shards) can share one Docker host. `publish.yml` and
-`upstream-watch.yml` run the whole suite, unsharded.
+in CI changes much (after each group the log prints `time <group>: N s (weight in GROUP_TABLE: W)`).
+Shard 1 also runs the Trivy scan, so `SCAN_WEIGHT` (its time in CI) counts as its first load.
+Every run has its own container, volume and network names, image tags and subnet, so several runs
+(other worktrees, shards) can share one Docker host. `publish.yml` and `upstream-watch.yml` run the
+whole suite, unsharded.

@@ -1681,12 +1681,17 @@ readonly GROUP_TABLE=(
     "split              46  scenario_split scenario_two_relays start_failing_relays scenario_relay_wrong_key scenario_relay_unreachable scenario_router_allow_list scenario_relay_invalid scenario_relay_wrong_key_retry scenario_relay_reconnect scenario_single_process scenario_role_all_explicit"
 )
 
+# SCAN_WEIGHT: the Trivy scan that ci.yml runs after the tests of shard 1 (image save, scan, SARIF upload;
+# 15 s in CI), in seconds like the weights above. Shard 1 starts with it as its load, so it gets fewer groups.
+readonly SCAN_WEIGHT=15
+
 # shard_groups <i> <n>: the names of the groups of shard i of n, one per line. The heaviest group first,
 # each to the shard with the least weight so far (the lowest shard on a tie): the same on every machine.
 shard_groups() {
     local -a load=()
     local k best weight name
     for ((k = 1; k <= $2; k++)); do load[k]=0; done
+    load[1]=${SCAN_WEIGHT}
     while read -r weight _ name; do
         best=1
         for ((k = 2; k <= $2; k++)); do
