@@ -31,7 +31,7 @@ documentation. `scripts/versions.sh check` (run by `tests/lint.sh` and CI) fails
 differs; `scripts/versions.sh bump` changes all of them at once:
 
 ```shell
-scripts/versions.sh bump 3.0.37 <router sha256> <relay sha256>
+scripts/versions.sh bump 3.1.2 <router sha256> <relay sha256>
 ```
 
 `scripts/aspia-release.sh fetch <version> <dir>` downloads both packages and prints their sha256
@@ -154,8 +154,8 @@ In **Actions > Publish > Run workflow**, leave the branch on `main` and enter th
 only). Tick "dated tag" to also push `X.Y.Z-YYYYMMDD`. With the GitHub CLI:
 
 ```shell
-gh workflow run publish.yml --ref main -f version=3.0.37
-gh workflow run publish.yml --ref main -f version=3.0.37 -f dated_tag=true
+gh workflow run publish.yml --ref main -f version=3.1.2
+gh workflow run publish.yml --ref main -f version=3.1.2 -f dated_tag=true
 ```
 
 A run from any other branch or tag stops in its Plan step, before anything is built, so untested
@@ -169,8 +169,8 @@ the jobs that use them; GHCR uses `GITHUB_TOKEN`, which an environment does not 
 
 | Tag | Moves? | Pushed by |
 |---|---|---|
-| `X.Y.Z` (e.g. 3.0.37) | Yes: every new build of that version replaces it | every publish |
-| `X.Y.Z-YYYYMMDD` (e.g. 3.0.37-20261005) | Never: an existing dated tag is not overwritten | every publish after a merge, or a manual run with "dated tag" |
+| `X.Y.Z` (e.g. 3.1.2) | Yes: every new build of that version replaces it | every publish |
+| `X.Y.Z-YYYYMMDD` (e.g. 3.1.2-20261005) | Never: an existing dated tag is not overwritten | every publish after a merge, or a manual run with "dated tag" |
 | `X.Y`, `X`, `latest` | Yes, to the newest publish | every publish; for convenience only, nothing in this repository refers to them |
 
 The digest of every publish is in the run summary, with the commands to verify it. Pin by digest for
@@ -316,7 +316,7 @@ gh workflow run rebuild.yml --ref main
 ```shell
 tests/lint.sh    # hadolint, shellcheck, actionlint (pinned containers), the tool image pins and scripts/versions.sh check
 tests/run.sh     # builds the image and runs the behaviour tests (needs Docker)
-ASPIA_TEST_IMAGE=ghcr.io/<owner>/aspia-server:3.0.37 tests/run.sh   # tests a published image
+ASPIA_TEST_IMAGE=ghcr.io/<owner>/aspia-server:3.1.2 tests/run.sh   # tests a published image
 tests/run.sh --list              # the scenario groups with their weights (seconds in CI)
 tests/run.sh --shard 2/3         # only the groups of shard 2 of 3, as the CI job for that shard
 tests/run.sh upgrade split       # only these groups
