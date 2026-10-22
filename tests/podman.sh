@@ -28,7 +28,7 @@
 # uses the Router container's bridge address, because rootless Podman 5 (pasta) gives a container
 # the host's own address, so the host's address would lead the Relay back to itself.
 #
-# THIS INSTALLS A SERVICE AND USES PORTS 8060-8070 AND THE VOLUMES systemd-aspia-config/systemd-aspia-data
+# THIS INSTALLS A SERVICE AND USES PORTS 8061-8070 AND THE VOLUMES systemd-aspia-config/systemd-aspia-data
 # (relay: systemd-aspia-relay-config, and a container named aspia-podman-test-router).
 # Run it only on a throwaway machine (a CI runner, a VM). It refuses to start when the unit, the
 # container, the volumes or any of the ports already exist.
@@ -57,7 +57,7 @@ readonly SERVER_FILES=(aspia-server.container aspia-config.volume aspia-data.vol
 readonly SERVER_VOLUMES=(systemd-aspia-config systemd-aspia-data)
 readonly RELAY_FILES=(aspia-relay.container aspia-relay-config.volume aspia-relay.env router-relay.pub)
 readonly RELAY_VOLUMES=(systemd-aspia-relay-config)
-readonly PORTS=(8060 8061 8062 8063 8065 8070)
+readonly PORTS=(8061 8062 8063 8065 8070)
 readonly RELAY_PORTS=(8063 8070)
 readonly STOP_LIMIT=20          # seconds: "systemctl stop" must finish well inside systemd's 70 s default
 readonly HEALTHY_TIMEOUT=240    # seconds; generous, because CI runners and emulation are slow
