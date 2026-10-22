@@ -41,8 +41,9 @@ it.
 
 ## Tool images
 
-The images that the tests and CI run (hadolint, shellcheck, actionlint, Trivy, and a Docker CLI with
-Compose v2.31 for the Compose v2 check of `tests/run.sh`, and jq, which reads the `docker compose config` output in `tests/run.sh`) are pinned by tag and digest in one file,
+The images that the tests and CI run (hadolint, shellcheck, actionlint, Trivy, a Docker CLI with
+Compose v2.31 for the Compose v2 check of `tests/run.sh`, and jq, which reads the `docker compose
+config` output in `tests/run.sh`) are pinned by tag and digest in one file,
 [`.github/tool-images/Dockerfile`](../.github/tool-images/Dockerfile), one
 `FROM <image>:<tag>@sha256:<digest> AS <name>` line each. The file is never built; it is in the
 format Dependabot's docker ecosystem reads, so Dependabot opens a weekly pull request (prefix `ci`)
