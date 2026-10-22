@@ -80,6 +80,7 @@ sudo podman exec aspia-server cat /etc/aspia/initial-admin-password
 ```
 
 Log in, change the password, then delete the file with `sudo podman exec aspia-server rm /etc/aspia/initial-admin-password`.
+The file is a plaintext credential on the configuration volume and ends up in any backup of it: change the password of `admin` and delete the file before you back up the volume.
 Rootless: the same without `sudo`.
 
 Stop with `sudo systemctl stop aspia-server.service`. For the first login (the administrator account and the public
@@ -222,8 +223,10 @@ Upgrade note, October 2026 (Aspia 3.1): Aspia 3.1 supports Aspia 3.x only. There
 Aspia 2.x any more, `ASPIA_ROUTER_LEGACY_PORT` is ignored with a warning, and peers older than 3.0.0 are refused.
 If you copied an older `aspia-server.container`, delete its commented line `#PublishPort=8060:8060/tcp`. The
 image refuses to start on data of Aspia 2.x (the log starts with `Found Aspia 2.x data`). To upgrade from 2.x,
-first start the image 3.0.37 once on the 2.x volumes and wait until it is healthy (it converts the configuration
-and the database; publish 8060/tcp with `PublishPort=8060:8060/tcp` while 2.x Hosts need it), move the Hosts and
+first start the image 3.0.37 once on the 2.x volumes, with the unit and env file as they were at 3.0.37 (commit
+`065cc95`: [aspia-server.container](https://github.com/gleruzh/aspia-server-docker/blob/065cc95/podman/aspia-server.container), [aspia-server.env.example](https://github.com/gleruzh/aspia-server-docker/blob/065cc95/podman/aspia-server.env.example);
+the current ones lack the 2.x options), and wait until it is healthy (it converts the configuration and the database;
+uncomment `PublishPort=8060:8060/tcp` in that unit while 2.x Hosts need it), move the Hosts and
 Clients to 3.x, then change `Image=` to 3.1.x and repeat steps 3 and 4. Back up the volumes first. The whole
 order is in the main README, [Upgrading from 2.x](../README.md#upgrading-from-2x).
 

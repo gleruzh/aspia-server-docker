@@ -39,7 +39,7 @@ ASPIA_IMAGE=<namespace>/aspia-server:3.1.2
 
 Aspia 3.1 supports Aspia 3.x only: Hosts, Consoles and Clients older than 3.0.0 cannot connect, and the image refuses to start on Aspia 2.x data. Version 3.0.37 is the last with 2.x support, and `gleruzh/aspia-server:3.0.37` stays available. To upgrade from 2.x, see "Upgrading from 2.x" in [README.md](README.md).
 
-The first start creates the user `admin` with a random password. The image saves it in `/etc/aspia/initial-admin-password` and does not print it to the log: read it with `docker exec <container> cat /etc/aspia/initial-admin-password`, log in, change the password and delete the file. See "First login" in [README.md](README.md).
+The first start creates the user `admin` with a random password. The image saves it in `/etc/aspia/initial-admin-password` and does not print it to the log: read it with `docker exec <container> cat /etc/aspia/initial-admin-password`, log in, change the password and delete the file. The file is a plaintext credential on the configuration volume and ends up in any backup of it, so delete it before backing up the volume. See "First login" in [README.md](README.md).
 
 ## Licence and credits
 

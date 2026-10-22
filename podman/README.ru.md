@@ -81,6 +81,7 @@ sudo podman exec aspia-server cat /etc/aspia/initial-admin-password
 ```
 
 Войдите, смените пароль и удалите файл: `sudo podman exec aspia-server rm /etc/aspia/initial-admin-password`.
+Файл — это пароль в открытом виде на томе конфигурации, и он попадает в любую резервную копию этого тома: смените пароль `admin` и удалите файл до того, как копировать том.
 Rootless: то же самое без `sudo`.
 
 Остановить службу можно командой `sudo systemctl stop aspia-server.service`. Про первый вход (учётная запись администратора и открытый
@@ -223,9 +224,10 @@ Rootless: то же самое без `sudo` и с `systemctl --user ...`. Фа�
 Aspia 2.x больше нет, `ASPIA_ROUTER_LEGACY_PORT` игнорируется с предупреждением, а узлам старше 3.0.0 отказывается.
 Если вы скопировали более старый `aspia-server.container`, удалите из него закомментированную строку
 `#PublishPort=8060:8060/tcp`. Образ отказывается запускаться на данных Aspia 2.x (журнал начинается с
-`Found Aspia 2.x data`). Чтобы перейти с 2.x, сначала один раз запустите образ 3.0.37 на томах 2.x и дождитесь, пока он
-станет работоспособен (он преобразует конфигурацию и базу данных; пока Host из 2.x нужен порт 8060, опубликуйте его
-строкой `PublishPort=8060:8060/tcp`), переведите Host и Client на 3.x, затем замените `Image=` на 3.1.x и повторите
+`Found Aspia 2.x data`). Чтобы перейти с 2.x, сначала один раз запустите образ 3.0.37 на томах 2.x, с unit-файлом и env-файлом в том виде, какой был в 3.0.37
+(коммит `065cc95`: [aspia-server.container](https://github.com/gleruzh/aspia-server-docker/blob/065cc95/podman/aspia-server.container), [aspia-server.env.example](https://github.com/gleruzh/aspia-server-docker/blob/065cc95/podman/aspia-server.env.example);
+в текущих нет параметров для 2.x), и дождитесь, пока он станет работоспособен (он преобразует конфигурацию и базу
+данных; пока Host из 2.x нужен порт 8060, раскомментируйте в этом unit-файле `PublishPort=8060:8060/tcp`), переведите Host и Client на 3.x, затем замените `Image=` на 3.1.x и повторите
 шаги 3 и 4. Сначала сделайте резервную копию томов. Весь порядок описан в основном README, раздел
 [Переход с 2.x](../docs/README.ru.md#переход-с-2x).
 

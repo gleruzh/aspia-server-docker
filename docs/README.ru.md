@@ -147,7 +147,7 @@ docker compose exec aspia-server cat /etc/aspia/host.pub
 docker compose exec aspia-server cat /etc/aspia/initial-admin-password
 ```
 
-Файл создаётся только при первом создании конфигурации, на пустых томах. Если вы заново создадите контейнер на существующих томах, конфигурация и пароль останутся прежними.
+Файл создаётся только при первом создании конфигурации, на пустых томах. Если вы заново создадите контейнер на существующих томах, конфигурация и пароль останутся прежними. Файл — это пароль в открытом виде на томе конфигурации, и он попадает в любую резервную копию этого тома: смените пароль `admin` и удалите файл до того, как копировать том.
 
 1. Установите Aspia Client. При первом запуске Client запрашивает мастер-пароль. Мастер-пароль обязателен, и восстановить его нельзя.
 2. Добавьте Router: введите адрес вашего сервера (Router принимает Client на порту 8062), выберите в поле «Access Level» значение «Administrator» и войдите как `admin` с паролем из этого файла.
@@ -327,11 +327,11 @@ Aspia 3.1 больше не преобразует данные 2.x: она не
     (umask 077; sudo tar -czf - data docker-compose.yml > aspia-2.x-backup.tar.gz)
     ```
 
-2. Преобразуйте данные образом 3.0.37. Скачайте новый файл compose и `.env` и укажите `EXTERNAL_IP` из шага 1 и образ с тегом `3.0.37`. Откройте порты и запустите контейнер, как в разделе [Быстрый старт](#быстрый-старт):
+2. Преобразуйте данные образом 3.0.37. Не берите текущий файл compose: он больше не публикует 8060 и потерял параметры для 2.x. Возьмите файлы в том виде, какой был в 3.0.37 (коммит `065cc95`): [docker-compose.yml](https://github.com/gleruzh/aspia-server-docker/blob/065cc95/docker-compose.yml) и [.env.example](https://github.com/gleruzh/aspia-server-docker/blob/065cc95/.env.example) (для Podman: [aspia-server.container](https://github.com/gleruzh/aspia-server-docker/blob/065cc95/podman/aspia-server.container) и [aspia-server.env.example](https://github.com/gleruzh/aspia-server-docker/blob/065cc95/podman/aspia-server.env.example)). Укажите `EXTERNAL_IP` из шага 1 и образ с тегом `3.0.37`. Откройте порты и запустите контейнер, как в разделе [Быстрый старт](#быстрый-старт):
 
     ```shell
-    curl -fsSLO https://raw.githubusercontent.com/<owner>/aspia-server-docker/main/docker-compose.yml
-    curl -fsSL -o .env https://raw.githubusercontent.com/<owner>/aspia-server-docker/main/.env.example
+    curl -fsSLO https://raw.githubusercontent.com/gleruzh/aspia-server-docker/065cc95/docker-compose.yml
+    curl -fsSL -o .env https://raw.githubusercontent.com/gleruzh/aspia-server-docker/065cc95/.env.example
     ```
 
     ```shell
@@ -340,11 +340,11 @@ Aspia 3.1 больше не преобразует данные 2.x: она не
     ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.0.37
     ```
 
-    Образ 3.0.37 слушает порт 8060/tcp для Host из Aspia 2.x. Файл compose этого репозитория больше не публикует этот порт: добавьте строку `- "8060:8060"` в `ports:` и держите 8060/tcp открытым, пока он нужен. Дождитесь, пока `docker compose ps` покажет `(healthy)`. Host из Aspia 2.x всё это время продолжают работать на 8060.
+    Образ 3.0.37 слушает порт 8060/tcp для Host из Aspia 2.x. В `docker-compose.yml` этой версии строка порта 8060 в `ports:` закомментирована: раскомментируйте её (`#- "${ASPIA_ROUTER_LEGACY_PORT:-8060}:${ASPIA_ROUTER_LEGACY_PORT:-8060}"`) и держите 8060/tcp открытым, пока он нужен. Дождитесь, пока `docker compose ps` покажет `(healthy)`. Host из Aspia 2.x всё это время продолжают работать на 8060.
 
 3. Переведите Host и Client на Aspia 3.x. Host версии 3.0.0 и новее подключаются к порту 8061 и используют ключ из `host.pub`, то есть прежний ключ Router.
 
-4. Остановите контейнер, укажите в `ASPIA_IMAGE` тег `3.1.2`, удалите строку порта 8060 из `ports:` и запустите контейнер на тех же томах:
+4. Остановите контейнер, укажите в `ASPIA_IMAGE` тег `3.1.2`, удалите строку порта 8060 из `ports:` (в файле текущей версии её нет) и запустите контейнер на тех же томах:
 
     ```shell
     docker compose down
@@ -548,6 +548,7 @@ docker compose up -d --build
 | Пользователь потерял приложение-аутентификатор. | Сбросьте двухфакторную аутентификацию этого пользователя (см. ниже). |
 | Вы забыли пароль `admin`. | Другой администратор может сменить его в Client. В Aspia 3.x нет команды для задания пароля. При новой установке первый пароль лежит в `/etc/aspia/initial-admin-password`, если вы не удалили этот файл. |
 | Контейнер сразу завершается. Журнал начинается с `Found Aspia 2.x data`. | На томах лежат данные Aspia 2.x, которые 3.1 не может прочитать. Выполните [Переход с 2.x](#переход-с-2x). |
+| Контейнер сразу завершается. Журнал начинается с `Found /etc/aspia/router.json next to`. | `router.json` лежит рядом с непустым `router.conf`: вероятно, это остаток конфигурации Aspia 2.x. Уберите `router.json` (за пределы тома конфигурации) и запустите контейнер снова. |
 | Console из Aspia 2.x не работает с новым Router. | В Aspia 3.x программы Console больше нет, а Aspia 3.1 отказывает узлам старше 3.0.0. Используйте Client версии 3.0.0 или новее. |
 | Время в журнале неверное. | Задайте `TZ` в `.env`, например `TZ=Europe/Berlin`. Затем выполните `docker compose up -d`. |
 | `Permission denied` при чтении файлов в `data`. | Файлы принадлежат root (или `PUID`). Используйте `sudo`. |
