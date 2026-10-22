@@ -717,7 +717,7 @@ scenario_refused_2x_data() {
     # The role does not matter: the check runs before the role's own.
     refused_2x s3e "a 2.x relay.json alone, ASPIA_ROLE=relay" 'echo "{}" > /etc/aspia/relay.json' \
         'Found Aspia 2\.x data.*3\.0\.37' \
-        -e ASPIA_ROLE=relay -e ASPIA_RELAY_ROUTER_ADDRESS=router.example.test -e "ASPIA_RELAY_ROUTER_PUBLIC_KEY=${ROUTER_KEY}"
+        -e ASPIA_ROLE=relay -e ASPIA_RELAY_ROUTER_ADDRESS=router.example.test -e "ASPIA_RELAY_ROUTER_PUBLIC_KEY=${WRONG_KEY}"
 }
 
 scenario_env_apply() {

@@ -885,13 +885,13 @@ save_admin_password() {
     password="$(printf '%s\n' "$1" | sed -n 's/\r$//; s/^[[:space:]]*Password:[[:space:]]*//p' | head -n 1)"
     tmp="$(mktemp "${ADMIN_PASSWORD_FILE}.XXXXXX")" || return 1
     if [[ -n "${password}" ]]; then
-        printf 'User name: admin\nPassword: %s\n' "${password}" > "${tmp}"
+        printf 'User name: admin\nPassword: %s\n' "${password}" > "${tmp}" || { rm -f -- "${tmp}"; return 1; }
     else
-        printf '%s\n' "$1" > "${tmp}"
+        printf '%s\n' "$1" > "${tmp}" || { rm -f -- "${tmp}"; return 1; }
         warn "Router: no 'Password:' line in the output of aspia_router --create-config. The whole output is" \
             "in ${ADMIN_PASSWORD_FILE}; look there for the password of 'admin'."
     fi
-    chmod 0600 -- "${tmp}"
+    chmod 0600 -- "${tmp}" || { rm -f -- "${tmp}"; return 1; }
     # -T: an existing directory with this name is an error, not a place to move the file into.
     mv -fT -- "${tmp}" "${ADMIN_PASSWORD_FILE}" || { rm -f -- "${tmp}"; return 1; }
 }
