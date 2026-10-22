@@ -694,20 +694,26 @@ drop_privileges() {
 # refuse_2x_data: Aspia 3.1 cannot read 2.x data; the LAST_2X_IMAGE converts it. router.json is 2.x
 # data that was never converted (3.0.x renames it once it has); so is a relay.json that no
 # non-empty relay.conf covers (3.0.x converts relay.json only when relay.conf is missing or empty),
-# even without any Router file. router.pub alone is not: 3.0.x keeps it. Called once per start,
-# whatever the role, before any role-specific check and while nothing has been written yet.
+# even without any Router file. router.pub alone is not: 3.0.x keeps it. A router.json or relay.json
+# next to a non-empty router.conf/relay.conf is a leftover copy (already converted, or put back by
+# hand): refused too, since which file is right is the user's call, but without the 3.0.37 hint,
+# which would be wrong for it. Called once per start, whatever the role, before any role-specific
+# check and while nothing has been written yet.
 refuse_2x_data() {
-    local file
-    if [[ -f "${ROUTER_JSON}" ]]; then
-        file="${ROUTER_JSON}"
-    elif [[ -f "${RELAY_JSON}" && ! -s "${RELAY_CONF}" ]]; then
-        file="${RELAY_JSON}"
-    else
-        return 0
-    fi
-    die "Found Aspia 2.x data (${file}). Aspia 3.1 cannot read it. Upgrade in two steps: start the image" \
-        "${LAST_2X_IMAGE} once on these volumes and wait until it is healthy (it converts" \
-        "the data), stop it, then start this image. Nothing was changed."
+    local json conf
+    for json in "${ROUTER_JSON}" "${RELAY_JSON}"; do
+        [[ -f "${json}" ]] || continue
+        conf="${ROUTER_CONF}"
+        [[ "${json}" == "${RELAY_JSON}" ]] && conf="${RELAY_CONF}"
+        if [[ -s "${conf}" ]]; then
+            die "Found ${json} next to ${conf}: probably a leftover copy of the Aspia 2.x configuration." \
+                "Move it away (e.g. to ${json%.json}.json.old) and start again. Nothing was changed."
+        fi
+        die "Found Aspia 2.x data (${json}). Aspia 3.1 cannot read it. Upgrade in two steps: start the image" \
+            "${LAST_2X_IMAGE} once on these volumes and wait until it is healthy (it converts" \
+            "the data), stop it, then start this image. Nothing was changed."
+    done
+    return 0
 }
 
 validate_router() {
@@ -877,7 +883,7 @@ save_admin_password() {
     local password tmp
     # Not replace_file/copy_file: they chown --reference an existing file, and there is none here.
     password="$(printf '%s\n' "$1" | sed -n 's/\r$//; s/^[[:space:]]*Password:[[:space:]]*//p' | head -n 1)"
-    tmp="$(mktemp "${ADMIN_PASSWORD_FILE}.XXXXXX")"
+    tmp="$(mktemp "${ADMIN_PASSWORD_FILE}.XXXXXX")" || return 1
     if [[ -n "${password}" ]]; then
         printf 'User name: admin\nPassword: %s\n' "${password}" > "${tmp}"
     else
@@ -886,7 +892,8 @@ save_admin_password() {
             "in ${ADMIN_PASSWORD_FILE}; look there for the password of 'admin'."
     fi
     chmod 0600 -- "${tmp}"
-    mv -f -- "${tmp}" "${ADMIN_PASSWORD_FILE}"
+    # -T: an existing directory with this name is an error, not a place to move the file into.
+    mv -fT -- "${tmp}" "${ADMIN_PASSWORD_FILE}" || { rm -f -- "${tmp}"; return 1; }
 }
 
 prepare_router() {
@@ -899,14 +906,17 @@ prepare_router() {
                 printf '%s\n' "${output}" | grep -vi 'password' >&2 || true
                 die "aspia_router --create-config failed."
             fi
+            # Saved first: a failed check below must not lose the only copy of the password.
+            save_admin_password "${output}" || die "Could not save the password of 'admin' to ${ADMIN_PASSWORD_FILE}," \
+                "and the Router has already created its configuration, so the password is lost. To recover:" \
+                "stop the container, move ${ROUTER_CONF}, ${ROUTER_DB}, ${HOST_PUB} and ${RELAY_PUB} away, and start again."
             for file in "${ROUTER_CONF}" "${HOST_PUB}" "${RELAY_PUB}" "${ROUTER_DB}"; do
                 [[ -s "${file}" ]] || die "aspia_router --create-config did not create ${file}."
             done
-            save_admin_password "${output}"
             log "Router: created ${ROUTER_CONF}, ${HOST_PUB}, ${RELAY_PUB} and ${ROUTER_DB}."
             log "Router: created the administrator account 'admin' with a random password, saved in" \
                 "${ADMIN_PASSWORD_FILE} (mode 0600). Read it with e.g." \
-                "'docker exec <container> cat ${ADMIN_PASSWORD_FILE}'. Log in, change it, then delete the file."
+                "'docker exec <container> cat ${ADMIN_PASSWORD_FILE}' (or podman exec). Log in, change it, then delete the file."
             # Until that first login, whoever reaches the client port first and knows the password owns the
             # Router. Who can reach it also depends on ASPIA_ROUTER_CLIENT_BIND_IP, which this container cannot see.
             if [[ -z "${ASPIA_ROUTER_CLIENT_ALLOWED_IPS:-}" ]]; then

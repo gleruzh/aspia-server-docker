@@ -9,3 +9,5 @@ FROM aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9
 # Docker CLI with Compose v2.31, to check docker-compose.yml against the Compose v2 still common on
 # servers. It stays on 27.3 on purpose (.github/dependabot.yml proposes digest updates only).
 FROM docker:27.3-cli@sha256:328eb399a065780c2cebe9224de003aa14084cf69efae882ac27430f921819b7 AS compose-v2
+# jq, for tests/run.sh (it reads the output of "docker compose config"); the host may not have it.
+FROM ghcr.io/jqlang/jq:1.8.1@sha256:4f34c6d23f4b1372ac789752cc955dc67c2ae177eb1b5860b75cdc5091ce6f91 AS jq

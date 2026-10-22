@@ -81,7 +81,8 @@ cd "$(dirname "$0")/.."
 readonly PLATFORM=linux/amd64
 # Docker CLI with Compose v2.31, to check docker-compose.yml against the Compose v2 still common on servers.
 COMPOSE_V2_IMAGE="$(scripts/tool-image.sh compose-v2)"
-readonly COMPOSE_V2_IMAGE
+JQ_IMAGE="$(scripts/tool-image.sh jq)"
+readonly COMPOSE_V2_IMAGE JQ_IMAGE
 readonly RUN_ID="aspia-test-$$-${RANDOM}"   # unique on the Docker host, also between machines sharing one
 readonly HELPER_IMAGE="aspia-server-test-helper:${RUN_ID}"
 readonly IP_OLD=203.0.113.10   # a first EXTERNAL_IP, which IP_NEW replaces
@@ -503,7 +504,9 @@ scenario_restart() {
     # The modes an image before the permission fix left, and a link to a file of the read-only root:
     # following it would fail the chmod (a warning in the log).
     # shellcheck disable=SC2016  # expanded by sh inside the helper container
-    helper_rw "${S1_CFG}" "${S1_DB}" sh -ec 'chmod 755 /etc/aspia /var/lib/aspia; chmod 644 /etc/aspia/* /var/lib/aspia/*
+    # Also the router.json.bak/relay.json.bak that 3.0.x leaves after converting 2.x data: not 2.x data.
+    helper_rw "${S1_CFG}" "${S1_DB}" sh -ec 'echo "{}" > /etc/aspia/router.json.bak; echo "{}" > /etc/aspia/relay.json.bak
+        chmod 755 /etc/aspia /var/lib/aspia; chmod 644 /etc/aspia/* /var/lib/aspia/*
         ln -s /usr/bin/aspia_health /etc/aspia/link'
     docker restart "${S1_NAME}" >/dev/null
     wait_healthy "${S1_NAME}"
@@ -511,7 +514,8 @@ scenario_restart() {
     log_has "${S1_NAME}" 'Permissions: set the mode of /etc/aspia \(755 -> 700\), /var/lib/aspia \(755 -> 700\),.* /etc/aspia/relay.pub \(644 -> 600\)' \
         || fail "the log does not show the restricted modes"
     if log_has "${S1_NAME}" 'Cannot change the mode'; then fail "the symbolic link was followed"; fi
-    helper_rw "${S1_CFG}" "${S1_DB}" rm /etc/aspia/link
+    helper_rw "${S1_CFG}" "${S1_DB}" rm /etc/aspia/link /etc/aspia/router.json.bak /etc/aspia/relay.json.bak
+    ok "router.json.bak and relay.json.bak (left by a 3.0.x conversion) did not stop the start"
     ok "0755 directories and 0644 files are 0700 and 0600 again (host.pub 0644) after a restart; the link was skipped"
     after="$(config_sums "${S1_CFG}" "${S1_DB}")"
     [[ "${before}" == "${after}" ]] || fail "configs or keys changed on restart:"$'\n'"${before}"$'\n'"${after}"
@@ -688,21 +692,32 @@ scenario_refused_relay_data() {
     refused_unchanged s7b "${cfg}" "${db}" "a relay.conf but no Router data"
 }
 
-# refused_2x <name> <what> <shell command that creates the 2.x data>: the image on volumes with Aspia 2.x
-# data exits non-zero, names 3.0.37 as the version to start first, and writes nothing (no router.conf, no
-# keys: the volumes' snapshot is the same).
+# refused_2x <name> <what> <shell command that creates the data> [message regex [docker run options...]]:
+# the image on volumes with Aspia 2.x data exits non-zero, names 3.0.37 as the version to start first
+# (by default), and writes nothing (no router.conf, no keys: the volumes' snapshot is the same).
 refused_2x() {
     local cfg db
     cfg="$(new_volume "$1-config")"
     db="$(new_volume "$1-db")"
     helper_rw "${cfg}" "${db}" sh -c "$3"
-    refused_unchanged "$1" "${cfg}" "${db}" "$2" 'Found Aspia 2\.x data.*3\.0\.37'
+    refused_unchanged "$1" "${cfg}" "${db}" "$2" "${4:-Found Aspia 2\\.x data.*3\\.0\\.37}" "${@:5}"
 }
 
 scenario_refused_2x_data() {
     log "3. Aspia 2.x data is refused with the way to 3.0.37, and nothing is written"
     refused_2x s3 "a 2.x router.json and router.db3" 'echo "{}" > /etc/aspia/router.json && : > /var/lib/aspia/router.db3'
     refused_2x s3b "a 2.x relay.json alone" 'echo "{}" > /etc/aspia/relay.json'
+    # Not 2.x data that 3.1 could get converted: a copy next to a 3.x configuration. Another message, no 3.0.37.
+    refused_2x s3c "a router.json next to a router.conf" \
+        'echo "{}" > /etc/aspia/router.json && printf "[relay]\nport=8063\n" > /etc/aspia/router.conf' \
+        'Found .*router\.json next to .*router\.conf: probably a leftover copy'
+    refused_2x s3d "a relay.json next to a relay.conf" \
+        'echo "{}" > /etc/aspia/relay.json && printf "[peer]\nport=8070\n" > /etc/aspia/relay.conf' \
+        'Found .*relay\.json next to .*relay\.conf: probably a leftover copy'
+    # The role does not matter: the check runs before the role's own.
+    refused_2x s3e "a 2.x relay.json alone, ASPIA_ROLE=relay" 'echo "{}" > /etc/aspia/relay.json' \
+        'Found Aspia 2\.x data.*3\.0\.37' \
+        -e ASPIA_ROLE=relay -e ASPIA_RELAY_ROUTER_ADDRESS=router.example.test -e "ASPIA_RELAY_ROUTER_PUBLIC_KEY=${ROUTER_KEY}"
 }
 
 scenario_env_apply() {
@@ -906,6 +921,9 @@ scenario_puid_pgid() {
         || fail "router.db3 or the link itself (not the file it points to) in /etc/aspia is not owned by 1000:1000"
     check_modes "${cfg}" "${db}"
     ok "router.conf, router.db3 and the link itself are owned by uid=1000 gid=1000; only that owner can read the files"
+    [[ "$(docker exec "${name}" stat -c '%u:%g %a %s' /etc/aspia/initial-admin-password | sed -E 's/ [1-9][0-9]*$/ nonempty/')" == "1000:1000 600 nonempty" ]] \
+        || fail "initial-admin-password is not a non-empty file of 1000:1000, mode 600"
+    ok "initial-admin-password is owned by 1000:1000, mode 600, not empty"
 
     # shellcheck disable=SC2016  # expanded by sh inside the container, not by this shell
     uid_lines="$(docker exec "${name}" sh -c '
@@ -1401,8 +1419,8 @@ scenario_role_all_explicit() {
 # ---------------------------------------------------------------------------------------------
 # Hardening (PR 5b)
 
-# jq_img <args...>: jq from the image under test (the host may not have it).
-jq_img() { docker run --rm -i --platform "${PLATFORM}" --label "aspia-test=${RUN_ID}" --entrypoint jq "${IMAGE}" "$@"; }
+# jq_img <args...>: jq from the pinned tool image (the host may not have it). Its entrypoint is jq.
+jq_img() { docker run --rm -i --label "aspia-test=${RUN_ID}" "${JQ_IMAGE}" "$@"; }
 
 scenario_compose_hardening() {
     local file unit expected out caps readme line
