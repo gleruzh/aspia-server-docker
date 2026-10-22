@@ -547,7 +547,7 @@ The tests and the CI are described in [docs/ci.md](docs/ci.md).
 | A user lost the authenticator app. | Reset the two-factor authentication of that user (see below). |
 | You forgot the password of `admin`. | Another administrator can change it in the Client. Aspia 3.x has no command to set a password. On a new installation the first password is in `/etc/aspia/initial-admin-password`, unless you deleted the file. |
 | The container exits at once. The log starts with `Found Aspia 2.x data`. | The volumes hold data of Aspia 2.x, which 3.1 cannot read. Follow [Upgrading from 2.x](#upgrading-from-2x). |
-| The container exits at once. The log starts with `Found /etc/aspia/router.json next to`. | `router.json` lies next to a non-empty `router.conf`: probably a leftover copy of the Aspia 2.x configuration. Move `router.json` away (out of the configuration volume) and start the container again. |
+| The container exits at once. The log starts with `Found /etc/aspia/router.json next to` or `Found /etc/aspia/relay.json next to`. | `router.json` lies next to a non-empty `router.conf` (or `relay.json` next to a non-empty `relay.conf`): probably a leftover copy of the Aspia 2.x configuration. Move the `.json` file away (out of the configuration volume) and start the container again. |
 | The Aspia 2.x Console does not work with the new Router. | The Console is removed in Aspia 3.x, and Aspia 3.1 refuses peers older than 3.0.0. Use the Client of Aspia 3.0.0 or later. |
 | The time in the log is wrong. | Set `TZ` in `.env`, for example `TZ=Europe/Berlin`. Then run `docker compose up -d`. |
 | `Permission denied` when you read files in `data`. | The files belong to root (or to `PUID`). Use `sudo`. |
