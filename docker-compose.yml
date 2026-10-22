@@ -3,8 +3,8 @@ services:
     # By default the image is built from this repository: docker compose up -d --build
     # (the build pins its base image and checks the Aspia packages against versions.env).
     # To run a published image instead, set ASPIA_IMAGE in .env, pinned to a version or a digest,
-    # e.g. ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.0.37, then docker compose pull (no --build).
-    image: ${ASPIA_IMAGE:-aspia-server:3.0.37}
+    # e.g. ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.1.2, then docker compose pull (no --build).
+    image: ${ASPIA_IMAGE:-aspia-server:3.1.2}
     build: .
     container_name: aspia-server
     hostname: aspia-server
@@ -24,7 +24,6 @@ services:
       - ASPIA_RELAY_MAX_PEERS
       - ASPIA_ROUTER_CLIENT_PORT
       - ASPIA_ROUTER_HOST_PORT
-      - ASPIA_ROUTER_LEGACY_PORT
       - ASPIA_ROUTER_STUN_ENABLED
       - ASPIA_ROUTER_STUN_PORT
       - ASPIA_ROUTER_CLIENT_ALLOWED_IPS
@@ -45,9 +44,7 @@ services:
     # port to one address of this machine, e.g. 127.0.0.1 for the first login over an SSH tunnel;
     # unset = every address, IPv4 and IPv6 (README.md, "Quick start").
     ports:
-      # Only for Hosts of Aspia 2.x: uncomment if you still have any (README.md, "Upgrading from 2.x").
-      #- "${ASPIA_ROUTER_LEGACY_PORT:-8060}:${ASPIA_ROUTER_LEGACY_PORT:-8060}"       # Router: hosts of Aspia 2.x
-      - "${ASPIA_ROUTER_HOST_PORT:-8061}:${ASPIA_ROUTER_HOST_PORT:-8061}"           # Router: hosts of Aspia 3.x
+      - "${ASPIA_ROUTER_HOST_PORT:-8061}:${ASPIA_ROUTER_HOST_PORT:-8061}"           # Router: hosts
       - "${ASPIA_ROUTER_CLIENT_BIND_IP:-}:${ASPIA_ROUTER_CLIENT_PORT:-8062}:${ASPIA_ROUTER_CLIENT_PORT:-8062}" # Router: clients (address book and Router management)
       - "${ASPIA_ROUTER_STUN_PORT:-8065}:${ASPIA_ROUTER_STUN_PORT:-8065}/udp"       # Router: built-in STUN server
       - "${ASPIA_RELAY_PEER_PORT:-8070}:${ASPIA_RELAY_PEER_PORT:-8070}"             # Relay: clients and hosts

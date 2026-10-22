@@ -22,7 +22,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 readonly VERSIONS_FILE=versions.env
-readonly LEGACY_TAG=2.7.0   # the 2.x image that users upgrade from (paprikkafox/aspia-server:2.7.0, archived as 2.7.0-paprikkafox)
+readonly BRIDGE_TAG=3.0.37   # the last version that converts 2.x data; the documentation sends 2.x users to it first
 
 die() {
     printf 'versions.sh: %s\n' "$*" >&2
@@ -69,7 +69,7 @@ check() {
         while IFS=: read -r line ref; do
             tag="${ref#aspia-server:}"
             tag="${tag%.}"   # a sentence may end right after the tag
-            if [[ "${tag}" != "${version}" && ! "${tag}" =~ ^${version//./\\.}-[0-9]{8}$ && "${tag}" != "${LEGACY_TAG}" && "${tag}" != "${LEGACY_TAG}-paprikkafox" ]]; then
+            if [[ "${tag}" != "${version}" && ! "${tag}" =~ ^${version//./\\.}-[0-9]{8}$ && "${tag}" != "${BRIDGE_TAG}" ]]; then
                 printf '%s:%s: aspia-server:%s (expected the exact version %s)\n' "${file}" "${line}" "${tag}" "${version}" >&2
                 status=1
             fi

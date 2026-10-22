@@ -8,7 +8,7 @@
 # first (docker compose -f docker-compose.yml down); both publish the same Router ports.
 #
 # Who must reach which port of this machine:
-#   8061/tcp             Aspia hosts (and 8060/tcp for Aspia 2.x hosts, if you uncomment it below)
+#   8061/tcp             Aspia hosts
 #   8062/tcp             Aspia clients (address book, Router management)
 #   8065/udp             hosts and clients (built-in STUN server)
 #   8063/tcp             only the Relay machines. Restrict it: firewall and ASPIA_ROUTER_RELAY_ALLOWED_IPS.
@@ -16,7 +16,7 @@ services:
   aspia-router:
     # Built from this repository by default; set ASPIA_IMAGE in .env to run a published image,
     # pinned to a version or a digest (see docker-compose.yml).
-    image: ${ASPIA_IMAGE:-aspia-server:3.0.37}
+    image: ${ASPIA_IMAGE:-aspia-server:3.1.2}
     build: .
     container_name: aspia-router
     hostname: aspia-router
@@ -28,7 +28,6 @@ services:
       - ASPIA_ROUTER_RELAY_ALLOWED_IPS
       - ASPIA_ROUTER_CLIENT_PORT
       - ASPIA_ROUTER_HOST_PORT
-      - ASPIA_ROUTER_LEGACY_PORT
       - ASPIA_ROUTER_STUN_ENABLED
       - ASPIA_ROUTER_STUN_PORT
       - ASPIA_ROUTER_CLIENT_ALLOWED_IPS
@@ -43,9 +42,7 @@ services:
     # Host port = container port, both from the same variable; ASPIA_ROUTER_CLIENT_BIND_IP: as in
     # docker-compose.yml.
     ports:
-      # Only for Hosts of Aspia 2.x: uncomment if you still have any (README.md, "Upgrading from 2.x").
-      #- "${ASPIA_ROUTER_LEGACY_PORT:-8060}:${ASPIA_ROUTER_LEGACY_PORT:-8060}"       # hosts of Aspia 2.x
-      - "${ASPIA_ROUTER_HOST_PORT:-8061}:${ASPIA_ROUTER_HOST_PORT:-8061}"           # hosts of Aspia 3.x
+      - "${ASPIA_ROUTER_HOST_PORT:-8061}:${ASPIA_ROUTER_HOST_PORT:-8061}"           # hosts
       - "${ASPIA_ROUTER_CLIENT_BIND_IP:-}:${ASPIA_ROUTER_CLIENT_PORT:-8062}:${ASPIA_ROUTER_CLIENT_PORT:-8062}" # clients
       - "${ASPIA_ROUTER_STUN_PORT:-8065}:${ASPIA_ROUTER_STUN_PORT:-8065}/udp"       # STUN
       - "8063:8063"                                                                 # Relays (router.conf [relay] port)

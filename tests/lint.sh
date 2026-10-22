@@ -2,9 +2,8 @@
 #
 # tests/lint.sh: hadolint for every Dockerfile, shellcheck for every shell script, actionlint for
 # the workflows (it also runs shellcheck on their run: blocks), that the podman/*.env.example files
-# list the variables of .env.example that apply to their unit, that the Quadlet unit does not publish
-# the Aspia 2.x port 8060 by default, that the Dockerfile installs no curl, scripts/versions.sh check,
-# the input checks of scripts/versions.sh files and scripts/aspia-release.sh (with a stub gh), that
+# list the variables of .env.example that apply to their unit, that the Dockerfile installs no curl,
+# scripts/versions.sh check, the input checks of scripts/versions.sh files and scripts/aspia-release.sh (with a stub gh), that
 # publish.yml and dockerhub-description.yml publish from main only, that rebuild.yml starts
 # publish.yml on main only (and skips only a version that is not published yet), and that every tool
 # image is pinned by tag and digest in .github/tool-images/Dockerfile and nowhere else.
@@ -51,14 +50,6 @@ check_env_example() {
 check_env_example podman/aspia-server.env.example '^(ASPIA_IMAGE|ASPIA_ROUTER_CLIENT_BIND_IP|ASPIA_RELAY_ROUTER_.*)$'
 check_env_example podman/aspia-relay.env.example '^(ASPIA_IMAGE|ASPIA_ROLE|ASPIA_ROUTER_.*)$'
 
-# Only migrated 2.x Hosts need 8060: the unit has its PublishPort= line commented out, like the
-# compose files (tests/run.sh, scenarios 0c and 0d, checks those).
-echo "podman/aspia-server.container does not publish 8060"
-if grep -q '^PublishPort=.*8060' podman/aspia-server.container; then
-    echo "podman/aspia-server.container publishes the Aspia 2.x port 8060 by default" >&2
-    status=1
-fi
-
 # curl and its libraries brought more than a third of the image's known vulnerabilities; aspia_start
 # uses openssl s_client for ASPIA_RELAY_PUBLIC_ADDRESS=auto. No line of the Dockerfile outside its
 # comments may name curl (a package list or a download alike).
@@ -69,8 +60,7 @@ if grep -nEw '^[^#]*curl' Dockerfile; then
 fi
 
 # Every tool image is pinned by tag and digest in .github/tool-images/Dockerfile, where Dependabot
-# sees it. No script or workflow pins one of its own, except the archived 2.7.0 image of tests/run.sh
-# (a fixed fixture; Dependabot must not move it), which is pinned by digest too.
+# sees it. No script or workflow pins one of its own.
 tools=.github/tool-images/Dockerfile
 pin='[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}'   # <image>:<tag>@sha256:<digest>
 echo "${tools} pins every tool image by tag and digest, one image per name"
@@ -84,8 +74,7 @@ if scripts/tool-image.sh lint-no-such-tool > /dev/null 2>&1; then echo "scripts/
 while read -r name; do
     scripts/tool-image.sh "${name}" > /dev/null || status=1
 done < <(grep -rhoE '\$\(scripts/tool-image\.sh [a-z0-9-]+\)' .github/workflows tests | sed -E 's/.* (.*)\)/\1/' | sort -u)
-grep -qxE "readonly OLD_IMAGE=${pin}" tests/run.sh || { echo "tests/run.sh: OLD_IMAGE is not pinned by tag and digest"; status=1; }
-pinned="$(grep -rnE "${pin}" .github/workflows tests scripts | grep -vE '^tests/run\.sh:[0-9]+:readonly OLD_IMAGE=' || true)"
+pinned="$(grep -rnE "${pin}" .github/workflows tests scripts || true)"
 [[ -z "${pinned}" ]] || { printf '%s\n' "${pinned}" "a tool image pinned outside ${tools}; add it there and read it with scripts/tool-image.sh"; status=1; }
 
 echo "scripts/versions.sh check"

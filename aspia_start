@@ -10,10 +10,11 @@
 #
 #   1. Check the settings and the data on the volumes. Nothing is changed if a check fails.
 #   2. Prepare the configuration:
-#        - empty volumes:  create it with the binaries' own --create-config;
-#        - 2.x data:       copy every file the upstream migration changes, then let the binaries
-#                          migrate on start (router.json/relay.json -> router.conf/relay.conf);
+#        - empty volumes:  create it with the binaries' own --create-config (the Router writes a
+#                          random password for 'admin'; it is saved in /etc/aspia/initial-admin-password);
 #        - 3.x data:       leave it alone.
+#      Aspia 2.x data (router.json, relay.json) is refused in phase 1: Aspia 3.1 does not convert
+#      it. Start the last 2.x-compatible image (LAST_2X_IMAGE) on it once first.
 #      Then apply every ASPIA_ROUTER_*/ASPIA_RELAY_* variable that is set (EXTERNAL_IP is kept as
 #      an alias of ASPIA_RELAY_PUBLIC_ADDRESS) into the Router/Relay configuration. A variable that
 #      is set is written on every start; a variable that is unset leaves the file as it is, so a
@@ -21,10 +22,9 @@
 #   3. Start the processes, forward SIGTERM/SIGINT to them, and exit non-zero if one of them dies.
 #
 # Based on server/aspia_start from SinitsaDA/aspia-server-docker (commit de15b99, GPL-3.0),
-# https://github.com/SinitsaDA/aspia-server-docker. Ported: leaving the 2.x migration to the
-# binaries, filling relay.conf router/public_key from the Router key, the awk INI editing, and
-# the wait -n supervision with signal forwarding. Changed: EXTERNAL_IP is required, backups
-# before migration, no renaming of existing data, no sleep before starting the Relay, and the
+# https://github.com/SinitsaDA/aspia-server-docker. Ported: filling relay.conf router/public_key
+# from the Router key, the awk INI editing, and the wait -n supervision with signal forwarding.
+# Changed: EXTERNAL_IP is required, backups before a change, no sleep before starting the Relay, and the
 # configuration files are rewritten atomically. PR 3 added: an ASPIA_ROUTER_*/ASPIA_RELAY_*
 # variable scheme for every documented router.conf/relay.conf key (ports, allow-lists, STUN,
 # Relay timeout/limit), stricter address/port/list validation, EXTERNAL_IP=auto (detected over
@@ -52,9 +52,14 @@ readonly RELAY_CONF="${CONFIG_DIR}/relay.conf"
 readonly HOST_PUB="${CONFIG_DIR}/host.pub"      # 3.x: the key hosts are configured with
 readonly RELAY_PUB="${CONFIG_DIR}/relay.pub"    # 3.x: the key relays authenticate the Router with
 readonly ROUTER_DB="${DATA_DIR}/router.db3"
-readonly ROUTER_JSON="${CONFIG_DIR}/router.json" # 2.x
-readonly RELAY_JSON="${CONFIG_DIR}/relay.json"   # 2.x
-readonly ROUTER_PUB="${CONFIG_DIR}/router.pub"   # 2.x: one key for hosts and relays; still valid after migration
+readonly ROUTER_JSON="${CONFIG_DIR}/router.json" # 2.x data; 3.0.x renames it to router.json.bak once converted
+readonly RELAY_JSON="${CONFIG_DIR}/relay.json"   # 2.x data; likewise relay.json.bak
+readonly ROUTER_PUB="${CONFIG_DIR}/router.pub"   # only checked for, so that a lost volume is not replaced by new keys
+# Where a new Router's random password for 'admin' is saved (root only; the user deletes it after the first login).
+readonly ADMIN_PASSWORD_FILE="${CONFIG_DIR}/initial-admin-password"
+
+# The last image that reads Aspia 2.x data and has the 2.x host port; it converts the data to 3.x.
+readonly LAST_2X_IMAGE=ghcr.io/gleruzh/aspia-server:3.0.37
 
 # How long to wait for a started process to open its port before moving on.
 readonly LISTEN_TIMEOUT_SECONDS=60
@@ -95,8 +100,8 @@ readonly AUTO_ADDRESS_REJECTED_IPV4=(
 BACKUP_SUFFIX=".pre-${ASPIA_VERSION:-3.x}-$(date -u +%Y%m%dT%H%M%SZ)"
 readonly BACKUP_SUFFIX
 
-ROUTER_STATE=""   # new | migrate | existing
-RELAY_STATE=""    # new | migrate | existing
+ROUTER_STATE=""   # new | existing
+RELAY_STATE=""    # new | existing
 PEER_PUBLIC_ADDRESS=""   # resolved in validate_relay: ASPIA_RELAY_PUBLIC_ADDRESS, its alias
                           # EXTERNAL_IP, or the result of "auto" detection.
 DETECTED_ADDRESS=""      # set by detect_public_address
@@ -125,7 +130,7 @@ die() {
 # Helpers
 
 # replace_file <file> <new content file>: atomically replaces <file>, keeping its owner. Only the
-# configuration files are rewritten (router.conf and router.json hold the private keys): mode 0600.
+# configuration files are rewritten (router.conf holds the private keys): mode 0600.
 replace_file() {
     chmod 0600 -- "$2"
     chown -h --reference="$1" -- "$2"
@@ -169,14 +174,6 @@ ini_set() {
     replace_file "$1" "${tmp}"
 }
 
-# json_set <file> <jq argument>... <filter>: atomically rewrites a JSON file with jq.
-json_set() {
-    local tmp
-    tmp="$(mktemp "$1.XXXXXX")"
-    jq "${@:2}" "$1" > "${tmp}" || { rm -f "${tmp}"; die "cannot update $1"; }
-    replace_file "$1" "${tmp}"
-}
-
 # backup <file>...: copies each existing, non-empty file next to itself as <file>${BACKUP_SUFFIX},
 # once per start: the first copy holds the content from before this start changed anything. An
 # existing copy of that name (another start in the same second) is never overwritten; the new copy
@@ -209,23 +206,6 @@ read_key() {
 readonly CAP_DAC_OVERRIDE=1 CAP_SETPCAP=8
 cap_eff() { awk '/^CapEff:/ { print $2 }' "/proc/$$/status"; }
 has_cap() { (( (16#$(cap_eff) >> $1) & 1 )); }
-
-# adopt_legacy_key: a 2.x migration keeps the 2.x key pair for hosts and relays (it writes the 2.x
-# private key into both host/private_key and relay/private_key) but does not create host.pub or
-# relay.pub. Copy router.pub to the missing ones, so a migrated install has the same key files as
-# a new one. router.pub itself is left as it is.
-adopt_legacy_key() {
-    local file mode
-    [[ -n "$(read_key "${ROUTER_PUB}")" ]] || return 0
-    for file in "${HOST_PUB}" "${RELAY_PUB}"; do
-        [[ -e "${file}" ]] && continue
-        # host.pub is the public key for Hosts: 0644, as restrict_permissions keeps it. relay.pub: 0600.
-        mode=0600
-        [[ "${file}" == "${HOST_PUB}" ]] && mode=0644
-        copy_file "${ROUTER_PUB}" "${file}" "${mode}"
-        log "Router: created ${file} from the Aspia 2.x key ${ROUTER_PUB}."
-    done
-}
 
 # set_conf_value <file> <section> <key> <value> <label>: like ini_set, but only touches the file
 # (with a backup first) when the value actually changes, and logs what it did.
@@ -580,6 +560,9 @@ warn_ignored() {
     [[ -z "${_ASPIA_PRIVDROP_DONE:-}" ]] || return 0
     local name pattern why
     local -a ignored=()
+    if has_service router && [[ -n "${ASPIA_ROUTER_LEGACY_PORT:-}" ]]; then
+        warn "ASPIA_ROUTER_LEGACY_PORT is ignored: Aspia 3.1 has no port for 2.x hosts; ${LAST_2X_IMAGE} was the last version with it."
+    fi
     case "${ROLE}" in
         router)
             pattern='^(EXTERNAL_IP|ASPIA_RELAY_.*)$'
@@ -708,12 +691,36 @@ drop_privileges() {
 # ---------------------------------------------------------------------------------------------
 # Phase 1: validate. Runs before anything is written to the volumes.
 
+# refuse_2x_data: Aspia 3.1 cannot read 2.x data; the LAST_2X_IMAGE converts it. router.json is 2.x
+# data that was never converted (3.0.x renames it once it has); so is a relay.json that no
+# non-empty relay.conf covers (3.0.x converts relay.json only when relay.conf is missing or empty),
+# even without any Router file. router.pub alone is not: 3.0.x keeps it. A router.json or relay.json
+# next to a non-empty router.conf/relay.conf is a leftover copy (already converted, or put back by
+# hand): refused too, since which file is right is the user's call, but without the 3.0.37 hint,
+# which would be wrong for it. Called once per start, whatever the role, before any role-specific
+# check and while nothing has been written yet.
+refuse_2x_data() {
+    local json conf
+    for json in "${ROUTER_JSON}" "${RELAY_JSON}"; do
+        [[ -f "${json}" ]] || continue
+        conf="${ROUTER_CONF}"
+        [[ "${json}" == "${RELAY_JSON}" ]] && conf="${RELAY_CONF}"
+        if [[ -s "${conf}" ]]; then
+            die "Found ${json} next to ${conf}: probably a leftover copy of the Aspia 2.x configuration." \
+                "Move it away (e.g. to ${json%.json}.json.old) and start again. Nothing was changed."
+        fi
+        die "Found Aspia 2.x data (${json}). Aspia 3.1 cannot read it. Upgrade in two steps: start the image" \
+            "${LAST_2X_IMAGE} once on these volumes and wait until it is healthy (it converts" \
+            "the data), stop it, then start this image. Nothing was changed."
+    done
+    return 0
+}
+
 validate_router() {
     local file found=()
 
     require_port ASPIA_ROUTER_CLIENT_PORT
     require_port ASPIA_ROUTER_HOST_PORT
-    require_port ASPIA_ROUTER_LEGACY_PORT
     require_port ASPIA_ROUTER_STUN_PORT
     require_bool ASPIA_ROUTER_STUN_ENABLED
     require_allowed_ips ASPIA_ROUTER_CLIENT_ALLOWED_IPS
@@ -734,14 +741,7 @@ validate_router() {
     refuse_path_override ASPIA_ROUTER_CONFIG_FILE "${ROUTER_CONF}"
     refuse_path_override ASPIA_ROUTER_DB_FILE "${ROUTER_DB}"
 
-    if [[ -f "${ROUTER_JSON}" ]]; then
-        [[ -f "${ROUTER_DB}" ]] || die "Found the Aspia 2.x configuration ${ROUTER_JSON}, but not the database ${ROUTER_DB}." \
-            "Mount the database volume at ${DATA_DIR} (./data/database in docker-compose.yml). Nothing was changed."
-        ROUTER_STATE=migrate
-        # preseed_router_migration edits router.json; check it here, while nothing has been written yet.
-        jq -e 'type == "object"' "${ROUTER_JSON}" >/dev/null 2>&1 \
-            || die "${ROUTER_JSON} is not valid JSON. Fix or restore it. Nothing was changed."
-    elif [[ -s "${ROUTER_CONF}" ]]; then
+    if [[ -s "${ROUTER_CONF}" ]]; then
         [[ -f "${ROUTER_DB}" ]] || die "Found ${ROUTER_CONF}, but not the database ${ROUTER_DB}." \
             "Mount the database volume at ${DATA_DIR} (./data/database in docker-compose.yml). Nothing was changed."
         ROUTER_STATE=existing
@@ -749,11 +749,11 @@ validate_router() {
         # A Relay configuration left over (for example with the wrong volume mounted) counts too:
         # a new Router would get new keys, and that Relay's Router key would no longer match.
         for file in "${ROUTER_CONF}" "${HOST_PUB}" "${RELAY_PUB}" "${ROUTER_PUB}" "${ROUTER_DB}" \
-            "${RELAY_CONF}" "${RELAY_JSON}"; do
+            "${RELAY_CONF}"; do
             [[ -e "${file}" ]] && found+=("${file}")
         done
         if ((${#found[@]})); then
-            die "No Router configuration (${ROUTER_CONF}, or ${ROUTER_JSON} from Aspia 2.x), but these files exist: ${found[*]}." \
+            die "No Router configuration (${ROUTER_CONF}), but these files exist: ${found[*]}." \
                 "Creating a new configuration would create new keys, and every host would have to be reconfigured." \
                 "Check that both volumes are mounted: configuration at ${CONFIG_DIR}, database at ${DATA_DIR}." \
                 "To really start from scratch, move these files away yourself. Nothing was changed."
@@ -789,7 +789,7 @@ validate_remote_relay() {
     # is allowed: it may be the key file mounted there for ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE
     # (not with PUID/PGID: resolve_router_key refuses a key file inside the volumes then; the
     # documented place for the file is /run/aspia/...).
-    for file in "${ROUTER_CONF}" "${ROUTER_JSON}" "${RELAY_JSON}" "${ROUTER_PUB}" "${HOST_PUB}" "${ROUTER_DB}"; do
+    for file in "${ROUTER_CONF}" "${RELAY_JSON}" "${ROUTER_PUB}" "${HOST_PUB}" "${ROUTER_DB}"; do
         [[ -e "${file}" ]] && found+=("${file}")
     done
     if ((${#found[@]})); then
@@ -842,16 +842,6 @@ validate_relay() {
 
     if [[ -s "${RELAY_CONF}" ]]; then
         RELAY_STATE=existing
-    elif [[ -f "${RELAY_JSON}" ]]; then
-        RELAY_STATE=migrate   # the Relay migrates relay.json only when relay.conf is missing or empty
-        # prepare_relay edits relay.json; check it here, while nothing has been written yet.
-        jq -e 'type == "object"' "${RELAY_JSON}" >/dev/null 2>&1 \
-            || die "${RELAY_JSON} is not valid JSON. Fix or restore it. Nothing was changed."
-        if [[ -z "$(jq -r '.RouterPublicKey // ""' "${RELAY_JSON}")" && -z "$(read_key "${RELAY_PUB}")" \
-            && -z "$(read_key "${ROUTER_PUB}")" ]]; then
-            die "${RELAY_JSON} has no RouterPublicKey, and neither ${RELAY_PUB} nor ${ROUTER_PUB} holds a key." \
-                "Nothing was changed."
-        fi
     else
         RELAY_STATE=new
     fi
@@ -860,48 +850,13 @@ validate_relay() {
 # ---------------------------------------------------------------------------------------------
 # Phase 2: prepare the configuration.
 
-# preseed_router_migration: router.json (2.x) fields that the binary's own migration copies
-# (notes section 8): Port -> host/legacy_port, {Client,Host,Relay}WhiteList -> */white_list. The
-# 3.x-only keys (client/host/relay/stun ports, stun/enabled) have no 2.x field at all, so setting
-# their variables on a migration start has no effect until the *next* start, once router.conf
-# exists; apply_router_settings then applies them as usual.
-# shellcheck disable=SC2016  # the $-prefixed names below are jq variables, not shell ones
-preseed_router_migration() {
-    # router.json was already validated as JSON in validate_router, before anything was written.
-    local -a args=() filters=()
-    if [[ -n "${ASPIA_ROUTER_LEGACY_PORT:-}" ]]; then
-        args+=(--arg port "${ASPIA_ROUTER_LEGACY_PORT}")
-        filters+=('.Port = $port')
-    fi
-    if [[ -n "${ASPIA_ROUTER_CLIENT_ALLOWED_IPS:-}" ]]; then
-        args+=(--arg cwl "${ASPIA_ROUTER_CLIENT_ALLOWED_IPS}")
-        filters+=('.ClientWhiteList = $cwl')
-    fi
-    if [[ -n "${ASPIA_ROUTER_HOST_ALLOWED_IPS:-}" ]]; then
-        args+=(--arg hwl "${ASPIA_ROUTER_HOST_ALLOWED_IPS}")
-        filters+=('.HostWhiteList = $hwl')
-    fi
-    if [[ -n "${ASPIA_ROUTER_RELAY_ALLOWED_IPS:-}" ]]; then
-        args+=(--arg rwl "${ASPIA_ROUTER_RELAY_ALLOWED_IPS}")
-        filters+=('.RelayWhiteList = $rwl')
-    fi
-    ((${#filters[@]})) || return 0
-
-    local joined
-    joined="$(IFS='|'; echo "${filters[*]}")"
-    json_set "${ROUTER_JSON}" "${args[@]}" "${joined}"
-    log "Router: preset ${#filters[@]} value(s) from ASPIA_ROUTER_* in ${ROUTER_JSON} before migration."
-}
-
 # apply_router_settings: writes every ASPIA_ROUTER_* variable that is set into router.conf, which
-# must already exist (new or existing state; not the migrate start itself).
+# must already exist.
 apply_router_settings() {
     [[ -n "${ASPIA_ROUTER_CLIENT_PORT:-}" ]] \
         && set_conf_value "${ROUTER_CONF}" client port "${ASPIA_ROUTER_CLIENT_PORT}" Router
     [[ -n "${ASPIA_ROUTER_HOST_PORT:-}" ]] \
         && set_conf_value "${ROUTER_CONF}" host port "${ASPIA_ROUTER_HOST_PORT}" Router
-    [[ -n "${ASPIA_ROUTER_LEGACY_PORT:-}" ]] \
-        && set_conf_value "${ROUTER_CONF}" host legacy_port "${ASPIA_ROUTER_LEGACY_PORT}" Router
     if [[ -n "${ASPIA_ROUTER_STUN_ENABLED:-}" ]]; then
         local enabled="${ASPIA_ROUTER_STUN_ENABLED,,}"
         [[ "${enabled}" == "true" ]] && enabled=1
@@ -919,89 +874,70 @@ apply_router_settings() {
     return 0
 }
 
+# save_admin_password <--create-config output>: the Router creates 'admin' with a random password and
+# prints it once. Saves the "Password:" line to ADMIN_PASSWORD_FILE (atomically: a temporary file in the
+# same directory, mode 0600 from the umask, then mv; owned by whoever runs this script: root, or
+# PUID/PGID). If the line is not found, the whole output is saved instead, so the password is never
+# lost. Never prints the password.
+save_admin_password() {
+    local password tmp content
+    # Not replace_file/copy_file: they chown --reference an existing file, and there is none here.
+    password="$(printf '%s\n' "$1" | sed -n 's/\r$//; s/^[[:space:]]*Password:[[:space:]]*//p' | head -n 1)"
+    if [[ -n "${password}" ]]; then
+        content="User name: admin"$'\n'"Password: ${password}"
+    else
+        content="$1"
+        warn "Router: no 'Password:' line in the output of aspia_router --create-config. The whole output is" \
+            "in ${ADMIN_PASSWORD_FILE}; look there for the password of 'admin'."
+    fi
+    tmp="$(mktemp "${ADMIN_PASSWORD_FILE}.XXXXXX")" || return 1
+    # -T: an existing directory with this name is an error, not a place to move the file into.
+    { printf '%s\n' "${content}" > "${tmp}" \
+        && chmod 0600 -- "${tmp}" \
+        && mv -fT -- "${tmp}" "${ADMIN_PASSWORD_FILE}"; } || { rm -f -- "${tmp}"; return 1; }
+}
+
 prepare_router() {
     local output file
     case "${ROUTER_STATE}" in
         new)
             log "Router: no configuration found, creating a new one."
-            # The output contains the default password; it is not copied to the log.
+            # The output contains the random password; it is not copied to the log.
             if ! output="$(/usr/bin/aspia_router --create-config 2>&1)"; then
                 printf '%s\n' "${output}" | grep -vi 'password' >&2 || true
                 die "aspia_router --create-config failed."
             fi
+            # Saved first: a failed check below must not lose the only copy of the password.
+            save_admin_password "${output}" || die "Could not save the password of 'admin' to ${ADMIN_PASSWORD_FILE}," \
+                "and the Router has already created its configuration, so the password is lost. To recover:" \
+                "stop the container, move ${ROUTER_CONF}, ${ROUTER_DB}, ${HOST_PUB} and ${RELAY_PUB} away, and start again."
             for file in "${ROUTER_CONF}" "${HOST_PUB}" "${RELAY_PUB}" "${ROUTER_DB}"; do
                 [[ -s "${file}" ]] || die "aspia_router --create-config did not create ${file}."
             done
             log "Router: created ${ROUTER_CONF}, ${HOST_PUB}, ${RELAY_PUB} and ${ROUTER_DB}."
-            log "Router: created the administrator account 'admin' with the upstream default password." \
-                "Change the password in the Aspia Client right after the first login."
-            # Until that first login, whoever reaches the client port first owns the Router. Who can
-            # reach it also depends on ASPIA_ROUTER_CLIENT_BIND_IP, which this container cannot see.
+            log "Router: created the administrator account 'admin' with a random password, saved in" \
+                "${ADMIN_PASSWORD_FILE} (mode 0600). Read it with e.g." \
+                "'docker exec <container> cat ${ADMIN_PASSWORD_FILE}' (or podman exec). Log in, change it, then delete the file."
+            # Until that first login, whoever reaches the client port first and knows the password owns the
+            # Router. Who can reach it also depends on ASPIA_ROUTER_CLIENT_BIND_IP, which this container cannot see.
             if [[ -z "${ASPIA_ROUTER_CLIENT_ALLOWED_IPS:-}" ]]; then
                 warn "Router: first start without a client allow-list (ASPIA_ROUTER_CLIENT_ALLOWED_IPS), and" \
-                    "'admin' has the default password and no two-factor authentication yet: whoever reaches the" \
-                    "client port and logs in first takes over the Router. Log in now and change the password." \
+                    "'admin' has no two-factor authentication yet. The password is random, but the first login" \
+                    "still matters: log in now, change the password and delete ${ADMIN_PASSWORD_FILE}." \
                     "On a new install, before the first start, set ASPIA_ROUTER_CLIENT_ALLOWED_IPS to your own" \
                     "address, or publish the client port on 127.0.0.1 only (ASPIA_ROUTER_CLIENT_BIND_IP) and use" \
                     "an SSH tunnel (README.md, \"Quick start\")."
             fi
             ;;
-        migrate)
-            log "Router: found Aspia 2.x data. aspia_router converts ${ROUTER_JSON} to ${ROUTER_CONF}" \
-                "and upgrades ${ROUTER_DB} in place when it starts. Copying the files it changes first."
-            backup "${ROUTER_JSON}" "${ROUTER_JSON}.bak" "${ROUTER_CONF}" \
-                "${ROUTER_DB}" "${ROUTER_DB}-journal" "${ROUTER_DB}-wal" "${ROUTER_DB}-shm"
-            preseed_router_migration
-            ;;
         existing)
             log "Router: using the existing configuration ${ROUTER_CONF}."
+            if [[ -e "${ADMIN_PASSWORD_FILE}" ]]; then
+                log "Router: ${ADMIN_PASSWORD_FILE} still exists. Once you have changed the password of 'admin'," \
+                    "delete it."
+            fi
             ;;
     esac
-    adopt_legacy_key
-    [[ "${ROUTER_STATE}" == migrate ]] || apply_router_settings
-}
-
-# preseed_relay_migration: relay.json (2.x) fields the binary's own migration
-# copies (notes section 8): PeerAddress, RouterPublicKey, PeerPort, PeerIdleTimeout, MaxPeerCount.
-# All values in relay.json are strings, including the numeric ones.
-# shellcheck disable=SC2016  # the $-prefixed names below are jq variables, not shell ones
-preseed_relay_migration() {
-    local peer_address router_key
-    peer_address="$(jq -r '.PeerAddress // ""' "${RELAY_JSON}")" \
-        || die "${RELAY_JSON} is not valid JSON. The backup copy is next to it."
-    router_key="$(jq -r '.RouterPublicKey // ""' "${RELAY_JSON}")"
-    [[ -n "${router_key}" || -n "${ROUTER_KEY}" ]] \
-        || die "${RELAY_JSON} has no RouterPublicKey and ${RELAY_PUB} is missing."
-
-    local -a args=() filters=()
-    if [[ "${peer_address}" != "${PEER_PUBLIC_ADDRESS}" ]]; then
-        args+=(--arg address "${PEER_PUBLIC_ADDRESS}")
-        filters+=('.PeerAddress = $address')
-    fi
-    if [[ -z "${router_key}" ]]; then
-        args+=(--arg key "${ROUTER_KEY}")
-        filters+=('.RouterPublicKey = $key')
-    fi
-    if [[ -n "${ASPIA_RELAY_PEER_PORT:-}" ]]; then
-        args+=(--arg port "${ASPIA_RELAY_PEER_PORT}")
-        filters+=('.PeerPort = $port')
-    fi
-    if [[ -n "${ASPIA_RELAY_IDLE_TIMEOUT:-}" ]]; then
-        args+=(--arg timeout "${ASPIA_RELAY_IDLE_TIMEOUT}")
-        filters+=('.PeerIdleTimeout = $timeout')
-    fi
-    if [[ -n "${ASPIA_RELAY_MAX_PEERS:-}" ]]; then
-        args+=(--arg maxc "${ASPIA_RELAY_MAX_PEERS}")
-        filters+=('.MaxPeerCount = $maxc')
-    fi
-    ((${#filters[@]})) || return 0
-
-    local joined
-    joined="$(IFS='|'; echo "${filters[*]}")"
-    json_set "${RELAY_JSON}" "${args[@]}" "${joined}"
-    [[ "${peer_address}" == "${PEER_PUBLIC_ADDRESS}" ]] \
-        || log "Relay: set PeerAddress=${PEER_PUBLIC_ADDRESS} in ${RELAY_JSON} (was '${peer_address}')."
-    [[ -n "${router_key}" ]] || log "Relay: set RouterPublicKey in ${RELAY_JSON} from the Router key."
+    apply_router_settings
 }
 
 # apply_relay_settings: writes public_address and every ASPIA_RELAY_* variable
@@ -1046,7 +982,7 @@ apply_relay_settings() {
 
 prepare_relay() {
     local output
-    # A remote Router's key was resolved in validate_remote_relay (which refused any 2.x file); this
+    # A remote Router's key was resolved in validate_remote_relay (which refuses a Router volume); this
     # container's own Router has written relay.pub by now (prepare_router runs first).
     remote_router || ROUTER_KEY="$(read_key "${RELAY_PUB}")"
 
@@ -1060,13 +996,6 @@ prepare_relay() {
             [[ -s "${RELAY_CONF}" ]] || die "aspia_relay --create-config did not create ${RELAY_CONF}."
             BACKED_UP[${RELAY_CONF}]=1   # created in this start: nothing of the user's to copy
             ;;
-        migrate)
-            log "Relay: found Aspia 2.x configuration. aspia_relay converts ${RELAY_JSON} to ${RELAY_CONF}" \
-                "when it starts. Copying the files it changes first."
-            backup "${RELAY_JSON}" "${RELAY_JSON}.bak" "${RELAY_CONF}"
-            preseed_relay_migration
-            return
-            ;;
         existing)
             log "Relay: using the existing configuration ${RELAY_CONF}."
             ;;
@@ -1075,8 +1004,8 @@ prepare_relay() {
     apply_relay_settings
 }
 
-# restrict_permissions: the volumes hold the private keys (router.conf, relay.conf, the 2.x
-# router.json, relay.json and router.pub, the backups of all of them), the user database and
+# restrict_permissions: the volumes hold the private keys (router.conf, relay.conf, the backups of
+# both, the files of a 3.0.x migration), the user database, initial-admin-password and
 # relay.pub, the key a Relay registers with. Older starts left most of them 0644 in 0755 directories:
 # readable by every user of the server when the volumes are bind mounts. Now the directories are
 # 0700 and the files 0600. host.pub stays 0644: it is the public key every Host is given, and the
@@ -1241,22 +1170,6 @@ log_ports_header() { log "Ports (publish them unchanged, host port = container p
 
 # log_router_ports: the summary lines for the Router ports that clients and hosts use.
 log_router_ports() {
-    local legacy_port podman_hint
-    legacy_port="$(ini_get "${ROUTER_CONF}" host legacy_port 8060)"
-    log "  ${legacy_port}/tcp  Router: hosts of Aspia 2.x"
-    # Only on data migrated from 2.x (router.pub, see adopt_legacy_key): a new install has no 2.x Hosts.
-    # Deleting router.pub turns it off (README.md, "Upgrade notes"). The compose line takes the port
-    # from the variable; the commented line of the Quadlet unit has the default port.
-    if [[ -n "$(read_key "${ROUTER_PUB}")" ]]; then
-        podman_hint="uncomment #PublishPort=8060:8060/tcp in aspia-server.container"
-        [[ "${legacy_port}" == 8060 ]] \
-            || podman_hint="add PublishPort=${legacy_port}:${legacy_port}/tcp to aspia-server.container"
-        log "    The compose files and the Quadlet unit of this repository no longer publish ${legacy_port}/tcp:" \
-            "Hosts of Aspia 2.x cannot connect until you uncomment the line" \
-            "#- \"\${ASPIA_ROUTER_LEGACY_PORT:-8060}:\${ASPIA_ROUTER_LEGACY_PORT:-8060}\" in the ports: list of" \
-            "docker-compose.yml or compose.router.yml, or ${podman_hint}. With no 2.x Hosts left, delete" \
-            "${ROUTER_PUB} to turn this note off (README.md, \"Upgrade notes\")."
-    fi
     log "  $(ini_get "${ROUTER_CONF}" host port 8061)/tcp  Router: hosts"
     log "  $(ini_get "${ROUTER_CONF}" client port 8062)/tcp  Router: clients"
     if stun_enabled "${ROUTER_CONF}"; then
@@ -1299,7 +1212,8 @@ print_summary_router() {
             "reaches ${relay_port}/tcp and has the key above can register as a Relay (at most five at a time)." \
             "Set ASPIA_ROUTER_RELAY_ALLOWED_IPS to the addresses of your Relays, or allow ${relay_port}/tcp" \
             "only from them in the firewall."
-        # After a 2.x migration (adopt_legacy_key) relay.pub is host.pub: every Host knows that key.
+        # Only on installs that Aspia 3.0.x converted from 2.x: there relay.pub is a copy of host.pub, so
+        # every Host knows that key.
         relay_key="$(read_key "${RELAY_PUB}")"
         if [[ -n "${relay_key}" && "${relay_key}" == "$(read_key "${HOST_PUB}")" ]]; then
             warn "The key for relays is the same as the key for hosts (an install migrated from Aspia 2.x)," \
@@ -1343,6 +1257,7 @@ main() {
     # Every validate_* below only reads. Ownership is changed (drop_privileges) only once all of
     # them have passed, so a refused start never touches the volumes, PUID/PGID included.
     validate_puid_pgid
+    refuse_2x_data
     for service in "${SERVICES[@]}"; do "validate_${service}"; done
     drop_privileges "$@"
 

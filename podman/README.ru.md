@@ -1,4 +1,4 @@
-<!-- canonical: podman/README.md 08383a3c509948e38e099878d0c554010d0419e5 -->
+<!-- canonical: podman/README.md f636b195e2be32387693a4acd898103c4a2f6978 -->
 [English](README.md) | **Русский**
 
 # Сервер Aspia под Podman (systemd, Quadlet)
@@ -24,7 +24,7 @@
 образ**, закреплённый по точному тегу версии (или по дайджесту):
 
 ```ini
-Image=ghcr.io/<owner>/aspia-server:3.0.37
+Image=ghcr.io/<owner>/aspia-server:3.1.2
 Image=ghcr.io/<owner>/aspia-server@sha256:<digest>
 ```
 
@@ -33,23 +33,22 @@ Image=ghcr.io/<owner>/aspia-server@sha256:<digest>
 docs/ci.md. Никогда не используйте `latest`, `3` или `3.0`: при следующем скачивании образ под ними изменится.
 Podman скачивает публичный образ при запуске службы, входить в реестр не нужно.
 
-Значение по умолчанию в файле, `localhost/aspia-server:3.0.37`, — это имя, которое получает образ при локальной сборке. Чтобы собрать образ локально,
+Значение по умолчанию в файле, `localhost/aspia-server:3.1.2`, — это имя, которое получает образ при локальной сборке. Чтобы собрать образ локально,
 выполните команду в клоне этого репозитория от имени пользователя, который будет запускать службу (root для установки на всю систему):
 
 ```shell
-podman build -t aspia-server:3.0.37 .
+podman build -t aspia-server:3.1.2 .
 ```
 
 Для локальной сборки `podman build` нужен **Podman 5.1 или новее**: из-за `HEALTHCHECK --start-interval` в Dockerfile
 более старый Podman завершается с ошибкой `flag provided but not defined: -start-interval`. На более старом Podman используйте опубликованный
-образ или соберите образ в Docker и перенесите его: `docker save aspia-server:3.0.37 | podman load`
-(после этого `Image=localhost/aspia-server:3.0.37` подойдёт, только если `podman images` показывает именно это имя; иначе присвойте образу тег).
+образ или соберите образ в Docker и перенесите его: `docker save aspia-server:3.1.2 | podman load`
+(после этого `Image=localhost/aspia-server:3.1.2` подойдёт, только если `podman images` показывает именно это имя; иначе присвойте образу тег).
 
 ## 2. Установка на всю систему (от root)
 
-Защитите первый запуск ([Быстрый старт](../docs/README.ru.md#быстрый-старт), шаг 4): пока вы не вошли как `admin`,
-не сменили его пароль и не настроили двухфакторную аутентификацию, тот, кто первым подключится к 8062, захватит
-Router. До `systemctl start` задайте в `aspia-server.env` переменную `ASPIA_ROUTER_CLIENT_ALLOWED_IPS` с вашим
+При первом запуске создаётся пользователь `admin` со случайным паролем (см. ниже). Чтобы всё же закрыть порт 8062 для
+посторонних ([Быстрый старт](../docs/README.ru.md#быстрый-старт), шаг 4), до `systemctl start` задайте в `aspia-server.env` переменную `ASPIA_ROUTER_CLIENT_ALLOWED_IPS` с вашим
 адресом или замените в юните `PublishPort=8062:8062/tcp` на `PublishPort=127.0.0.1:8062:8062/tcp` и войдите через
 SSH-туннель (потом верните строку). В rootless Podman 4.x работает только второй способ (раздел 4).
 
@@ -73,6 +72,17 @@ sudo podman ps                               # после первой пров�
 sudo podman logs aspia-server                # открытый ключ Router для Host выводится при первом запуске
 sudo podman exec aspia-server cat /etc/aspia/host.pub   # тот же ключ, в любой момент
 ```
+
+Пароль `admin` лежит в файле `/etc/aspia/initial-admin-password` в томе конфигурации (владелец root или PUID, права 0600);
+в журнал он не выводится. Файл есть только если конфигурация создана при этом запуске, на пустых томах:
+
+```shell
+sudo podman exec aspia-server cat /etc/aspia/initial-admin-password
+```
+
+Войдите, смените пароль и удалите файл: `sudo podman exec aspia-server rm /etc/aspia/initial-admin-password`.
+Файл — это пароль в открытом виде на томе конфигурации, и он попадает в любую резервную копию этого тома: смените пароль `admin` и удалите файл до того, как копировать том.
+Rootless: то же самое без `sudo`.
 
 Остановить службу можно командой `sudo systemctl stop aspia-server.service`. Про первый вход (учётная запись администратора и открытый
 ключ для Host) читайте в разделе [Первый вход](../docs/README.ru.md#первый-вход) основного README.
@@ -106,7 +116,7 @@ podman healthcheck run aspia-server
 
 Юнит публикует порты один к одному (порт на сервере = порт в контейнере) через `PublishPort=`: Relay сообщает
 каждому клиенту собственный порт, поэтому `9070:8070` нарушил бы соединения через Relay. Порт 8063 (Router — Relay)
-не публикуется. Порт 8060 (Host из Aspia 2.x) закомментирован: раскомментируйте его, если такие Host у вас ещё есть.
+не публикуется.
 
 | Вариант | Адрес клиента, который видит Router | Что использовать |
 |---|---|---|
@@ -179,8 +189,7 @@ sudo install -d /var/lib/aspia-server/config /var/lib/aspia-server/data
 
 ## 7. Межсетевой экран
 
-Откройте порты, которые нужны программам Client и Host. Порт 8063 не открывайте. Порт 8060 нужен только для Host из
-Aspia 2.x: если вы раскомментировали его в юните, откройте и его.
+Откройте порты, которые нужны программам Client и Host. Порт 8063 не открывайте.
 
 ```shell
 # firewalld (RHEL, AlmaLinux, Rocky, Fedora)
@@ -201,7 +210,7 @@ sudo ufw allow 8065/udp
 В юните нет метки `io.containers.autoupdate`; не включайте для него `podman-auto-update.timer`.
 
 1. Прочитайте примечания к выпуску и сделайте резервную копию томов (раздел 5) или каталогов.
-2. Измените тег (или дайджест) в строке `Image=`, например `3.0.37` на следующую версию. При локальной
+2. Измените тег (или дайджест) в строке `Image=`, например `3.1.2` на следующую версию. При локальной
    сборке сначала соберите новый образ.
 3. `sudo systemctl daemon-reload`
 4. `sudo systemctl restart aspia-server.service`
@@ -211,13 +220,16 @@ Rootless: то же самое без `sudo` и с `systemctl --user ...`. Фа�
 Чтобы откатиться, укажите в юните старый тег и повторите шаги 3 и 4 (данные могут не откатиться вместе с версией, поэтому
 нужен шаг 1). Ненужный старый образ удалите командой `podman image rm`.
 
-Примечание к обновлению, октябрь 2026: юнит больше не публикует 8060/tcp (Host из Aspia 2.x). Если вы устанавливаете
-новый `aspia-server.container` и такие Host у вас ещё есть, раскомментируйте в нём `#PublishPort=8060:8060/tcp` (при другом
-`ASPIA_ROUTER_LEGACY_PORT` — с этим портом с обеих сторон), затем повторите шаги 3 и 4. На данных, перенесённых с 2.x,
-журнал напоминает об этом при каждом запуске. Когда Host версии 2.x не останется, отключите напоминание, как описано в
-разделе [Примечания к обновлению](../docs/README.ru.md#примечания-к-обновлению) основного README, командами
-`sudo podman exec aspia-server sh -c 'cmp /etc/aspia/router.pub /etc/aspia/host.pub && rm /etc/aspia/router.pub'`
-и `sudo systemctl restart aspia-server.service`.
+Примечание к обновлению, октябрь 2026 (Aspia 3.1): Aspia 3.1 поддерживает только Aspia 3.x. Порта 8060 для Host из
+Aspia 2.x больше нет, `ASPIA_ROUTER_LEGACY_PORT` игнорируется с предупреждением, а узлам старше 3.0.0 отказывается.
+Если вы скопировали более старый `aspia-server.container`, удалите из него закомментированную строку
+`#PublishPort=8060:8060/tcp`. Образ отказывается запускаться на данных Aspia 2.x (журнал начинается с
+`Found Aspia 2.x data`). Чтобы перейти с 2.x, сначала один раз запустите образ 3.0.37 на томах 2.x, с unit-файлом и env-файлом в том виде, какой был в 3.0.37
+(коммит `065cc95`: [aspia-server.container](https://github.com/gleruzh/aspia-server-docker/blob/065cc95/podman/aspia-server.container), [aspia-server.env.example](https://github.com/gleruzh/aspia-server-docker/blob/065cc95/podman/aspia-server.env.example);
+в текущих нет параметров для 2.x), и дождитесь, пока он станет работоспособен (он преобразует конфигурацию и базу
+данных; пока Host из 2.x нужен порт 8060, раскомментируйте в этом unit-файле `PublishPort=8060:8060/tcp`), переведите Host и Client на 3.x, затем замените `Image=` на 3.1.x и повторите
+шаги 3 и 4. Сначала сделайте резервную копию томов. Весь порядок описан в основном README, раздел
+[Переход с 2.x](../docs/README.ru.md#переход-с-2x).
 
 ## 9. Старый Podman: без Quadlet (запасной вариант)
 
@@ -236,7 +248,7 @@ sudo podman run -d --name aspia-server --env-file /etc/aspia-server/aspia-server
   -v aspia-config:/etc/aspia -v aspia-data:/var/lib/aspia \
   --health-cmd /usr/bin/aspia_health --health-interval 30s --health-timeout 10s \
   --health-retries 3 --health-start-period 60s \
-  ghcr.io/<owner>/aspia-server:3.0.37
+  ghcr.io/<owner>/aspia-server:3.1.2
 cd /etc/systemd/system
 sudo podman generate systemd --new --files --name --restart-policy=always aspia-server
 sudo podman rm -f aspia-server
