@@ -880,20 +880,21 @@ apply_router_settings() {
 # PUID/PGID). If the line is not found, the whole output is saved instead, so the password is never
 # lost. Never prints the password.
 save_admin_password() {
-    local password tmp
+    local password tmp content
     # Not replace_file/copy_file: they chown --reference an existing file, and there is none here.
     password="$(printf '%s\n' "$1" | sed -n 's/\r$//; s/^[[:space:]]*Password:[[:space:]]*//p' | head -n 1)"
-    tmp="$(mktemp "${ADMIN_PASSWORD_FILE}.XXXXXX")" || return 1
     if [[ -n "${password}" ]]; then
-        printf 'User name: admin\nPassword: %s\n' "${password}" > "${tmp}" || { rm -f -- "${tmp}"; return 1; }
+        content="User name: admin"$'\n'"Password: ${password}"
     else
-        printf '%s\n' "$1" > "${tmp}" || { rm -f -- "${tmp}"; return 1; }
+        content="$1"
         warn "Router: no 'Password:' line in the output of aspia_router --create-config. The whole output is" \
             "in ${ADMIN_PASSWORD_FILE}; look there for the password of 'admin'."
     fi
-    chmod 0600 -- "${tmp}" || { rm -f -- "${tmp}"; return 1; }
+    tmp="$(mktemp "${ADMIN_PASSWORD_FILE}.XXXXXX")" || return 1
     # -T: an existing directory with this name is an error, not a place to move the file into.
-    mv -fT -- "${tmp}" "${ADMIN_PASSWORD_FILE}" || { rm -f -- "${tmp}"; return 1; }
+    { printf '%s\n' "${content}" > "${tmp}" \
+        && chmod 0600 -- "${tmp}" \
+        && mv -fT -- "${tmp}" "${ADMIN_PASSWORD_FILE}"; } || { rm -f -- "${tmp}"; return 1; }
 }
 
 prepare_router() {
