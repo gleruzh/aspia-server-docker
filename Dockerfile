@@ -63,8 +63,8 @@ ENV ASPIA_VERSION=${ASPIA_VERSION} \
     ASPIA_LOG_TO_FILE=0
 
 # The packages are bind-mounted from the fetch stage, so they never become part of a layer.
-# apt resolves their dependencies (libdbus-1-3). tini is PID 1, jq edits the 2.x relay.json
-# before upstream's migration. openssl and ca-certificates are only for ASPIA_RELAY_PUBLIC_ADDRESS
+# apt resolves their dependencies (libdbus-1-3). tini is PID 1; tests/run.sh runs jq from the image.
+# openssl and ca-certificates are only for ASPIA_RELAY_PUBLIC_ADDRESS
 # (EXTERNAL_IP)=auto: aspia_start asks a public "what is my IP" endpoint over HTTPS with "openssl
 # s_client" (ca-certificates depends on openssl anyway). There is no curl: with its libraries it
 # brought more than a third of the image's known vulnerabilities, for this one request. The package
@@ -97,9 +97,9 @@ COPY --chmod=0644 aspia_common.sh /usr/lib/aspia-server/aspia_common.sh
 # Configuration and keys; database.
 VOLUME ["/etc/aspia", "/var/lib/aspia"]
 
-# 8060 2.x hosts | 8061 3.x hosts | 8062 clients | 8063 relays -> router | 8065/udp STUN
+# 8061 hosts | 8062 clients | 8063 relays -> router | 8065/udp STUN
 # 8070 relay peers. Publish ports one-to-one: the Relay announces its own port to peers.
-EXPOSE 8060 8061 8062 8063 8065/udp 8070
+EXPOSE 8061 8062 8063 8065/udp 8070
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --start-interval=2s --retries=3 \
     CMD ["/usr/bin/aspia_health"]

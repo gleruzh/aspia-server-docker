@@ -18,8 +18,6 @@ EnvironmentFile=aspia-server.env
 # clients its own port. If you change a port in aspia-server.env, change it here too.
 # 8063 (Router <-> Relay) stays inside the container (role all; for ASPIA_ROLE=router see
 # podman/README.md, section 11).
-# 8060 is only for Hosts of Aspia 2.x: uncomment it if you still have any (README.md, "Upgrading from 2.x").
-#PublishPort=8060:8060/tcp
 PublishPort=8061:8061/tcp
 # For the first login over an SSH tunnel, publish 8062 on the server itself only, then restore it
 # (README.md, "Quick start"): PublishPort=127.0.0.1:8062:8062/tcp
