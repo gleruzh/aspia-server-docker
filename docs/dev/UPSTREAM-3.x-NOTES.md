@@ -1,5 +1,7 @@
 # Aspia 3.x server: verified facts
 
+Sections 1 to 22 were verified on 3.0.x. Where they describe 2.x data, the 2.x migration, port 8060 (`legacy_port`) or the default password `admin`, they apply to versions up to and including 3.0.37 only. Aspia 3.1 removed them: see section 23.
+
 Single source of truth for all work on the 3.x upgrade. Every statement below was checked on
 2026-09-30 against the real Aspia 3.0.21 release (build `3.0.21.8214`) or against upstream source
 at tag `v3.0.21`. Each fact names the command or source that verified it. If you need a fact that is
@@ -84,7 +86,7 @@ Password: admin
 Host public key file: /etc/aspia/host.pub
 Relay public key file: /etc/aspia/relay.pub
 ```
-Do not copy these lines to the container log as they are, because they contain the default password.
+Do not copy these lines to the container log as they are, because they contain the default password. (Applies to <= 3.0.37; since 3.1 the password is random, see section 23.)
 
 Files created:
 
@@ -215,7 +217,7 @@ public_key=
   - `ASPIA_LOG_LEVEL=<int>`: minimum level, clamped to the range TRACE..FATAL.
   - `ASPIA_MAX_LOG_FILE_AGE=<days>`: at most 366.
 
-## 7. 2.7.0 data (produced by `paprikkafox/aspia-server:2.7.0`)
+## 7. 2.7.0 data (produced by `paprikkafox/aspia-server:2.7.0`; applies to <= 3.0.37)
 
 Image `paprikkafox/aspia-server@sha256:8db62b95681b09ab8dc2346d803a2981d7a44826b3a06310ab27b3d054215b82` (amd64). Removed from Docker Hub in October 2026 (repository and user: HTTP 404, checked 2026-10-04), and github.com/paprikkafox/aspia-server-docker returns 404 (the fork network root moved to an unrelated 2022 fork, diemetro/aspia-server-docker); the account paprikkafox now has paprikkafox/aspia-docker. Archived byte-identical as `gleruzh/aspia-server:2.7.0-paprikkafox` (same digest, checked with `docker buildx imagetools inspect`); `tests/run.sh` uses that copy.
 
@@ -232,7 +234,7 @@ Image `paprikkafox/aspia-server@sha256:8db62b95681b09ab8dc2346d803a2981d7a44826b
 - `docker stop` on 2.7.0: the old script traps only SIGINT and runs its CMD in shell form with `nohup`,
   so the container is SIGKILLed: **exit code 137**, after 4 s in our run.
 
-## 8. 3.0.21 on 2.7.0 data (upstream's own migration)
+## 8. 3.0.21 on 2.7.0 data (upstream's own migration; applies to <= 3.0.37)
 
 [run] Copied the 2.7.0 volumes, inserted one fixture host
 (`insert into hosts(key) values (x'00112233445566778899aabbccddeeff')`), started `aspia_router` then
@@ -516,7 +518,7 @@ Same legend. "Image" is the PR 1 image (`docker build --platform linux/amd64 -t 
 | Debian trixie ships `tini` 0.19.0-3+b8 (`/usr/bin/tini`, depends only on libc6). Started under `docker run --init` (so not PID 1) it warns `Tini is not running as PID 1 and isn't registered as a child subreaper`; with `tini -s` the warning is gone and stop/health behave the same. | [run] `apt-cache policy tini`; image with and without `-s`, `docker run --init` |
 | `wait -n -p VAR` (bash 5.2 in trixie) **unsets** `VAR` when a trapped signal interrupts the wait. Under `set -u`, reading it needs `${VAR:-}`. | [run] first version of `aspia_start` failed on `docker stop` with `pid: unbound variable` |
 
-## 15. Official migration guide (aspia.org/docs/migration)
+## 15. Official migration guide (aspia.org/docs/migration) (applies to <= 3.0.37)
 
 [doc] https://aspia.org/docs/migration, fetched 2026-09-30. Upstream documentation, quoted; not tested
 by us (needs GUI Clients and Hosts). Sections on the page: Before you start, Aspia Router, Aspia Relay, Aspia Host, Aspia Client.
@@ -690,3 +692,24 @@ five capabilities of section 21, `--security-opt no-new-privileges:true --read-o
 | **Root on files of another uid** (an earlier PUID/PGID start) needs DAC_OVERRIDE in the Aspia processes too (the directories are 0700 of that uid): they keep `--bounding-set=-all,+dac_override`, CapEff `0000000000000002`, healthy with a changed port. | [run]; `tests/run.sh` 14 |
 | **Without SETPCAP** (compose files or units of an older release): the bounding set is left alone, the Aspia processes keep the container's set as before, `aspia_start` warns; healthy. With PUID/PGID they have no capability either way (a non-root uid). With no capability at all in the container: no warning. | [run] |
 | **`chown -R` (GNU) already does not dereference symbolic links** inside the tree (`-P` is the default with `-R`, and then chown acts on the link itself); `-h` makes it explicit. `cp` does follow a link at its destination: `copy_file` now uses `--remove-destination`. | [src] coreutils `chown.c`; [run] link in the volume, PUID start |
+
+## 23. Aspia 3.1 (3.1.2, released 2026-10-20)
+
+[doc] https://aspia.org/changelog; [src] `dchapyshev/aspia` commits below. The 3.1.2 image of this repository follows
+these facts. Items marked "not run" were taken from upstream's changelog and source and were not run by us.
+
+| Fact | Source |
+|---|---|
+| **Aspia 3.1 drops all 2.x support.** Upstream commit `dca89bbd` ("Remove legacy code") removes the Router port for 2.x Hosts (8060 and `host/legacy_port`), the conversion of 2.x data (`router.json`, `relay.json`, the 2.x database upgrade), and the Relay's ChaCha20 and legacy keys. | [src] commit `dca89bbd` |
+| `kMinimumSupportedVersion` is **3.0.0**: the Router refuses peers older than 3.0.0, so 2.x Hosts, Consoles and Clients cannot connect. 3.0.x Clients and Hosts still work with a 3.1 Router. Updating them to the same version is still recommended. | [src] `kMinimumSupportedVersion` |
+| `ASPIA_ROUTER_LEGACY_PORT` is ignored with a warning in this image. | image behaviour (`aspia_start`) |
+| **3.1 does not convert 2.x data.** `router.json` and `relay.json` are not converted, and a 2.7 `router.db3` fails. The image detects 2.x data, exits before it writes anything, and prints a message that starts with `Found Aspia 2.x data` and points to 3.0.37. | [src] `dca89bbd`; image behaviour |
+| Upgrade order from 2.x: (1) back up the volumes; (2) start the 3.0.37 image once on the 2.x volumes and wait until it is healthy (it converts the configuration and the database; 2.x Hosts keep working on 8060 meanwhile); (3) move the Hosts and Clients to 3.x; (4) stop it and start the 3.1.x image on the same volumes. 3.0.37 is the last version that is backward compatible with 2.x. `ghcr.io/gleruzh/aspia-server:3.0.37` and `docker.io/gleruzh/aspia-server:3.0.37` stay available. | [doc] changelog; section 8 for what 3.0.x does |
+| Data from 3.0.x needs nothing special: 3.0 -> 3.1 has **no schema change**. A return from 3.1 to 3.0.37 is therefore possible (same schema). Not run by the tests. | [doc] changelog |
+| **Random initial admin password.** Upstream commit `bd246ecb`: `--create-config` no longer sets `admin`/`admin`; the password is random. The image saves it in `/etc/aspia/initial-admin-password` (configuration volume, root:root 0600) and never writes it to the log. It happens only when the configuration is first created (empty volumes); a new container on existing volumes keeps the same configuration and password. The user reads it with `docker exec <container> cat /etc/aspia/initial-admin-password`, logs in, changes the password and deletes the file. | [src] commit `bd246ecb`; image behaviour |
+| The 3.1 Client renames "Workspaces" to "Spaces" (UI only). | [doc] changelog |
+| Android Hosts of 3.0.36 and later reject Clients that are older than the Host. | [doc] changelog |
+
+Effect on the older sections: section 3 (`--create-config` prints the password `admin`), section 4 (`host/legacy_port`),
+sections 5 and 13 (listener 8060), sections 7, 8, 14 and 15 (2.x data and migration) and the migration items in sections 11,
+13 and 22 describe 3.0.x and apply up to 3.0.37.

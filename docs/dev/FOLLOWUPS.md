@@ -14,6 +14,9 @@ Each item names the PR that found it.
 - **Backups on later upgrades.** The database is copied only before the 2.x migration. A future 3.x
   release that changes the schema again would upgrade `router.db3` in place with no copy. Idea: store
   the image version that last ran next to the database and copy `router.db3` whenever it changes.
+  Update (Aspia 3.1): the pre-migration copy no longer exists, because the image refuses 2.x data and
+  3.0 -> 3.1 changes no schema. The copy is now made by the 3.0.37 image only; the item stays open for a
+  future 3.x schema change.
 - **`EXTERNAL_IP` validation** -- resolved in PR 3: `ASPIA_RELAY_PUBLIC_ADDRESS` (`EXTERNAL_IP`'s new
   name) is validated as an IP literal or a host name of at most 64 characters, matching the Router's
   own `isValidHostName`/`isValidIpAddress` (notes section 13.1). The Router can still silently ignore a
@@ -33,6 +36,8 @@ Each item names the PR that found it.
   (the migration renames files in `/etc/aspia`, which needs it to be writable by the target user; the
   entrypoint chowns before the migration runs, but this has only been exercised by `tests/run.sh`,
   not against a real historical 2.x volume).
+  Closed for 3.1: the image no longer migrates 2.x data. The question moves to the 3.0.37 image, which
+  the README names as the converter.
 - **Published image.** `docker-compose.yml` builds locally by default (`image: ${ASPIA_IMAGE:-aspia-server:3.0.21}`
   plus `build: .`), because no owner name may be hard-coded. Done in PR 2: the image is published
   (`ghcr.io/<owner>/aspia-server`, optionally Docker Hub and Quay.io), README and docs/ci.md show the
@@ -63,6 +68,9 @@ Candidates from the PR 3 task that were deliberately left out, with the reason:
   it. The only way to change it is over the network, through an authenticated Client, using Aspia's
   own SRP variant (`base/crypto/srp_math.cc`) -- not something `sqlite3`/`jq` can drive. The image can
   only print the default and tell the user to change it (already done in `aspia_start`).
+  Closed for 3.1: upstream (commit bd246ecb) generates a random password; the image saves it in
+  `/etc/aspia/initial-admin-password` and never logs it (notes section 23). There is still no variable to
+  set the password.
 - **`*/listen_interface` variables.** Not added. Not in the PR's candidate list, and notes section
   13.7 shows why it does not fit the "validate at startup, then fail clearly" principle: a bad value
   (a hostname, a bogus literal, a valid IP not present on the container) does not stop the process --
@@ -227,7 +235,7 @@ Correctness points not fixed in PR 1, each small and open for discussion:
   links into absolute ones (`enable-url-completion`); check that the badges render there too.
 - **Tool images are not tracked by Dependabot.** Done: the tool images (also the Compose v2 CLI of
   `tests/run.sh`) are pinned in `.github/tool-images/Dockerfile`, which Dependabot watches, and read with
-  `scripts/tool-image.sh`; the archived 2.7.0 image stays out on purpose (docs/ci.md, "Tool images").
+  `scripts/tool-image.sh`; the archived 2.7.0 image stays out on purpose (docs/ci.md, "Tool images"). Closed for 3.1: the tests no longer use it.
 - **Base packages between Debian point releases.** Done after PR 30: the Dockerfile runs `apt-get
   upgrade`, so every build installs the fixes to packages that are already in `debian:trixie-slim`, at
   the cost of a less reproducible build. `rebuild.yml` publishes a new build when the published image has
@@ -306,6 +314,7 @@ New:
   `ASPIA_ROUTER_HOST_PORT`, `ASPIA_ROUTER_STUN_PORT`) and `ASPIA_ROUTER_STUN_ENABLED` have no 2.x field to preseed,
   so they apply from the second start, and the README tells the user to run `docker compose restart`. Applying
   them after the binary has written `router.conf`, in the same start, would remove the extra restart.
+  Applies only to the 3.0.37 image since Aspia 3.1 (the only image that converts 2.x data).
 - **`*_CONFIG_FILE` and `*_DB_FILE` make the container refuse to start.** `ASPIA_ROUTER_CONFIG_FILE`,
   `ASPIA_ROUTER_DB_FILE` and `ASPIA_RELAY_CONFIG_FILE` stop the start with an error. Ignoring them with a
   warning may be friendlier (the compose files never pass them, so only `docker run` and Podman users meet this).
@@ -319,9 +328,21 @@ New:
   project is `paprikkafox/aspia-docker` (created 2026-10-03, its own 3.x image on GHCR). GitHub made an unrelated 2022 fork, `diemetro/aspia-server-docker`, the root of the
   fork network, so this repository now shows it as its parent. Options: ask GitHub Support to detach this
   repository from the fork network ("Leave fork network"), so it stands on its own. Owner's decision.
-- The 2.7.0 image that `tests/run.sh` upgrades from is archived byte-identical as
-  `gleruzh/aspia-server:2.7.0-paprikkafox` (same digest). Users who need a rollback to 2.7.0 pull it from there
-  (README, "Upgrading from 2.x").
+- The 2.7.0 image is archived byte-identical as `gleruzh/aspia-server:2.7.0-paprikkafox` (same digest).
+  `tests/run.sh` no longer uses it since Aspia 3.1, and the README no longer mentions it. Keep the archive for
+  users who need a rollback to 2.7.0. The README's upgrade path from 2.x goes through the image 3.0.37.
 - `docs/dev/UPSTREAMING.md` (branch `docs/upstreaming`) was written for the old repository and is out of date;
   the owner offered cooperation to paprikkafox/aspia-docker in an issue instead. The local `upstream` remote points to
   the old repository address (404).
+
+## Aspia 3.1 (2026-10-22)
+
+- **Pin 3.0.37.** `gleruzh/aspia-server:3.0.37` (GHCR and Docker Hub) is now the only converter of 2.x data.
+  Keep it, and its dated tags, from being deleted by any cleanup job.
+- **The 2.x upgrade is not tested in CI any more.** The README order (back up, 3.0.37 on the 2.x volumes, move
+  the Hosts, then 3.1.x) was not run end to end for this release. A test that runs 3.0.37 on 2.x data and then
+  the current image would cover it, at the cost of one more image pull.
+- **The compose file does not publish 8060.** The README tells a user who needs 2.x Hosts during step 2 of the
+  upgrade to add the port line to `ports:` by hand. A `compose.legacy.yml` override would be tidier.
+- **Rollback 3.1 -> 3.0.37** is documented in "Updating" because the schema is the same (notes section 23). Not
+  run by the tests.

@@ -31,14 +31,15 @@ ASPIA_IMAGE=<namespace>/aspia-server:3.1.2
 
 | Port | Service | Purpose |
 |---|---|---|
-| 8060/tcp | Router | Hosts of Aspia 2.x (not published by default) |
 | 8061/tcp | Router | Hosts of Aspia 3.x |
 | 8062/tcp | Router | Clients |
 | 8065/udp | Router | Built-in STUN server |
 | 8070/tcp | Relay | Relayed sessions |
 | 8063/tcp | Router | Relays on other servers (not published by default) |
 
-The first start creates the user `admin` with the password `admin`. Whoever logs in first takes over the Router: before the first start, set `ASPIA_ROUTER_CLIENT_ALLOWED_IPS` or `ASPIA_ROUTER_CLIENT_BIND_IP`, and change the password at once; see "Quick start" and "First login" in [README.md](README.md).
+Aspia 3.1 supports Aspia 3.x only: Hosts, Consoles and Clients older than 3.0.0 cannot connect, and the image refuses to start on Aspia 2.x data. Version 3.0.37 is the last with 2.x support, and `gleruzh/aspia-server:3.0.37` stays available. To upgrade from 2.x, see "Upgrading from 2.x" in [README.md](README.md).
+
+The first start creates the user `admin` with a random password. The image saves it in `/etc/aspia/initial-admin-password` and does not print it to the log: read it with `docker exec <container> cat /etc/aspia/initial-admin-password`, log in, change the password and delete the file. See "First login" in [README.md](README.md).
 
 ## Licence and credits
 

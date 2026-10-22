@@ -56,13 +56,10 @@ of the file is not pinned by tag and digest, when a name is used twice or a scri
 for a name the file does not have, or when a script or workflow pins an image of its own instead of
 reading it from there.
 
-Two images are kept from moving on purpose:
-
-- The Docker CLI stays on `docker:27.3-cli`: the check is about the older Compose v2 still common on
-  servers, so `.github/dependabot.yml` lets through digest updates of that tag only.
-- The archived Aspia 2.7.0 image (`OLD_IMAGE` in `tests/run.sh`, the upgrade test) is not in the
-  file at all. It is a fixed test fixture: its digest is what makes it the original 2.7.0, and a new
-  digest under the same tag could only be a different image.
+One image is kept from moving on purpose: the Docker CLI stays on `docker:27.3-cli`. The check is
+about the older Compose v2 still common on servers, so `.github/dependabot.yml` lets through digest
+updates of that tag only. The tests no longer use an archived Aspia 2.7.0 image, because Aspia 3.1 does
+not read 2.x data and no CI test upgrades from 2.x.
 
 ## Secrets and variables
 

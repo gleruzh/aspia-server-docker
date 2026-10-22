@@ -13,13 +13,25 @@ This repository builds a Docker image of the server part of [Aspia](https://aspi
 - This is not Aspia documentation. For the Router, the Relay, the Host and the Client, read the documentation on [aspia.org](https://aspia.org/documentation.html).
 - The image does not update itself. You choose the version and you update by hand.
 
+## Compatibility with Aspia 2.x
+
+Aspia 3.1 supports Aspia 3.x only. Aspia 3.1 dropped all support of 2.x (see the [Aspia changelog](https://aspia.org/changelog)), so this image does too:
+
+- The Router has no port for Hosts of Aspia 2.x: 8060 and `legacy_port` are gone. The variable `ASPIA_ROUTER_LEGACY_PORT` is ignored with a warning.
+- The Router refuses peers older than 3.0.0. Hosts, Consoles and Clients of Aspia 2.x can no longer connect.
+- The Relay dropped ChaCha20 and the legacy keys.
+- Aspia 3.1 no longer converts 2.x data, so the image refuses to start on it (see [Upgrading from 2.x](#upgrading-from-2x)).
+- Clients and Hosts of Aspia 3.0.x still work with a 3.1 Router: the minimum version is 3.0.0. Update Clients and Hosts to the same version as the Router anyway. Android Hosts of 3.0.36 and later refuse Clients that are older than the Host.
+
+Version 3.0.37 is the last that is backward compatible with 2.x. The image `ghcr.io/gleruzh/aspia-server:3.0.37` (and `docker.io/gleruzh/aspia-server:3.0.37`) stays available. If you still have Hosts of Aspia 2.x, stay on 3.0.37 until you have updated them.
+
 ## Requirements
 
 - A Linux server with an x86_64 (amd64) processor. There is no ARM image, because Aspia publishes no ARM packages for the server.
 - Docker Engine 25.0 or later, with the Docker Compose plugin (the `docker compose` command). Use the [official Docker instructions](https://docs.docker.com/engine/install/).
 - A public IP address or a DNS name for the server. The Hosts and the Clients must be able to reach it.
 - The ports in the section [Ports](#ports) must be open in your firewall.
-- The Aspia Client and the Aspia Host, version 3.x. Download them from the [Aspia releases](https://github.com/dchapyshev/aspia/releases).
+- The Aspia Client and the Aspia Host, version 3.0.0 or later (the same version as the Router is best). Download them from the [Aspia releases](https://github.com/dchapyshev/aspia/releases).
 
 The commands below need a user who can use Docker: `sudo`, or the [post-installation steps](https://docs.docker.com/engine/install/linux-postinstall/).
 
@@ -48,7 +60,7 @@ The image is published to the GitHub Container Registry as `ghcr.io/<owner>/aspi
 
 3. Open the ports from the section [Ports](#ports) in the firewall of the server.
 
-4. Secure the first start. The first start creates the user `admin` with the password `admin`. Until you log in, change this password and set up two-factor authentication, anyone who can reach port 8062 can log in first and take over the Router. Before the first start, add one of these to `.env`:
+4. Optional: limit who can reach the Router. The first start creates the user `admin` with a random password (see [First login](#first-login)), so nobody can log in without it. To keep the port 8062 closed to others anyway, add one of these to `.env` before the first start:
 
     - Allow Clients only from your own address. Replace the example address:
 
@@ -67,8 +79,6 @@ The image is published to the GitHub Container Registry as `ghcr.io/<owner>/aspi
         ```
 
         On your computer, open the tunnel with `ssh -L 8062:127.0.0.1:8062 <user>@<server>`, and enter `127.0.0.1` as the address of the Router in the Client. After the [First login](#first-login), remove the line from `.env` and run `docker compose up -d`, so that your users can connect.
-
-    Without `ASPIA_ROUTER_CLIENT_ALLOWED_IPS` the log of the first start shows a `WARNING` about this, also with the SSH tunnel: the container cannot see `ASPIA_ROUTER_CLIENT_BIND_IP`. If you skipped this step, log in and change the password at once.
 
 5. Download the image and start the container:
 
@@ -130,12 +140,23 @@ Do not use the key in `relay.pub` for Hosts. That key is only for Relays.
 
 ### Connect with the Client and change the password
 
-On the first start the Router creates the user `admin` with the password `admin`. Change this password after the first login. Do it at once: until then, anyone who can reach port 8062 can log in first and take over the Router (see step 4 of the [Quick start](#quick-start)).
+On the first start the Router creates the user `admin` with a random password. The image saves the password in the file `/etc/aspia/initial-admin-password` (the configuration volume, owner root or PUID, mode 0600) and never prints it to the log. Read it:
+
+```shell
+docker compose exec aspia-server cat /etc/aspia/initial-admin-password
+```
+
+The file is created only when the configuration is first created, on empty volumes. If you create the container again on existing volumes, the configuration and the password stay the same.
 
 1. Install the Aspia Client. At its first start the Client asks for a master password. The password is mandatory and cannot be recovered.
-2. Add the Router: enter the address of your server (the Router accepts Clients on port 8062), set "Access Level" to "Administrator", and log in as `admin` with the password `admin`.
+2. Add the Router: enter the address of your server (the Router accepts Clients on port 8062), set "Access Level" to "Administrator", and log in as `admin` with the password from the file.
 3. Two-factor authentication is mandatory in Aspia 3.x. At the first login the Client asks you to set it up with an authenticator app.
 4. Open the users of the Router and change the password of `admin`.
+5. Delete the file with the first password:
+
+    ```shell
+    docker compose exec aspia-server rm /etc/aspia/initial-admin-password
+    ```
 
 The Client documentation describes these steps: [Aspia Client](https://aspia.org/docs/client). Aspia 3.x has no command and no configuration setting for this password. You can change it only in the Client.
 
@@ -153,7 +174,6 @@ Publish every port with the same number on the server and in the container. The 
 
 | Port | Variable | Service | Purpose | Open to the internet |
 |---|---|---|---|---|
-| 8060/tcp | `ASPIA_ROUTER_LEGACY_PORT` | Router | Hosts of Aspia 2.x | Only if you still have Hosts of Aspia 2.x. The compose files do not publish it: uncomment its line in `ports:`. |
 | 8061/tcp | `ASPIA_ROUTER_HOST_PORT` | Router | Hosts of Aspia 3.x | Yes |
 | 8062/tcp | `ASPIA_ROUTER_CLIENT_PORT` | Router | Clients: the address book and the management of the Router | Yes, or only to the networks of your users. `ASPIA_ROUTER_CLIENT_BIND_IP` publishes it on one address of the server only. |
 | 8065/udp | `ASPIA_ROUTER_STUN_PORT` | Router | Built-in STUN server | Yes |
@@ -201,7 +221,7 @@ The rules:
 | `ASPIA_IMAGE` | `aspia-server:3.1.2` | The image that `docker compose` runs. The default is the name of a local build. |
 | `ASPIA_ROUTER_CLIENT_BIND_IP` | empty: all addresses | The address of the server on which the compose files publish port 8062, for example `127.0.0.1` for the first login over an SSH tunnel (see [Quick start](#quick-start)). Write an IPv6 address in brackets: `[::1]`. Only the compose files read it. |
 
-Some settings have no variable: the Router port for Relays (`[relay] port` in `router.conf`) and the listen addresses (`listen_interface`). Edit `router.conf` or `relay.conf` for them. The container never overwrites such a change. There is also no variable for the password of `admin` (see [First login](#first-login)).
+Some settings have no variable: the Router port for Relays (`[relay] port` in `router.conf`) and the listen addresses (`listen_interface`). Edit `router.conf` or `relay.conf` for them. The container never overwrites such a change. There is also no variable for the password of `admin` (see [First login](#first-login)). The variable `ASPIA_ROUTER_LEGACY_PORT` is removed: Aspia 3.1 has no port for Hosts of Aspia 2.x, and the Router ignores the variable with a warning.
 
 `ASPIA_ROUTER_CONFIG_FILE`, `ASPIA_ROUTER_DB_FILE` and `ASPIA_RELAY_CONFIG_FILE` are variables of the Aspia programs. The compose files do not pass them to the container, so they have no effect in `.env`. This image does not support them yet. If you set one of them in the container yourself (`docker run` or Podman), the container does not start.
 
@@ -250,7 +270,7 @@ The Podman units do not set `NoNewPrivileges`. On Ubuntu 24.04 AppArmor then blo
 The image never updates itself. You update by hand when you decide to.
 
 1. Read the [Aspia changelog](https://aspia.org/changelog).
-2. Make a backup (see [Backup and restore](#backup-and-restore)). A new version can convert the database, and an older version may not read it after that.
+2. Make a backup (see [Backup and restore](#backup-and-restore)). A new version can convert the database, and an older version may not read it after that. The step from 3.0 to 3.1 does not change the database.
 3. In `.env`, replace the version in the tag of `ASPIA_IMAGE` with the new version.
 4. Download the image and create the container again, then check the status and the log, as in the [Quick start](#quick-start):
 
@@ -260,7 +280,7 @@ The image never updates itself. You update by hand when you decide to.
     docker compose ps
     ```
 
-To return to the old version, put the old tag into `.env` and run `docker compose up -d`. If the new version has converted the data, restore the backup too.
+To return to the old version, put the old tag into `.env` and run `docker compose up -d`. If the new version has converted the data, restore the backup too. From 3.1 you can return to 3.0.37 this way: the data of 3.1 and 3.0 have the same schema.
 
 Do not run `aspia_router --check-update` or `aspia_router --install-update` in the container. An update that is installed in the container is lost when the container is created again.
 
@@ -289,54 +309,58 @@ Changes that can need action on an existing installation. The changes to the fil
 
 - October 2026: the image no longer contains `curl`. If your own scripts run `curl` in the container (for example `docker compose exec aspia-server curl ...`), run `curl` on the server instead. `EXTERNAL_IP=auto` asks the same services as before, now with `openssl`, which checks their certificates. It also refuses an answer that is not a public address (private, loopback, link-local, CGNAT, multicast, documentation, reserved, broadcast, IPv4-mapped and NAT64 addresses) and asks the next service. If no service gives a public address, the container stops with an error. Then set `EXTERNAL_IP` to the address. The log shows the detected address and the service that reported it. An `EXTERNAL_IP` that you set to an address is checked as before.
 
-- October 2026: port 8060/tcp is no longer published by default. Only Hosts of Aspia 2.x use it. In `docker-compose.yml`, `compose.router.yml` and `podman/aspia-server.container` its line is commented out. If you take the new file and still have Hosts of Aspia 2.x, uncomment the line `#- "${ASPIA_ROUTER_LEGACY_PORT:-8060}:${ASPIA_ROUTER_LEGACY_PORT:-8060}"` in `ports:` and run `docker compose up -d`. In the Podman unit, uncomment `#PublishPort=8060:8060/tcp`; if you changed `ASPIA_ROUTER_LEGACY_PORT`, use that port on both sides (see [podman/README.md](podman/README.md), section 8). Until then these Hosts cannot connect. On data migrated from 2.x the container log names this line at every start.
+- October 2026, Aspia 3.1: Hosts, Consoles and Clients of Aspia 2.x can no longer connect, and port 8060/tcp is gone. In `docker-compose.yml`, `compose.router.yml` and `podman/aspia-server.container` the commented line of port 8060 is removed; delete it from your own copy too. `ASPIA_ROUTER_LEGACY_PORT` is ignored with a warning. The image refuses to start on 2.x data. If you have 2.x Hosts or 2.x data, read [Compatibility with Aspia 2.x](#compatibility-with-aspia-2x) and [Upgrading from 2.x](#upgrading-from-2x) before you update.
 
-    When no Hosts of Aspia 2.x are left, you can turn this note off: delete `router.pub`. The note is shown only while that file exists. After the migration it holds the same key as `host.pub`, and the container does not need it once `host.pub` and `relay.pub` exist. The command deletes it only if it equals `host.pub`. Then restart the container:
-
-    ```shell
-    docker compose exec aspia-server sh -c 'cmp /etc/aspia/router.pub /etc/aspia/host.pub && rm /etc/aspia/router.pub'
-    docker compose restart
-    ```
-
-    The backup from step 2 of [Upgrading from 2.x](#upgrading-from-2x) still has the file, for a return to 2.7.0.
+- October 2026, Aspia 3.1: a new installation gets a random password for `admin` instead of `admin`. It is in `/etc/aspia/initial-admin-password` (see [First login](#first-login)). An existing installation keeps its users and passwords.
 
 ## Upgrading from 2.x
 
-This section is for a server that runs the old image `paprikkafox/aspia-server` (version 2.7.0, usually with the tag `latest`) with a `docker-compose.yml` and a `data` directory. The image 3.1.2 keeps your users, Hosts and keys. The official [migration guide](https://aspia.org/docs/migration) covers the order of the updates, the Console, the address books and two-factor authentication.
+This section is for a server that runs the old image `paprikkafox/aspia-server` (version 2.7.0, usually with the tag `latest`) or any image of Aspia 2.x, with a `docker-compose.yml` and a `data` directory.
 
-The original image was removed from Docker Hub in October 2026. The same image (the same digest) is kept as `gleruzh/aspia-server:2.7.0-paprikkafox`, for a rollback to 2.7.0.
+Aspia 3.1 no longer converts 2.x data: it does not convert `router.json` and `relay.json`, and it cannot read a 2.7 `router.db3`. This image therefore refuses 2.x data. It exits before it writes anything, with a message that starts with `Found Aspia 2.x data` and points to 3.0.37. Convert the data with the image 3.0.37 first, then move to 3.1.x. The official [migration guide](https://aspia.org/docs/migration) covers the order of the updates, the Console, the address books and two-factor authentication.
 
-1. Go to the directory of the old installation. Write down `EXTERNAL_IP` from the old `docker-compose.yml`: the old file sets it in the `environment:` list. Then stop the container:
+1. Make a backup of the old data and the old compose file. Stop the container first, so that the database files are complete. Go to the directory of the old installation and write down `EXTERNAL_IP` from the old `docker-compose.yml`: the old file sets it in the `environment:` list.
 
     ```shell
     docker compose down
+    (umask 077; sudo tar -czf - data docker-compose.yml > aspia-2.x-backup.tar.gz)
     ```
 
-2. Make a backup of the old data and the old compose file:
-
-    ```shell
-    (umask 077; sudo tar -czf - data docker-compose.yml > aspia-2.7.0-backup.tar.gz)
-    ```
-
-3. Download the new files. The new `docker-compose.yml` replaces the old one, which is now in the backup:
+2. Convert the data with the 3.0.37 image. Download the new compose file and `.env`, and set `EXTERNAL_IP` from step 1 and the image with the tag `3.0.37`. Open the ports, then start the container as in the [Quick start](#quick-start):
 
     ```shell
     curl -fsSLO https://raw.githubusercontent.com/<owner>/aspia-server-docker/main/docker-compose.yml
     curl -fsSL -o .env https://raw.githubusercontent.com/<owner>/aspia-server-docker/main/.env.example
     ```
 
-4. Set the image and the address in `.env`, open the ports, then download the image and start the container, as in the [Quick start](#quick-start). Use the `EXTERNAL_IP` from step 1. If you still have Hosts of Aspia 2.x, uncomment the line of port 8060 in the `ports:` list of `docker-compose.yml`, and keep 8060/tcp open. The container log names this line at every start.
+    ```shell
+    # .env
+    EXTERNAL_IP=203.0.113.10
+    ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.0.37
+    ```
 
-What happens on the first start:
+    The 3.0.37 image listens on 8060/tcp for Hosts of Aspia 2.x. The compose file of this repository no longer publishes that port: add the line `- "8060:8060"` to `ports:` and keep 8060/tcp open while you need it. Wait until `docker compose ps` shows `(healthy)`. The 2.x Hosts keep working on 8060 during this time.
 
-- The container copies `router.json`, `relay.json` and `router.db3` to files with the suffix `.pre-3.1.2-<time>`, next to the originals.
+3. Move the Hosts and the Clients to Aspia 3.x. Hosts of 3.0.0 or later connect on port 8061, and they keep the key from `host.pub`, which is the old key of the Router.
+
+4. Stop the container, set the tag of `ASPIA_IMAGE` to `3.1.2`, remove the line of port 8060 from `ports:`, and start the container on the same volumes:
+
+    ```shell
+    docker compose down
+    docker compose up -d
+    docker compose ps
+    ```
+
+What the 3.0.37 image does on the first start:
+
+- The container copies `router.json`, `relay.json` and `router.db3` to files with the suffix `.pre-3.0.37-<time>`, next to the originals.
 - Aspia converts `router.json` to `router.conf` and `relay.json` to `relay.conf`. It renames the old files to `router.json.bak` and `relay.json.bak`.
 - Aspia upgrades the database `router.db3`. Aspia 2.7.0 may not read it after that.
 - The Router keeps its key, so Hosts that use the key from `router.pub` keep working. The container copies `router.pub` to `host.pub` and `relay.pub`, the file names of Aspia 3.x. The key for Relays is therefore the key that every Host knows. If you run a Relay on another server, set `ASPIA_ROUTER_RELAY_ALLOWED_IPS` (see [Running a Relay on a separate host](#running-a-relay-on-a-separate-host)).
 - Two settings are not carried over: the administrator allow-list (`AdminWhiteList`; Aspia 3.x has no such setting) and the Relay statistics settings.
 - These variables take effect only from the second start: `ASPIA_ROUTER_CLIENT_PORT`, `ASPIA_ROUTER_HOST_PORT`, `ASPIA_ROUTER_STUN_PORT` and `ASPIA_ROUTER_STUN_ENABLED`. If you set any of them, run `docker compose restart` after the first start.
 
-To return to 2.7.0, stop the container, restore the backup from step 2 as in [Backup and restore](#backup-and-restore), and start the old version. The backup contains the old `docker-compose.yml`.
+To return to 2.7.0, stop the container, restore the backup from step 1 as in [Backup and restore](#backup-and-restore), and start the old version. The backup contains the old `docker-compose.yml`. The data that step 2 has converted do not go back to 2.x.
 
 ## Backup and restore
 
@@ -391,7 +415,7 @@ These steps run the Router alone from `compose.router.yml`. To keep the Router a
     docker compose logs aspia-router | grep 'Public key for relays'
     ```
 
-    On a new installation this key differs from the key for Hosts. After an upgrade from 2.x both keys are the old `router.pub`.
+    On a new installation this key differs from the key for Hosts. After an upgrade from 2.x (through 3.0.37) both keys are the old `router.pub`.
 
 4. Allow only your Relays. In `.env`, set the addresses of the Relays as the Router sees them. A Relay behind NAT has the public address of its NAT. Then apply the change:
 
@@ -517,12 +541,13 @@ The tests and the CI are described in [docs/ci.md](docs/ci.md).
 | `EXTERNAL_IP=auto` stops the start with an error about the detection. | The server cannot reach the internet services that report its address over HTTPS, or none of them reported a public address. The log names the reason for each service. Set the address by hand. |
 | The log shows `sd_login_monitor_new failed` or `Unable to install signal handler for SIGKILL`. | No action needed. These lines are normal in a container. |
 | The status is `(unhealthy)`. | Read the log: `docker compose logs aspia-server`. Healthy means that the Router listens on its ports and the Relay is connected to the Router. |
-| A Host does not connect. | Check that port 8061/tcp is open. A Host of Aspia 2.x needs 8060/tcp, which the compose files do not publish (see [Upgrading from 2.x](#upgrading-from-2x)). Check that the Host uses the key from `host.pub`, not from `relay.pub`. |
+| A Host does not connect. | Check that port 8061/tcp is open. Hosts older than 3.0.0 cannot connect to Aspia 3.1 at all (see [Compatibility with Aspia 2.x](#compatibility-with-aspia-2x)). Check that the Host uses the key from `host.pub`, not from `relay.pub`. |
 | The Client does not connect to the Router. | Check that port 8062/tcp is open. If `ASPIA_ROUTER_CLIENT_ALLOWED_IPS` is set, check that it contains the address of the Client. If `ASPIA_ROUTER_CLIENT_BIND_IP` is set, the port is open only on that address. |
 | Sessions work only in the local network, or relayed sessions fail. | Check that port 8070/tcp is open and that `EXTERNAL_IP` is the public address of the server, not the example address. The port on the server must be the same as in the container. |
 | A user lost the authenticator app. | Reset the two-factor authentication of that user (see below). |
-| You forgot the password of `admin`. | Another administrator can change it in the Client. Aspia 3.x has no command to set a password. |
-| The Aspia 2.x Console does not work with the new Router. | The Console is removed in Aspia 3.x. Use the Client of Aspia 3.x. |
+| You forgot the password of `admin`. | Another administrator can change it in the Client. Aspia 3.x has no command to set a password. On a new installation the first password is in `/etc/aspia/initial-admin-password`, unless you deleted the file. |
+| The container exits at once. The log starts with `Found Aspia 2.x data`. | The volumes hold data of Aspia 2.x, which 3.1 cannot read. Follow [Upgrading from 2.x](#upgrading-from-2x). |
+| The Aspia 2.x Console does not work with the new Router. | The Console is removed in Aspia 3.x, and Aspia 3.1 refuses peers older than 3.0.0. Use the Client of Aspia 3.0.0 or later. |
 | The time in the log is wrong. | Set `TZ` in `.env`, for example `TZ=Europe/Berlin`. Then run `docker compose up -d`. |
 | `Permission denied` when you read files in `data`. | The files belong to root (or to `PUID`). Use `sudo`. |
 | A Relay on another server does not register. | See [Check that the Relay is registered](#check-that-the-relay-is-registered). |

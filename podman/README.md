@@ -46,9 +46,8 @@ image, or build with Docker and move the image over: `docker save aspia-server:3
 
 ## 2. Install system-wide (as root)
 
-Secure the first start ([Quick start](../README.md#quick-start), step 4): until you log in as `admin`, change
-its password and set up two-factor authentication, whoever reaches 8062 first takes over the Router. Before
-`systemctl start`, set `ASPIA_ROUTER_CLIENT_ALLOWED_IPS` in `aspia-server.env` to your own address, or change
+The first start creates the user `admin` with a random password (see below). To keep port 8062 closed to others
+anyway ([Quick start](../README.md#quick-start), step 4), before `systemctl start` set `ASPIA_ROUTER_CLIENT_ALLOWED_IPS` in `aspia-server.env` to your own address, or change
 `PublishPort=8062:8062/tcp` in the unit to `PublishPort=127.0.0.1:8062:8062/tcp` and log in over an SSH tunnel
 (restore the line afterwards). On rootless Podman 4.x only the second way works (section 4).
 
@@ -72,6 +71,16 @@ sudo podman ps                               # STATUS shows (healthy) after the 
 sudo podman logs aspia-server                # the Router's public key for hosts is printed at the first start
 sudo podman exec aspia-server cat /etc/aspia/host.pub   # the same key, any time
 ```
+
+The password of `admin` is in the file `/etc/aspia/initial-admin-password` in the configuration volume (owner root or PUID,
+mode 0600); the log never shows it. It exists only when the configuration was first created, on empty volumes:
+
+```shell
+sudo podman exec aspia-server cat /etc/aspia/initial-admin-password
+```
+
+Log in, change the password, then delete the file with `sudo podman exec aspia-server rm /etc/aspia/initial-admin-password`.
+Rootless: the same without `sudo`.
 
 Stop with `sudo systemctl stop aspia-server.service`. For the first login (the administrator account and the public
 key for Hosts) see [First login](../README.md#first-login) in the main README.
@@ -105,7 +114,7 @@ read section 4.**
 
 The unit publishes the ports one-to-one (host port = container port) with `PublishPort=`: the Relay tells
 every client its own port, so `9070:8070` would break relayed connections. Port 8063 (Router to Relay) is
-not published. Port 8060 (Hosts of Aspia 2.x) is commented out: uncomment it if you still have such Hosts.
+not published.
 
 | Setup | Address the Router sees for a client | Use |
 |---|---|---|
@@ -178,8 +187,7 @@ For the system-wide units we recommend `PUID`/`PGID` in `aspia-server.env`: then
 
 ## 7. Firewall
 
-Open the ports the clients and hosts need. Do not open 8063. 8060 is only for hosts of Aspia 2.x: if you
-uncommented it in the unit, open it too.
+Open the ports the clients and hosts need. Do not open 8063.
 
 ```shell
 # firewalld (RHEL, AlmaLinux, Rocky, Fedora)
@@ -210,13 +218,14 @@ not `/etc/containers/systemd/`. The first start of a new image may convert the d
 To go back, put the old tag in the unit and repeat steps 3 and 4 (the data may not go back with it, which is
 why step 1 is there). Remove an unused old image with `podman image rm`.
 
-Upgrade note, October 2026: the unit no longer publishes 8060/tcp (Hosts of Aspia 2.x). If you install the new
-`aspia-server.container` and still have such Hosts, uncomment `#PublishPort=8060:8060/tcp` in it (with another
-`ASPIA_ROUTER_LEGACY_PORT`, that port on both sides), then repeat steps 3 and 4. On data migrated from 2.x the
-log reminds you at every start. When no 2.x Hosts are left, turn the reminder off as described in
-[Upgrade notes](../README.md#upgrade-notes) in the main README, with
-`sudo podman exec aspia-server sh -c 'cmp /etc/aspia/router.pub /etc/aspia/host.pub && rm /etc/aspia/router.pub'`
-and `sudo systemctl restart aspia-server.service`.
+Upgrade note, October 2026 (Aspia 3.1): Aspia 3.1 supports Aspia 3.x only. There is no port 8060 for Hosts of
+Aspia 2.x any more, `ASPIA_ROUTER_LEGACY_PORT` is ignored with a warning, and peers older than 3.0.0 are refused.
+If you copied an older `aspia-server.container`, delete its commented line `#PublishPort=8060:8060/tcp`. The
+image refuses to start on data of Aspia 2.x (the log starts with `Found Aspia 2.x data`). To upgrade from 2.x,
+first start the image 3.0.37 once on the 2.x volumes and wait until it is healthy (it converts the configuration
+and the database; publish 8060/tcp with `PublishPort=8060:8060/tcp` while 2.x Hosts need it), move the Hosts and
+Clients to 3.x, then change `Image=` to 3.1.x and repeat steps 3 and 4. Back up the volumes first. The whole
+order is in the main README, [Upgrading from 2.x](../README.md#upgrading-from-2x).
 
 ## 9. Older Podman: no Quadlet (fallback)
 
