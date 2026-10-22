@@ -14,7 +14,7 @@
 #                          random password for 'admin'; it is saved in /etc/aspia/initial-admin-password);
 #        - 3.x data:       leave it alone.
 #      Aspia 2.x data (router.json, relay.json) is refused in phase 1: Aspia 3.1 does not convert
-#      it. Start the 3.0.37 image on it once first.
+#      it. Start the last 2.x-compatible image (LAST_2X_IMAGE) on it once first.
 #      Then apply every ASPIA_ROUTER_*/ASPIA_RELAY_* variable that is set (EXTERNAL_IP is kept as
 #      an alias of ASPIA_RELAY_PUBLIC_ADDRESS) into the Router/Relay configuration. A variable that
 #      is set is written on every start; a variable that is unset leaves the file as it is, so a
@@ -24,14 +24,13 @@
 # Based on server/aspia_start from SinitsaDA/aspia-server-docker (commit de15b99, GPL-3.0),
 # https://github.com/SinitsaDA/aspia-server-docker. Ported: filling relay.conf router/public_key
 # from the Router key, the awk INI editing, and the wait -n supervision with signal forwarding.
-# Changed: EXTERNAL_IP is required, backups before a change, no renaming of existing data, no sleep before starting the Relay, and the
+# Changed: EXTERNAL_IP is required, backups before a change, no sleep before starting the Relay, and the
 # configuration files are rewritten atomically. PR 3 added: an ASPIA_ROUTER_*/ASPIA_RELAY_*
 # variable scheme for every documented router.conf/relay.conf key (ports, allow-lists, STUN,
 # Relay timeout/limit), stricter address/port/list validation, EXTERNAL_IP=auto (detected over
 # HTTPS, now with openssl s_client: the image has no curl), and PUID/PGID to run both processes as
 # non-root.
 # PR 5 added ASPIA_ROLE and the ASPIA_RELAY_ROUTER_* variables for a Relay on its own.
-# Aspia 3.1 removed the 2.x migration, the 2.x host port and the fixed admin password; so did this script.
 
 # SC2329: validate_*, prepare_*, start_* and print_summary_* are called by name through SERVICES, on_signal by trap.
 # shellcheck disable=SC2329
@@ -53,11 +52,14 @@ readonly RELAY_CONF="${CONFIG_DIR}/relay.conf"
 readonly HOST_PUB="${CONFIG_DIR}/host.pub"      # 3.x: the key hosts are configured with
 readonly RELAY_PUB="${CONFIG_DIR}/relay.pub"    # 3.x: the key relays authenticate the Router with
 readonly ROUTER_DB="${DATA_DIR}/router.db3"
-readonly ROUTER_JSON="${CONFIG_DIR}/router.json" # 2.x; 3.0.x renames it to router.json.bak when it converts it
-readonly RELAY_JSON="${CONFIG_DIR}/relay.json"   # 2.x; likewise relay.json.bak
-readonly ROUTER_PUB="${CONFIG_DIR}/router.pub"   # 2.x: only checked for, so that a lost volume is not replaced by new keys
+readonly ROUTER_JSON="${CONFIG_DIR}/router.json" # 2.x data; 3.0.x renames it to router.json.bak once converted
+readonly RELAY_JSON="${CONFIG_DIR}/relay.json"   # 2.x data; likewise relay.json.bak
+readonly ROUTER_PUB="${CONFIG_DIR}/router.pub"   # only checked for, so that a lost volume is not replaced by new keys
 # Where a new Router's random password for 'admin' is saved (root only; the user deletes it after the first login).
 readonly ADMIN_PASSWORD_FILE="${CONFIG_DIR}/initial-admin-password"
+
+# The last image that reads Aspia 2.x data and has the 2.x host port; it converts the data to 3.x.
+readonly LAST_2X_IMAGE=ghcr.io/gleruzh/aspia-server:3.0.37
 
 # How long to wait for a started process to open its port before moving on.
 readonly LISTEN_TIMEOUT_SECONDS=60
@@ -559,7 +561,7 @@ warn_ignored() {
     local name pattern why
     local -a ignored=()
     if has_service router && [[ -n "${ASPIA_ROUTER_LEGACY_PORT:-}" ]]; then
-        warn "ASPIA_ROUTER_LEGACY_PORT is ignored: Aspia 3.1 has no port for 2.x hosts; 3.0.37 was the last version with it."
+        warn "ASPIA_ROUTER_LEGACY_PORT is ignored: Aspia 3.1 has no port for 2.x hosts; ${LAST_2X_IMAGE} was the last version with it."
     fi
     case "${ROLE}" in
         router)
@@ -689,11 +691,22 @@ drop_privileges() {
 # ---------------------------------------------------------------------------------------------
 # Phase 1: validate. Runs before anything is written to the volumes.
 
-# die_2x <file>: Aspia 3.1 cannot read 2.x data; the 3.0.37 image converts it. Called while nothing
-# has been written yet.
-die_2x() {
-    die "Found Aspia 2.x data ($1). Aspia 3.1 cannot read it. Upgrade in two steps: start the image" \
-        "ghcr.io/gleruzh/aspia-server:3.0.37 once on these volumes and wait until it is healthy (it converts" \
+# refuse_2x_data: Aspia 3.1 cannot read 2.x data; the LAST_2X_IMAGE converts it. router.json is 2.x
+# data that was never converted (3.0.x renames it once it has); so is a relay.json that no
+# non-empty relay.conf covers (3.0.x converts relay.json only when relay.conf is missing or empty),
+# even without any Router file. router.pub alone is not: 3.0.x keeps it. Called once per start,
+# whatever the role, before any role-specific check and while nothing has been written yet.
+refuse_2x_data() {
+    local file
+    if [[ -f "${ROUTER_JSON}" ]]; then
+        file="${ROUTER_JSON}"
+    elif [[ -f "${RELAY_JSON}" && ! -s "${RELAY_CONF}" ]]; then
+        file="${RELAY_JSON}"
+    else
+        return 0
+    fi
+    die "Found Aspia 2.x data (${file}). Aspia 3.1 cannot read it. Upgrade in two steps: start the image" \
+        "${LAST_2X_IMAGE} once on these volumes and wait until it is healthy (it converts" \
         "the data), stop it, then start this image. Nothing was changed."
 }
 
@@ -722,20 +735,15 @@ validate_router() {
     refuse_path_override ASPIA_ROUTER_CONFIG_FILE "${ROUTER_CONF}"
     refuse_path_override ASPIA_ROUTER_DB_FILE "${ROUTER_DB}"
 
-    # Aspia 3.0.x renames router.json to router.json.bak once it has converted it, so router.json
-    # next to a router.conf is 2.x data that was never converted (3.1 cannot read it).
-    [[ ! -f "${ROUTER_JSON}" ]] || die_2x "${ROUTER_JSON}"
     if [[ -s "${ROUTER_CONF}" ]]; then
         [[ -f "${ROUTER_DB}" ]] || die "Found ${ROUTER_CONF}, but not the database ${ROUTER_DB}." \
             "Mount the database volume at ${DATA_DIR} (./data/database in docker-compose.yml). Nothing was changed."
         ROUTER_STATE=existing
     else
-        # A relay.json that no relay.conf covers is 2.x data too, even without any Router file.
-        [[ ! -f "${RELAY_JSON}" || -s "${RELAY_CONF}" ]] || die_2x "${RELAY_JSON}"
         # A Relay configuration left over (for example with the wrong volume mounted) counts too:
         # a new Router would get new keys, and that Relay's Router key would no longer match.
         for file in "${ROUTER_CONF}" "${HOST_PUB}" "${RELAY_PUB}" "${ROUTER_PUB}" "${ROUTER_DB}" \
-            "${RELAY_CONF}" "${RELAY_JSON}"; do
+            "${RELAY_CONF}"; do
             [[ -e "${file}" ]] && found+=("${file}")
         done
         if ((${#found[@]})); then
@@ -775,7 +783,7 @@ validate_remote_relay() {
     # is allowed: it may be the key file mounted there for ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE
     # (not with PUID/PGID: resolve_router_key refuses a key file inside the volumes then; the
     # documented place for the file is /run/aspia/...).
-    for file in "${ROUTER_CONF}" "${ROUTER_JSON}" "${RELAY_JSON}" "${ROUTER_PUB}" "${HOST_PUB}" "${ROUTER_DB}"; do
+    for file in "${ROUTER_CONF}" "${RELAY_JSON}" "${ROUTER_PUB}" "${HOST_PUB}" "${ROUTER_DB}"; do
         [[ -e "${file}" ]] && found+=("${file}")
     done
     if ((${#found[@]})); then
@@ -828,8 +836,6 @@ validate_relay() {
 
     if [[ -s "${RELAY_CONF}" ]]; then
         RELAY_STATE=existing
-    elif [[ -f "${RELAY_JSON}" ]]; then
-        die_2x "${RELAY_JSON}"   # the 3.0.x Relay converts relay.json only when relay.conf is missing or empty
     else
         RELAY_STATE=new
     fi
@@ -869,6 +875,7 @@ apply_router_settings() {
 # lost. Never prints the password.
 save_admin_password() {
     local password tmp
+    # Not replace_file/copy_file: they chown --reference an existing file, and there is none here.
     password="$(printf '%s\n' "$1" | sed -n 's/\r$//; s/^[[:space:]]*Password:[[:space:]]*//p' | head -n 1)"
     tmp="$(mktemp "${ADMIN_PASSWORD_FILE}.XXXXXX")"
     if [[ -n "${password}" ]]; then
@@ -964,7 +971,7 @@ apply_relay_settings() {
 
 prepare_relay() {
     local output
-    # A remote Router's key was resolved in validate_remote_relay (which refused any 2.x file); this
+    # A remote Router's key was resolved in validate_remote_relay (which refuses a Router volume); this
     # container's own Router has written relay.pub by now (prepare_router runs first).
     remote_router || ROUTER_KEY="$(read_key "${RELAY_PUB}")"
 
@@ -1194,7 +1201,8 @@ print_summary_router() {
             "reaches ${relay_port}/tcp and has the key above can register as a Relay (at most five at a time)." \
             "Set ASPIA_ROUTER_RELAY_ALLOWED_IPS to the addresses of your Relays, or allow ${relay_port}/tcp" \
             "only from them in the firewall."
-        # On data that Aspia 3.0.x migrated from 2.x relay.pub is a copy of host.pub: every Host knows that key.
+        # Only on installs that Aspia 3.0.x converted from 2.x: there relay.pub is a copy of host.pub, so
+        # every Host knows that key.
         relay_key="$(read_key "${RELAY_PUB}")"
         if [[ -n "${relay_key}" && "${relay_key}" == "$(read_key "${HOST_PUB}")" ]]; then
             warn "The key for relays is the same as the key for hosts (an install migrated from Aspia 2.x)," \
@@ -1238,6 +1246,7 @@ main() {
     # Every validate_* below only reads. Ownership is changed (drop_privileges) only once all of
     # them have passed, so a refused start never touches the volumes, PUID/PGID included.
     validate_puid_pgid
+    refuse_2x_data
     for service in "${SERVICES[@]}"; do "validate_${service}"; done
     drop_privileges "$@"
 

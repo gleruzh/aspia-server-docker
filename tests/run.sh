@@ -162,6 +162,12 @@ helper_rw() {
         -v "${cfg}:/etc/aspia" -v "${db}:/var/lib/aspia" "${HELPER_IMAGE}" "$@"
 }
 
+# snapshot_volumes <config volume> <database volume>: the checksum of every file in the volumes,
+# sorted; two snapshots are equal if no file was created, removed or changed.
+snapshot_volumes() {
+    helper "$1" "$2" sh -c 'cd / && find etc/aspia var/lib/aspia -mindepth 1 -exec sha256sum {} + 2>/dev/null | sort'
+}
+
 state() { docker inspect -f "{{$1}}" "$2"; }
 
 # log_has <container> <extended regex>: the log is read completely first; "docker logs | grep -q"
@@ -422,7 +428,7 @@ scenario_command() {
 S1_CFG="" S1_DB="" S1_NAME=""
 
 scenario_clean_start() {
-    local name logs host_pub relay_pub relay_conf router_conf ports port net unreachable password
+    local name logs host_pub relay_pub relay_conf router_conf ports port net unreachable password password_file
     log "1. Clean start on empty volumes"
     S1_CFG="$(new_volume s1-config)"
     S1_DB="$(new_volume s1-db)"
@@ -466,10 +472,11 @@ scenario_clean_start() {
         || fail "no warning that anyone may log in first while ASPIA_ROUTER_CLIENT_ALLOWED_IPS is empty"
     ok "the first start warns that anyone may log in first (ASPIA_ROUTER_CLIENT_ALLOWED_IPS not set)"
     # The random admin password is saved for the operator, never logged (root-only file, mode 600).
-    [[ "$(helper "${S1_CFG}" "${S1_DB}" stat -c '%u:%g %a' /etc/aspia/initial-admin-password)" == "0:0 600" ]] \
-        || fail "initial-admin-password is not root:root 600"
-    password="$(helper "${S1_CFG}" "${S1_DB}" cat /etc/aspia/initial-admin-password)"
-    [[ -n "${password}" ]] || fail "initial-admin-password is empty"
+    password_file="$(docker exec "${name}" sh -c 'stat -c "%u:%g %a" /etc/aspia/initial-admin-password && cat /etc/aspia/initial-admin-password')" \
+        || fail "cannot read initial-admin-password"
+    [[ "${password_file%%$'\n'*}" == "0:0 600" ]] || fail "initial-admin-password is not root:root 600"
+    password="${password_file#*$'\n'}"
+    [[ "${password_file}" == *$'\n'* && -n "${password}" ]] || fail "initial-admin-password is empty"
     if grep -qF -- "${password}" <<<"${logs}"; then fail "the log contains the initial admin password"; fi
     ok "initial-admin-password is root:root 600, not empty, and its content is not in the log"
 
@@ -656,20 +663,19 @@ scenario_orphan_database() {
     ok "exit code ${code}; database untouched; no new keys or configs"
 }
 
-# refused_unchanged <name> <config volume> <database volume> <what> [docker run options...]: starts
-# the image on volumes that must be refused, and checks that it exits non-zero with a clear message
-# and changes no file.
+# refused_unchanged <name> <config volume> <database volume> <what> [message regex [docker run options...]]:
+# starts the image on volumes that must be refused, and checks that it exits non-zero with a clear
+# message (the regex, by default 'Nothing was changed') and changes no file.
 refused_unchanged() {
-    local cfg="$2" db="$3" before name code
-    before="$(helper "${cfg}" "${db}" sh -c 'cd / && find etc/aspia var/lib/aspia -mindepth 1 -exec sha256sum {} + 2>/dev/null | sort')"
-    run_new "$1" "${cfg}" "${db}" -e "EXTERNAL_IP=${IP_NEW}" "${@:5}"
+    local cfg="$2" db="$3" pattern="${5:-Nothing was changed}" before name code
+    before="$(snapshot_volumes "${cfg}" "${db}")"
+    run_new "$1" "${cfg}" "${db}" -e "EXTERNAL_IP=${IP_NEW}" "${@:6}"
     name="${CURRENT_CONTAINER}"
     wait_exited "${name}" 60
     code="$(state .State.ExitCode "${name}")"
     [[ "${code}" != 0 ]] || fail "exit code 0 with $4"
-    log_has "${name}" 'Nothing was changed' || fail "no clear message for $4"
-    [[ "$(helper "${cfg}" "${db}" sh -c 'cd / && find etc/aspia var/lib/aspia -mindepth 1 -exec sha256sum {} + 2>/dev/null | sort')" \
-        == "${before}" ]] || fail "files were created or changed with $4"
+    log_has "${name}" "${pattern}" || fail "no clear message for $4"
+    [[ "$(snapshot_volumes "${cfg}" "${db}")" == "${before}" ]] || fail "files were created or changed with $4"
     ok "$4: exit code ${code}, no file created or changed"
 }
 
@@ -683,25 +689,14 @@ scenario_refused_relay_data() {
 }
 
 # refused_2x <name> <what> <shell command that creates the 2.x data>: the image on volumes with Aspia 2.x
-# data exits non-zero, names 3.0.37 as the version to start first, and writes nothing (no router.conf, no keys).
+# data exits non-zero, names 3.0.37 as the version to start first, and writes nothing (no router.conf, no
+# keys: the volumes' snapshot is the same).
 refused_2x() {
-    local cfg db name code files
+    local cfg db
     cfg="$(new_volume "$1-config")"
     db="$(new_volume "$1-db")"
     helper_rw "${cfg}" "${db}" sh -c "$3"
-    files="$(helper "${cfg}" "${db}" sh -c 'cd / && find etc/aspia var/lib/aspia -mindepth 1 -exec sha256sum {} + 2>/dev/null | sort')"
-    run_new "$1" "${cfg}" "${db}" -e "EXTERNAL_IP=${IP_NEW}"
-    name="${CURRENT_CONTAINER}"
-    wait_exited "${name}" 60
-    code="$(state .State.ExitCode "${name}")"
-    [[ "${code}" != 0 ]] || fail "exit code 0 with $2"
-    log_has "${name}" 'Found Aspia 2\.x data' || fail "no message about Aspia 2.x data for $2"
-    log_has "${name}" '3\.0\.37' || fail "the message for $2 does not name 3.0.37"
-    [[ "$(helper "${cfg}" "${db}" sh -c 'cd / && find etc/aspia var/lib/aspia -mindepth 1 -exec sha256sum {} + 2>/dev/null | sort')" \
-        == "${files}" ]] || fail "files were created or changed with $2"
-    helper "${cfg}" "${db}" sh -c 'test ! -e /etc/aspia/router.conf && test ! -e /etc/aspia/relay.conf && test ! -e /etc/aspia/host.pub' \
-        || fail "configuration or keys were written with $2"
-    ok "$2: exit code ${code}, points to 3.0.37, no file created or changed"
+    refused_unchanged "$1" "${cfg}" "${db}" "$2" 'Found Aspia 2\.x data.*3\.0\.37'
 }
 
 scenario_refused_2x_data() {
@@ -1341,6 +1336,7 @@ scenario_relay_invalid() {
     db="$(new_volume s22-db)"
     helper_rw "${cfg}" "${db}" sh -c 'printf "[relay]\nport=8063\n" > /etc/aspia/router.conf'
     refused_unchanged s22 "${cfg}" "${db}" "role relay on a Router's configuration volume" \
+        'Nothing was changed' \
         -e ASPIA_ROLE=relay -e ASPIA_RELAY_ROUTER_ADDRESS=router.example.test -e "ASPIA_RELAY_ROUTER_PUBLIC_KEY=${ROUTER_KEY}"
     log_has "${CURRENT_CONTAINER}" 'ASPIA_ROLE=relay, but the volumes hold a Router' || fail "no clear message for a Router's volume"
     ok "the message names the Router's files and says to use ASPIA_ROLE=router or all"
@@ -1351,6 +1347,7 @@ scenario_relay_invalid() {
     # shellcheck disable=SC2016  # expanded by sh inside the helper container
     helper_rw "${cfg}" "${db}" sh -c 'printf "%s\n" "$1" > /etc/aspia/relay.pub' _ "${ROUTER_KEY}"
     refused_unchanged s22b "${cfg}" "${db}" "role relay with PUID/PGID and the key file in /etc/aspia" \
+        'Nothing was changed' \
         -e ASPIA_ROLE=relay -e ASPIA_RELAY_ROUTER_ADDRESS=router.example.test -e PUID=1000 -e PGID=1000 \
         -e ASPIA_RELAY_ROUTER_PUBLIC_KEY_FILE=/etc/aspia/relay.pub
     log_has "${CURRENT_CONTAINER}" 'Mount the key file somewhere else' || fail "no clear message for a key file inside the volumes"
@@ -1497,7 +1494,7 @@ readonly GROUP_TABLE=(
     "compose-roles       2  scenario_compose_roles"
     "compose-hardening   1  scenario_compose_hardening"
     "clean-start        26  scenario_clean_start scenario_restart scenario_new_external_ip scenario_stop scenario_crash scenario_relay_not_connected"
-    "refused-2x          3  scenario_refused_2x_data"
+    "refused-2x          6  scenario_refused_2x_data"
     "no-external-ip      1  scenario_no_external_ip"
     "orphan-database     1  scenario_orphan_database"
     "refused-data        4  scenario_refused_relay_data"
