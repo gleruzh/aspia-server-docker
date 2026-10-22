@@ -1,4 +1,4 @@
-<!-- canonical: podman/README.md 0b65376a22abefe80fd3c846a05d48b02f985ce1 -->
+<!-- canonical: podman/README.md f636b195e2be32387693a4acd898103c4a2f6978 -->
 [English](README.md) | **Русский**
 
 # Сервер Aspia под Podman (systemd, Quadlet)
