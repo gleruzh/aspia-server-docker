@@ -8,7 +8,7 @@ to Docker Hub or Quay.io only when the owner has set their secrets.
 |---|---|---|
 | [`ci.yml`](../.github/workflows/ci.yml) | every pull request, weekly (Mondays), manual | `tests/lint.sh` (hadolint, shellcheck, actionlint, `scripts/versions.sh check`, the main-only checks of `publish.yml` and `dockerhub-description.yml`), builds the image and runs `tests/run.sh` against it in three shards side by side (`--shard 1/3` to `3/3`, each job builds the image itself), and scans it with Trivy in the first shard. The findings are reported in the log, the run summary and the Security tab; they never fail the run, but a scan that does not work does ([Tool images](#tool-images)). |
 | [`publish.yml`](../.github/workflows/publish.yml) | push to `main` that changes `versions.env` or the image files; manual | Builds the image once, pushes it to GHCR by digest only, runs `tests/run.sh` against that digest, then tags it and copies it to the other registries. Signs it and attests its provenance. |
-| [`upstream-watch.yml`](../.github/workflows/upstream-watch.yml) | every 6 hours; manual | Opens a pull request "chore: bump Aspia to X.Y.Z" when Aspia publishes a newer stable release with both x86_64 server packages. |
+| [`upstream-watch.yml`](../.github/workflows/upstream-watch.yml) | daily; manual | Opens a pull request "chore: bump Aspia to X.Y.Z" when Aspia publishes a newer stable release with both x86_64 server packages. |
 | [`rebuild.yml`](../.github/workflows/rebuild.yml) | daily; manual | Scans the published image with Trivy for vulnerabilities that have a fix, and starts `publish.yml` on `main` only if a rebuild would install such a fix. |
 | [`dockerhub-description.yml`](../.github/workflows/dockerhub-description.yml) | push to `main` that changes `docs/dockerhub.md`; manual | Replaces the Docker Hub description with `docs/dockerhub.md` when the push starts no publish (see [Enabling Docker Hub](#enabling-docker-hub)). |
 
@@ -224,7 +224,7 @@ platform are not valid; pin the index digest from the publish run summary instea
 
 ## The bump pull request (upstream-watch.yml)
 
-Every 6 hours the workflow lists the releases of `dchapyshev/aspia`, ignores drafts, pre-releases and
+Once a day the workflow lists the releases of `dchapyshev/aspia`, ignores drafts, pre-releases and
 tags that are not `vX.Y.Z`, and compares the newest with `versions.env` of the branch it runs on. If
 the release is newer and has both `aspia-router-X.Y.Z-x86_64.deb` and `aspia-relay-X.Y.Z-x86_64.deb`,
 it opens a pull request from the branch `aspia-bump/X.Y.Z` with the test result. If the tests fail, the
@@ -247,7 +247,7 @@ job has just read, so a rerun with "force" replaces the branch of a closed pull 
 push that lands in between.
 
 It does nothing when a pull request for that version is already open. It also does nothing when one
-was closed without merging, so that a rejected version is not proposed again every 6 hours; a manual
+was closed without merging, so that a rejected version is not proposed again every day; a manual
 run with "force" opens a new one. Nothing is merged automatically: a new Aspia version has changed
 the configuration format before, so a person reads the changelog and merges.
 

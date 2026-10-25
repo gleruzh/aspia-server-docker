@@ -25,7 +25,7 @@ name: Upstream watch
 
 on:
   schedule:
-    - cron: '23 */6 * * *'
+    - cron: '23 6 * * *'   # daily
   workflow_dispatch:
     inputs:
       force:
@@ -94,7 +94,7 @@ jobs:
           fi
           closed="$(gh pr list --repo "${GITHUB_REPOSITORY}" --head "${branch}" --base "${BASE}" --state closed --json url,mergedAt --jq '[.[] | select(.mergedAt == null)][0].url // ""')"
           if [[ -n "${closed}" && "${FORCE}" != true ]]; then
-            echo "::notice::A pull request for Aspia ${latest} was closed without merging: ${closed}. Not reopening it every 6 hours; run this workflow manually with force to open a new one."
+            echo "::notice::A pull request for Aspia ${latest} was closed without merging: ${closed}. Not reopening it every day; run this workflow manually with force to open a new one."
             exit 0
           fi
           {
