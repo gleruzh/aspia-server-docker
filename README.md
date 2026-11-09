@@ -4,7 +4,7 @@
 
 [![CI](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml) [![Publish](../../actions/workflows/publish.yml/badge.svg)](../../actions/workflows/publish.yml)
 
-This repository builds a Docker image of the server part of [Aspia](https://aspia.org/), an open-source remote desktop system. The image runs the Aspia Router and the Aspia Relay, version 3.2.2.
+This repository builds a Docker image of the server part of [Aspia](https://aspia.org/), an open-source remote desktop system. The image runs the Aspia Router and the Aspia Relay, version 3.3.5.
 
 ## What this is, and what it is not
 
@@ -53,7 +53,7 @@ The image is published to the GitHub Container Registry as `ghcr.io/<owner>/aspi
     ```shell
     # .env
     EXTERNAL_IP=203.0.113.10
-    ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.2.2
+    ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.3.5
     ```
 
     `EXTERNAL_IP` is the address that the Relay gives to the Clients and the Hosts. It can be an IP address or a DNS name. The value `auto` detects the public IP address at every start: it asks internet services over HTTPS and uses the first public address that one of them reports.
@@ -218,7 +218,7 @@ The rules:
 | `PUID`, `PGID` | `0` (root) | Run the Router and the Relay as this user ID and group ID. Recommended, see [Security settings](#security-settings). Set both or neither. The container changes the owner of `./data/config` and `./data/database` at every start. |
 | `TZ` | `UTC` | The time zone of the timestamps in the log, for example `Europe/Berlin`. |
 | `ASPIA_LOG_LEVEL` | `1` | The minimum log level: `0` TRACE, `1` INFO, `2` WARNING, `3` ERROR, `4` FATAL. |
-| `ASPIA_IMAGE` | `aspia-server:3.2.2` | The image that `docker compose` runs. The default is the name of a local build. |
+| `ASPIA_IMAGE` | `aspia-server:3.3.5` | The image that `docker compose` runs. The default is the name of a local build. |
 | `ASPIA_ROUTER_CLIENT_BIND_IP` | empty: all addresses | The address of the server on which the compose files publish port 8062, for example `127.0.0.1` for the first login over an SSH tunnel (see [Quick start](#quick-start)). Write an IPv6 address in brackets: `[::1]`. Only the compose files read it. |
 
 Some settings have no variable: the Router port for Relays (`[relay] port` in `router.conf`) and the listen addresses (`listen_interface`). Edit `router.conf` or `relay.conf` for them. The container never overwrites such a change. There is also no variable for the password of `admin` (see [First login](#first-login)). The variable `ASPIA_ROUTER_LEGACY_PORT` is removed: Aspia 3.1 has no port for Hosts of Aspia 2.x, and the Router ignores the variable with a warning.
@@ -256,7 +256,7 @@ docker run -d --name aspia-server --restart unless-stopped \
   -e EXTERNAL_IP=203.0.113.10 \
   -p 8061:8061 -p 8062:8062 -p 8065:8065/udp -p 8070:8070 \
   -v "$PWD/data/config:/etc/aspia" -v "$PWD/data/database:/var/lib/aspia" \
-  ghcr.io/<owner>/aspia-server:3.2.2
+  ghcr.io/<owner>/aspia-server:3.3.5
 ```
 
 The simplest setup needs none of the six capabilities: no `PUID` and `PGID`, and the volumes belong to root. For this setup you can remove the `--cap-add` flags, or `cap_add:` in the compose file.
@@ -286,12 +286,12 @@ Do not run `aspia_router --check-update` or `aspia_router --install-update` in t
 
 ### Tags and digests
 
-The tag `3.2.2` moves with every publish: a change to the image (a new Aspia version, a Debian base update, a Debian security fix, a fix) or a manual run. The tag `3.2.2-YYYYMMDD`, for example `3.2.2-20261005`, never moves. Every publish after a change creates one. Short tags such as `3.0` move too. Do not use them on a server. [docs/ci.md](docs/ci.md) has the details and shows how to verify the signature of the image.
+The tag `3.3.5` moves with every publish: a change to the image (a new Aspia version, a Debian base update, a Debian security fix, a fix) or a manual run. The tag `3.3.5-YYYYMMDD`, for example `3.3.5-20261005`, never moves. Every publish after a change creates one. Short tags such as `3.0` move too. Do not use them on a server. [docs/ci.md](docs/ci.md) has the details and shows how to verify the signature of the image.
 
 For an image that never changes, use its digest. Show the digests of the image that you have downloaded:
 
 ```shell
-docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' ghcr.io/<owner>/aspia-server:3.2.2
+docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' ghcr.io/<owner>/aspia-server:3.3.5
 ```
 
 If you pulled the image from both registries, the list also has a line that starts with `docker.io`. Use the line that starts with `ghcr.io`. It looks like `ghcr.io/<owner>/aspia-server@sha256:...`. Put it into `.env`:
@@ -343,7 +343,7 @@ Aspia 3.1 no longer converts 2.x data: it does not convert `router.json` and `re
 
 3. Move the Hosts and the Clients to Aspia 3.x. Hosts of 3.0.0 or later connect on port 8061, and they keep the key from `host.pub`, which is the old key of the Router.
 
-4. Stop the container, set the tag of `ASPIA_IMAGE` to `3.2.2`, remove the line of port 8060 from `ports:` (the file of the current version has none), and start the container on the same volumes:
+4. Stop the container, set the tag of `ASPIA_IMAGE` to `3.3.5`, remove the line of port 8060 from `ports:` (the file of the current version has none), and start the container on the same volumes:
 
     ```shell
     docker compose down
@@ -457,7 +457,7 @@ Use this if the Router server should keep its own Relay and also accept Relays f
     ```shell
     # .env
     COMPOSE_FILE=compose.relay.yml
-    ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.2.2
+    ASPIA_IMAGE=ghcr.io/<owner>/aspia-server:3.3.5
     EXTERNAL_IP=203.0.113.20
     ASPIA_RELAY_ROUTER_ADDRESS=203.0.113.10
     ASPIA_RELAY_ROUTER_PUBLIC_KEY=047d0004a25c7f61e501c3eadc701732ca94c6a2fb035b4935caf7da7b27c555
@@ -521,7 +521,7 @@ cd aspia-server-docker
 cp .env.example .env
 ```
 
-Set `EXTERNAL_IP` in `.env`, and leave `ASPIA_IMAGE` unset. Then build and start. The image gets the name `aspia-server:3.2.2`:
+Set `EXTERNAL_IP` in `.env`, and leave `ASPIA_IMAGE` unset. Then build and start. The image gets the name `aspia-server:3.3.5`:
 
 ```shell
 docker compose up -d --build
